@@ -64,7 +64,7 @@ src/crypto_summary/
 │   ├── koinly_csv.py
 │   ├── koinly_api.py
 │   ├── cryptact.py        # カスタムファイル形式
-│   └── summ.py
+│   └── summ_mcp.py        # MCP JSON-RPC 直接 push (https://mcp.summ.com/mcp)
 ├── config.py              # 設定・シークレット読込
 ├── pipeline.py            # 取得→正規化→出力のオーケストレーション
 └── cli.py                 # CLI エントリポイント
@@ -159,15 +159,43 @@ class CanonicalTx(BaseModel):
 
 ## 7. Sink（出力）
 
-| Sink | 形式 | 備考 |
-|------|------|------|
-| `koinly_csv` | Koinly Universal CSV | 最初に実装。最も汎用 |
-| `koinly_api` | API 投入 | 対応範囲確認後に追加。失敗時は CSV へフォールバック |
-| `cryptact` | カスタムファイル | アクション(BUY/SELL/...)へマッピング |
-| `summ` | SUMM 指定形式 | 仕様確認後にマッピング表を作成 |
+| Sink | モジュール | 形式 | 備考 |
+|------|-----------|------|------|
+| Koinly CSV | `koinly_csv.py` | Universal CSV | **最初に実装。**最も汎用・監査しやすい |
+| Koinly API | `koinly_api.py` | REST API 投入 | 対応範囲確認後に追加。失敗時は CSV へフォールバック |
+| Cryptact | `cryptact.py` | カスタムファイル | アクション(BUY/SELL/BONUS...)へマッピング |
+| **SUMM MCP** | `summ_mcp.py` | **MCP (JSON-RPC)** | **最もモダンな直接 push 方式（後述）** |
 
 - 各 Sink は `Iterable[CanonicalTx] → ファイル/POST` の単純関数。
 - マッピングは表形式の設定で管理し、コード変更なしで微調整可能にする。
+
+### 7.1 SUMM MCP 連携の詳細
+
+SUMM (旧 Crypto Tax Calculator) は MCP サーバー (`https://mcp.summ.com/mcp`) を公開しており、
+JSON-RPC 2.0 (POST) で直接トランザクションを push できる。CSV 不要・即時反映が特長。
+
+```
+[Canonical Tx] → summ_mcp.py → POST https://mcp.summ.com/mcp
+                                Authorization: Bearer <SUMM_API_TOKEN>
+```
+
+**実装メモ**:
+- 認証: Bearer トークン（SUMM アカウントから発行）
+- プロトコル確認: `initialize` → `tools/list` で利用可能メソッドを動的取得
+- 冪等性: `id`（冪等キー）を MCP リクエストに含め、SUMM 側での重複登録を防ぐ
+- エラー時: MCP 失敗 → Cryptact 互換 CSV に自動フォールバック
+
+```python
+# summ_mcp.py のインターフェースイメージ
+class SummMcpSink(SinkAdapter):
+    endpoint = "https://mcp.summ.com/mcp"
+
+    def export(self, txs: Iterable[CanonicalTx]) -> ExportResult:
+        # 1. initialize handshake
+        # 2. tools/list でサポートメソッド確認
+        # 3. バッチ push（失敗時は CSV フォールバック）
+        ...
+```
 
 ---
 
@@ -189,6 +217,11 @@ sinks:
   - id: koinly
     type: koinly_csv
     out: ./out/koinly.csv
+  - id: summ
+    type: summ_mcp
+    token_env: SUMM_API_TOKEN
+    fallback: cryptact_csv       # MCP 失敗時のフォールバック先
+    fallback_out: ./out/cryptact.csv
 ```
 
 - **APIキーは読み取り専用権限のみ**を発行（出金権限は付与しない）を必須要件として明記。
