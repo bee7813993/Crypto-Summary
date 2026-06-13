@@ -1,4 +1,9 @@
-"""CSV import adapters for exchange trade history files."""
+"""CSV import adapters for exchange trade history files.
+
+Registry (EXCHANGE_SOURCES) maps CLI --exchange values to adapter classes.
+To add a new exchange, create an adapter in sources/jp/ or sources/,
+then add it here.
+"""
 from __future__ import annotations
 
 import csv
@@ -140,7 +145,10 @@ class UniversalCsvSource(CsvSourceAdapter):
 
 
 # registry for CLI lookup
+from .jp.gmo import GmoCsvSource  # noqa: E402
+
 EXCHANGE_SOURCES: dict[str, type[CsvSourceAdapter]] = {
-    "binance": BinanceCsvSource,
+    "binance":   BinanceCsvSource,
+    "gmo":       GmoCsvSource,
     "universal": UniversalCsvSource,
 }
