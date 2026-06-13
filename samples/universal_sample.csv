@@ -1,0 +1,6 @@
+timestamp,type,received_asset,received_amount,sent_asset,sent_amount,fee_asset,fee_amount,note
+2024-01-10T09:00:00Z,deposit,BTC,0.5,,,,,入金
+2024-01-15T10:30:00Z,trade,BTC,0.00238095,USDT,100,BNB,0.0001,スポット購入
+2024-02-20T14:00:00Z,withdraw,,,ETH,0.2,ETH,0.001,出金
+2024-03-01T00:00:00Z,reward,ETH,0.01,,,,, ステーキング報酬
+2024-03-15T11:00:00Z,transfer,BTC,0.1,BTC,0.1,,,ウォレット移動

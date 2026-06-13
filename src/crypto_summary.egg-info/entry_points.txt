@@ -1,0 +1,2 @@
+[console_scripts]
+crypto-summary = crypto_summary.cli:cli
