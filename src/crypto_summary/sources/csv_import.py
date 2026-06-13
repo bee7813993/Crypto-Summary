@@ -145,13 +145,15 @@ class UniversalCsvSource(CsvSourceAdapter):
 
 
 # registry for CLI lookup
-from .jp.gmo import GmoCsvSource      # noqa: E402
-from .nexo import NexoSpotCsvSource, NexoDnWCsvSource  # noqa: E402
+from .jp.gmo import GmoCsvSource                          # noqa: E402
+from .nexo import NexoSpotCsvSource, NexoDnWCsvSource      # noqa: E402
+from .nexo_savings import NexoSavingsCsvSource             # noqa: E402
 
 EXCHANGE_SOURCES: dict[str, type[CsvSourceAdapter]] = {
-    "binance":    BinanceCsvSource,
-    "gmo":        GmoCsvSource,
-    "nexo_spot":  NexoSpotCsvSource,
-    "nexo_dnw":   NexoDnWCsvSource,
-    "universal":  UniversalCsvSource,
+    "binance":       BinanceCsvSource,
+    "gmo":           GmoCsvSource,
+    "nexo_spot":     NexoSpotCsvSource,
+    "nexo_dnw":      NexoDnWCsvSource,
+    "nexo_savings":  NexoSavingsCsvSource,
+    "universal":     UniversalCsvSource,
 }
