@@ -140,7 +140,9 @@ class Ledger:
         self,
         source: str | None = None,
         tx_type: str | None = None,
-        limit: int = 50,
+        since: datetime | None = None,
+        until: datetime | None = None,
+        limit: int | None = 50,
     ) -> list[CanonicalTx]:
         clauses, params = [], []
         if source:
@@ -149,10 +151,16 @@ class Ledger:
         if tx_type:
             clauses.append("type=?")
             params.append(tx_type)
+        if since:
+            clauses.append("timestamp >= ?")
+            params.append(since.isoformat())
+        if until:
+            clauses.append("timestamp <= ?")
+            params.append(until.isoformat())
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
-        params.append(limit)
+        limit_clause = f"LIMIT {int(limit)}" if limit is not None else ""
         rows = self._conn.execute(
-            f"SELECT * FROM transactions {where} ORDER BY timestamp DESC LIMIT ?",
+            f"SELECT * FROM transactions {where} ORDER BY timestamp ASC {limit_clause}",
             params,
         ).fetchall()
         return [self._row_to_tx(r) for r in rows]

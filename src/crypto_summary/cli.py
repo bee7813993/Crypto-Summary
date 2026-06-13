@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
 
 import click
@@ -161,3 +162,77 @@ def show(ctx: click.Context, source: str | None, tx_type: str | None, limit: int
         )
 
     console.print(table)
+
+
+# ---------------------------------------------------------------------------
+# export
+# ---------------------------------------------------------------------------
+
+def _parse_date(value: str | None, end_of_day: bool = False) -> datetime | None:
+    if not value:
+        return None
+    for fmt in ("%Y-%m-%d", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S"):
+        try:
+            dt = datetime.strptime(value, fmt).replace(tzinfo=timezone.utc)
+            if end_of_day and fmt == "%Y-%m-%d":
+                dt = dt.replace(hour=23, minute=59, second=59)
+            return dt
+        except ValueError:
+            continue
+    raise click.BadParameter(f"Cannot parse date: {value!r}. Use YYYY-MM-DD.")
+
+
+@cli.command("export")
+@click.option("--sink", required=True, type=click.Choice(["koinly"]),
+              help="Export format / destination")
+@click.option("--source", "filter_source", default=None,
+              help="Filter by source (default: all sources)")
+@click.option("--since", default=None, metavar="YYYY-MM-DD",
+              help="Include transactions on or after this date (UTC)")
+@click.option("--until", default=None, metavar="YYYY-MM-DD",
+              help="Include transactions on or before this date (UTC)")
+@click.option("--out", "out_path", default=None, metavar="PATH",
+              help="Output file path (default: ./out/<sink>.csv)")
+@click.pass_context
+def export_cmd(
+    ctx: click.Context,
+    sink: str,
+    filter_source: str | None,
+    since: str | None,
+    until: str | None,
+    out_path: str | None,
+) -> None:
+    """Export normalized transactions to an external format (e.g. Koinly CSV)."""
+    since_dt = _parse_date(since)
+    until_dt = _parse_date(until, end_of_day=True)
+
+    ledger = Ledger(ctx.obj["db"])
+    txs = ledger.all(
+        source=filter_source,
+        since=since_dt,
+        until=until_dt,
+        limit=None,
+    )
+    ledger.close()
+
+    if not txs:
+        console.print("[yellow]No transactions matched the filters.[/yellow]")
+        return
+
+    if sink == "koinly":
+        from .sinks.koinly_csv import write_koinly_csv
+        dest = Path(out_path) if out_path else Path("out") / "koinly.csv"
+        n = write_koinly_csv(txs, dest)
+        console.print(
+            f"[green]✓[/green] Exported [bold]{n}[/bold] transactions to "
+            f"[cyan]{dest}[/cyan]"
+        )
+        if since_dt or until_dt:
+            range_parts = []
+            if since_dt:
+                range_parts.append(f"from {since_dt.date()}")
+            if until_dt:
+                range_parts.append(f"until {until_dt.date()}")
+            console.print(f"  Date filter: [dim]{' '.join(range_parts)}[/dim]")
+        if filter_source:
+            console.print(f"  Source filter: [dim]{filter_source}[/dim]")
