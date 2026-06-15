@@ -266,15 +266,26 @@ def test_claim_to_is_reward(tmp_path):
 # ── 13. ガス代の記録（オプション）───────────────────────────────────
 
 def test_record_gas(tmp_path):
+    # 送出取引（From=WALLET）のみガスを払う
     h = _hash(13)
     n = _normal(tmp_path,
-        f'"{h}","1","1","2025-09-28 12:00:00","{OTHER}","{WALLET}","","1.5","0","0","0.00029","0.5","4000","","","Transfer"')
+        f'"{h}","1","1","2025-09-28 12:00:00","{WALLET}","{OTHER}","","0","1.5","0","0.00029","0.5","4000","","","Transfer"')
     txs = _src().load_multi(n, record_gas=True)
-    # DEPOSIT + FEE
+    # WITHDRAW + FEE
     assert len(txs) == 2
     fee_tx = next(t for t in txs if t.type == TxType.FEE)
     assert fee_tx.fee_asset == "ETH"
     assert fee_tx.fee_amount == Decimal("0.00029")
+
+
+def test_no_gas_for_incoming(tmp_path):
+    """受取取引はウォレットがガスを払わないので FEE を出さない。"""
+    h = _hash(130)
+    n = _normal(tmp_path,
+        f'"{h}","1","1","2025-09-28 12:00:00","{OTHER}","{WALLET}","","1.5","0","0","0.00029","0.5","4000","","","Transfer"')
+    txs = _src().load_multi(n, record_gas=True)
+    assert len(txs) == 1
+    assert txs[0].type == TxType.DEPOSIT
 
 
 # ── 14. Token → ETH スワップ（internal ETH 経由）────────────────────

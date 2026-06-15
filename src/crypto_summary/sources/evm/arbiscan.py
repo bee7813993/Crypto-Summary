@@ -84,7 +84,16 @@ class ArbiscanCsvSource:
         normal_rows = _read_csv(normal_path)
         erc20_rows = _read_csv(erc20_path) if erc20_path else []
         internal_rows = _read_csv(internal_path) if internal_path else []
+        return self._build(normal_rows, erc20_rows, internal_rows, record_gas)
 
+    def _build(
+        self,
+        normal_rows: list[dict[str, str]],
+        erc20_rows: list[dict[str, str]],
+        internal_rows: list[dict[str, str]],
+        record_gas: bool,
+    ) -> list[CanonicalTx]:
+        """CSV/API 共通: 行リスト（CSV列名形式）を tx_hash 単位でマージ・分類する。"""
         normal: dict[str, dict] = {
             r["Transaction Hash"].lower(): r for r in normal_rows
         }
@@ -158,8 +167,10 @@ class ArbiscanCsvSource:
 
         results: list[CanonicalTx] = []
 
-        # ガス代（オプション）
-        if record_gas and gas > _ZERO:
+        # ガス代（オプション）。ガスを払うのは送信者だけなので、
+        # ウォレットが From のトランザクションのみ計上する。
+        wallet_is_sender = bool(norm and norm.get("From", "").lower() == self.wallet)
+        if record_gas and gas > _ZERO and wallet_is_sender:
             results.append(self._tx(
                 tx_hash + "|gas", ts, TxType.FEE,
                 fee_asset="ETH", fee_amount=gas, label="gas", tx_hash=tx_hash,
@@ -280,7 +291,7 @@ class ArbiscanCsvSource:
         # ── 9. 単一トークン受取（Claim / Reward / Deposit 等）────────
         if len(t_recv) == 1 and not t_sent and eth_out <= _DUST and int_eth_in <= _DUST:
             sym, amt = t_recv[0]
-            tx_type = TxType.REWARD if "Claim" in method else TxType.DEPOSIT
+            tx_type = TxType.REWARD if "claim" in method.lower() else TxType.DEPOSIT
             results.append(self._tx(
                 tx_hash, ts, tx_type,
                 received_asset=sym, received_amount=amt,

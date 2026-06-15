@@ -190,6 +190,93 @@ def import_wallet_cmd(
 
 
 # ---------------------------------------------------------------------------
+# fetch-wallet (Etherscan V2 API でEVMウォレット取得)
+# ---------------------------------------------------------------------------
+
+@cli.command("fetch-wallet")
+@click.option(
+    "--chain", required=True,
+    type=click.Choice(["ethereum", "arbitrum", "polygon", "base", "optimism"]),
+    help="取得するEVMチェーン",
+)
+@click.option("--wallet", "wallet_address", required=True, help="ウォレットアドレス (0x...)")
+@click.option("--source-id", default=None, help="ソース識別子（デフォルト: chain名）")
+@click.option(
+    "--api-key", default=None, envvar="ETHERSCAN_API_KEY",
+    help="Etherscan V2 APIキー（環境変数 ETHERSCAN_API_KEY でも可）",
+)
+@click.option("--gas/--no-gas", "record_gas", default=True, show_default=True,
+              help="ガス代を FEE として記録する（実残高と一致させるため既定で有効）")
+@click.pass_context
+def fetch_wallet_cmd(
+    ctx: click.Context,
+    chain: str,
+    wallet_address: str,
+    source_id: str | None,
+    api_key: str | None,
+    record_gas: bool,
+) -> None:
+    """Etherscan V2 API で EVM ウォレットの取引履歴を取得して ledger に保存する。
+
+    CSV のダウンロード不要。APIキー1つで複数チェーンに対応する。
+    APIキーは読み取り専用（出金権限という概念は存在しない）。
+    https://etherscan.io/myapikey で無料発行し、.env の ETHERSCAN_API_KEY に設定。
+
+    \b
+    例:
+      crypto-summary fetch-wallet --chain arbitrum \\
+          --wallet 0xABC...123 --source-id my_arbitrum
+      crypto-summary fetch-wallet --chain polygon --wallet 0xABC...123
+    """
+    from .sources.api.etherscan import EtherscanApiSource, CHAIN_IDS
+
+    sid = source_id or chain
+
+    if not api_key:
+        console.print(
+            "[red]エラー:[/red] APIキーが必要です。\n"
+            "  .env に ETHERSCAN_API_KEY を設定するか、--api-key で指定してください。\n"
+            "  発行: https://etherscan.io/myapikey"
+        )
+        raise click.Abort()
+
+    adapter = EtherscanApiSource(sid, wallet_address, api_key, CHAIN_IDS[chain])
+    console.print(
+        f"Fetching [cyan]{chain}[/cyan] wallet "
+        f"[dim]{wallet_address}[/dim] as [bold]{sid}[/bold] ..."
+    )
+
+    try:
+        txs = adapter.fetch_all(record_gas=record_gas)
+    except Exception as e:
+        console.print(f"[red]API エラー:[/red] {e}")
+        raise click.Abort()
+
+    if not txs:
+        console.print("[yellow]取引が見つかりませんでした。[/yellow]")
+        return
+
+    ledger = Ledger(ctx.obj["db"])
+    before = ledger.count(sid)
+    ledger.upsert_many(txs)
+    after = ledger.count(sid)
+
+    latest_ts = max(t.timestamp for t in txs)
+    cursor = ledger.get_cursor(sid)
+    if cursor is None or latest_ts > cursor:
+        ledger.set_cursor(sid, latest_ts)
+    ledger.close()
+
+    new = after - before
+    console.print(
+        f"[green]✓[/green] {len(txs)} 件処理  |  "
+        f"[green]+{new} new[/green]  |  "
+        f"{len(txs) - new} already existed (skipped)  |  "
+        f"latest: {latest_ts.strftime('%Y-%m-%d %H:%M')} UTC"
+    )
+
+
+# ---------------------------------------------------------------------------
 # add (手動でトランザクションを1件追加)
 # ---------------------------------------------------------------------------
 
