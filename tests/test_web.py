@@ -163,6 +163,32 @@ def test_transactions_type_ja(client):
     assert "入金" in types
 
 
+def test_account_groups_get(client):
+    r = client.get("/api/account-groups")
+    assert r.status_code == 200
+    d = r.json()
+    assert "groups" in d
+    assert "all_source_ids" in d
+    assert "unassigned_source_ids" in d
+    # acct_a / acct_b は ACCOUNT_GROUPS に未登録 → unassigned
+    assert "acct_a" in d["unassigned_source_ids"]
+    assert "acct_b" in d["unassigned_source_ids"]
+
+
+def test_account_groups_put_and_effect(client, db_path):
+    # グループを更新: acct_a → "My Exchange"
+    r = client.put("/api/account-groups", json={"groups": {"My Exchange": ["acct_a"], "Acct B": ["acct_b"]}})
+    assert r.status_code == 200
+    assert r.json()["ok"] is True
+
+    # 口座一覧に新しい名前が反映される
+    sources = client.get("/api/sources?currency=USD").json()
+    by_name = {s["source"]: s for s in sources["sources"]}
+    assert "My Exchange" in by_name
+    assert "Acct B" in by_name
+    assert "Acct A" not in by_name
+
+
 def test_index_served(client):
     r = client.get("/")
     assert r.status_code == 200

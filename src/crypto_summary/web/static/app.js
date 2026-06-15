@@ -370,11 +370,14 @@ function showAccountsList() {
 }
 
 function showAccountDetail(name) {
+  _currentAccountName = name;
   document.getElementById("accounts-list-view").classList.add("hidden");
   const detail = document.getElementById("account-detail-view");
   detail.classList.remove("hidden");
+  // 設定パネルを閉じてリセット
+  document.getElementById("account-settings-panel").classList.add("hidden");
+  document.getElementById("settings-result").classList.add("hidden");
   document.getElementById("account-detail-name").textContent = name;
-  // 取引履歴ボタンに口座名をセット
   document.getElementById("account-tx-link").onclick = () =>
     navigateToTransactions({ account: name });
   loadAccountDetail(name);
@@ -444,6 +447,140 @@ async function loadAccountDetail(name) {
     tbody.innerHTML = `<tr><td colspan="5" class="muted">エラー: ${escapeHtml(e.message)}</td></tr>`;
   }
 }
+
+// ---- 口座設定パネル ----
+
+let _currentAccountName = null;  // 設定パネルが開いている口座名
+
+document.getElementById("account-settings-btn").addEventListener("click", () => {
+  const panel = document.getElementById("account-settings-panel");
+  if (panel.classList.contains("hidden")) {
+    openAccountSettings(_currentAccountName);
+  } else {
+    panel.classList.add("hidden");
+  }
+});
+
+document.getElementById("settings-cancel").addEventListener("click", () => {
+  document.getElementById("account-settings-panel").classList.add("hidden");
+});
+
+async function openAccountSettings(accountName) {
+  const panel = document.getElementById("account-settings-panel");
+  const result = document.getElementById("settings-result");
+  result.classList.add("hidden");
+  panel.classList.remove("hidden");
+
+  document.getElementById("settings-display-name").value = accountName;
+
+  // 現在のグループ設定を取得
+  try {
+    const data = await fetchJSON("/api/account-groups");
+    renderSettingsSourceIds(accountName, data);
+  } catch (e) {
+    result.className = "settings-result err";
+    result.textContent = "設定の読み込みに失敗しました: " + e.message;
+    result.classList.remove("hidden");
+  }
+}
+
+function renderSettingsSourceIds(accountName, data) {
+  // この口座に属するソースID（チェック済み）
+  const currentIds = data.groups[accountName] || [];
+  const assignedWrap = document.getElementById("settings-source-ids");
+  assignedWrap.innerHTML = "";
+  currentIds.forEach((sid) => {
+    assignedWrap.appendChild(makeSourceChip(sid, true));
+  });
+  if (currentIds.length === 0) {
+    assignedWrap.innerHTML = '<span class="muted" style="font-size:12px">なし</span>';
+  }
+
+  // 未割り当てのソースID
+  const unassignedWrap = document.getElementById("settings-unassigned-ids");
+  unassignedWrap.innerHTML = "";
+  if (data.unassigned_source_ids.length === 0) {
+    unassignedWrap.innerHTML = '<span class="muted" style="font-size:12px">なし</span>';
+  } else {
+    data.unassigned_source_ids.forEach((sid) => {
+      unassignedWrap.appendChild(makeSourceChip(sid, false, true));
+    });
+  }
+}
+
+function makeSourceChip(sid, checked, isUnassigned = false) {
+  const label = document.createElement("label");
+  label.className = "source-id-chip" + (isUnassigned ? " unassigned" : "");
+  const cb = document.createElement("input");
+  cb.type = "checkbox";
+  cb.value = sid;
+  cb.checked = checked;
+  cb.dataset.sid = sid;
+  label.appendChild(cb);
+  label.appendChild(document.createTextNode(sid));
+  return label;
+}
+
+document.getElementById("settings-save").addEventListener("click", async () => {
+  const result = document.getElementById("settings-result");
+  result.classList.add("hidden");
+
+  const newName = document.getElementById("settings-display-name").value.trim();
+  if (!newName) {
+    result.className = "settings-result err";
+    result.textContent = "表示名を入力してください";
+    result.classList.remove("hidden");
+    return;
+  }
+
+  // チェックされているソースIDを収集（割り当て済み + 未割り当てから追加分）
+  const checkedIds = [
+    ...document.querySelectorAll("#settings-source-ids input[type=checkbox]:checked"),
+    ...document.querySelectorAll("#settings-unassigned-ids input[type=checkbox]:checked"),
+  ].map((cb) => cb.dataset.sid);
+
+  try {
+    // 現在のグループを取得して更新
+    const data = await fetchJSON("/api/account-groups");
+    const groups = { ...data.groups };
+
+    // 古い名前のエントリを削除
+    if (_currentAccountName && _currentAccountName in groups) {
+      delete groups[_currentAccountName];
+    }
+    // 新しい名前で保存（IDが空でも保存する）
+    if (checkedIds.length > 0 || newName !== _currentAccountName) {
+      groups[newName] = checkedIds;
+    }
+
+    const resp = await fetch("/api/account-groups", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ groups }),
+    });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+
+    result.className = "settings-result ok";
+    result.textContent = "保存しました";
+    result.classList.remove("hidden");
+
+    // 口座名が変わった場合はリスト/ヘッダーを更新
+    if (newName !== _currentAccountName) {
+      _currentAccountName = newName;
+      document.getElementById("account-detail-name").textContent = newName;
+      document.getElementById("account-tx-link").onclick = () =>
+        navigateToTransactions({ account: newName });
+    }
+
+    // 口座一覧を裏でリロード（次に戻ったとき反映）
+    loadAccountsPage();
+
+  } catch (e) {
+    result.className = "settings-result err";
+    result.textContent = "保存に失敗しました: " + e.message;
+    result.classList.remove("hidden");
+  }
+});
 
 // ---- 資産別ページ ----
 

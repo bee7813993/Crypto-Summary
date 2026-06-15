@@ -5,11 +5,13 @@
 """
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
+from typing import Any
 
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -19,25 +21,49 @@ from ..core.prices import SUPPORTED_CURRENCIES, fetch_prices
 _STATIC_DIR = Path(__file__).parent / "static"
 _DUST = Decimal("0.00000001")
 
-# 口座表示名とグルーピング設定。
-# キー: 表示名 / 値: ソースIDのリスト（複数なら合算表示）
-# ここにないソースIDは source_id をタイトルケースに変換して表示する。
+# デフォルトのグルーピング設定（設定ファイルが存在しない場合に使われる）。
+# ユーザーは Web UI から変更でき、DB と同じディレクトリの .accounts.json に保存される。
 ACCOUNT_GROUPS: dict[str, list[str]] = {
     "bitFlyer": ["bitflyer"],
     "Nexo Pro": ["nexo_dnw", "nexo_spot"],
 }
 
+# メモリキャッシュ（db_path → groups）。PUT 時に無効化する。
+_groups_cache: dict[str, dict[str, list[str]]] = {}
 
-def _display_name(source_id: str) -> str:
-    for name, ids in ACCOUNT_GROUPS.items():
+
+def _groups_path(db_path: str) -> Path:
+    """DB ファイルと同じディレクトリに <stem>.accounts.json を置く。"""
+    p = Path(db_path)
+    return p.with_name(p.stem + ".accounts.json")
+
+
+def _load_groups(db_path: str) -> dict[str, list[str]]:
+    """設定ファイルからグループを読み込む（キャッシュあり）。"""
+    if db_path in _groups_cache:
+        return _groups_cache[db_path]
+    path = _groups_path(db_path)
+    try:
+        groups: dict[str, list[str]] = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        groups = dict(ACCOUNT_GROUPS)
+    _groups_cache[db_path] = groups
+    return groups
+
+
+def _save_groups(db_path: str, groups: dict[str, list[str]]) -> None:
+    """グループ設定をファイルに保存してキャッシュを更新する。"""
+    _groups_cache[db_path] = groups
+    _groups_path(db_path).write_text(
+        json.dumps(groups, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+
+def _display_name(source_id: str, groups: dict[str, list[str]]) -> str:
+    for name, ids in groups.items():
         if source_id in ids:
             return name
     return source_id.replace("_", " ").title()
-
-
-def _group_to_source_ids() -> dict[str, list[str]]:
-    """表示名 → ソースIDリスト（ACCOUNT_GROUPS + 未登録ソースのフォールバック）を返す。"""
-    return {name: ids for name, ids in ACCOUNT_GROUPS.items()}
 
 
 def _summary(db_path: str, currency: str) -> dict:
@@ -98,6 +124,8 @@ def _sources(db_path: str, currency: str) -> dict:
     if currency not in SUPPORTED_CURRENCIES:
         currency = "USD"
 
+    groups = _load_groups(db_path)
+
     ledger = Ledger(db_path)
     try:
         per_source = ledger.balances_by_source()
@@ -109,13 +137,12 @@ def _sources(db_path: str, currency: str) -> dict:
     warnings: list[str] = []
     prices = fetch_prices(sorted(all_assets), currency, warn=warnings.append)
 
-    # グループ名 → 合算残高・取引数を集計
     group_bals: dict[str, dict[str, Decimal]] = {}
     group_tx: dict[str, int] = {}
     group_ids: dict[str, list[str]] = {}
 
     for src in sorted(per_source):
-        name = _display_name(src)
+        name = _display_name(src, groups)
         if name not in group_bals:
             group_bals[name] = {}
             group_tx[name] = 0
@@ -158,22 +185,22 @@ def _account_assets(account: str, db_path: str, currency: str) -> dict:
     if currency not in SUPPORTED_CURRENCIES:
         currency = "USD"
 
+    groups = _load_groups(db_path)
+
     ledger = Ledger(db_path)
     try:
         per_source = ledger.balances_by_source()
     finally:
         ledger.close()
 
-    # 口座名に対応するソースIDを収集
     target_ids: set[str] = set()
     for src in per_source:
-        if _display_name(src) == account:
+        if _display_name(src, groups) == account:
             target_ids.add(src)
 
     if not target_ids:
         return {"currency": currency, "account": account, "assets": [], "total_value": "0"}
 
-    # 合算残高
     merged: dict[str, Decimal] = {}
     for src in target_ids:
         for asset, bal in per_source[src].items():
@@ -218,6 +245,8 @@ def _asset_accounts(asset: str, db_path: str, currency: str) -> dict:
     if currency not in SUPPORTED_CURRENCIES:
         currency = "USD"
 
+    groups = _load_groups(db_path)
+
     ledger = Ledger(db_path)
     try:
         per_source = ledger.balances_by_source()
@@ -228,13 +257,12 @@ def _asset_accounts(asset: str, db_path: str, currency: str) -> dict:
     prices = fetch_prices([asset], currency, warn=warnings.append)
     price = prices.get(asset.upper())
 
-    # グループ名 → 合算残高
     group_bals: dict[str, Decimal] = {}
     for src, bals in per_source.items():
         bal = bals.get(asset, Decimal("0"))
         if abs(bal) < _DUST:
             continue
-        name = _display_name(src)
+        name = _display_name(src, groups)
         group_bals[name] = group_bals.get(name, Decimal("0")) + bal
 
     accounts = []
@@ -281,7 +309,8 @@ def _transactions(
     page: int,
 ) -> dict:
     """取引履歴ページを返す。account は表示名（グループ名）で受け取る。"""
-    # 表示名 → ソースIDリストに変換
+    groups = _load_groups(db_path)
+
     source_ids: list[str] | None = None
     if account:
         ledger_tmp = Ledger(db_path)
@@ -289,8 +318,8 @@ def _transactions(
             all_source_ids = [src for src, *_ in ledger_tmp.sources()]
         finally:
             ledger_tmp.close()
-        mapped = [s for s in all_source_ids if _display_name(s) == account]
-        source_ids = mapped if mapped else [account]  # フォールバック
+        mapped = [s for s in all_source_ids if _display_name(s, groups) == account]
+        source_ids = mapped if mapped else [account]
 
     offset = (max(page, 1) - 1) * _TX_PAGE_SIZE
     ledger = Ledger(db_path)
@@ -309,7 +338,7 @@ def _transactions(
         rows.append({
             "id": tx.id,
             "timestamp": tx.timestamp.isoformat(),
-            "account": _display_name(tx.source),
+            "account": _display_name(tx.source, groups),
             "source_id": tx.source,
             "type": tx.type.value,
             "type_ja": _TX_TYPE_JA.get(tx.type.value, tx.type.value),
@@ -332,6 +361,27 @@ def _transactions(
         "page_size": _TX_PAGE_SIZE,
         "filter_account": account,
         "filter_asset": asset,
+    }
+
+
+def _get_account_groups(db_path: str) -> dict:
+    """UI設定用: 現在のグループ設定とDBの全ソースIDを返す。"""
+    groups = _load_groups(db_path)
+
+    ledger = Ledger(db_path)
+    try:
+        all_sources = [src for src, *_ in ledger.sources()]
+    finally:
+        ledger.close()
+
+    # どのグループにも属していないソースID
+    assigned = {sid for ids in groups.values() for sid in ids}
+    unassigned = [s for s in all_sources if s not in assigned]
+
+    return {
+        "groups": groups,
+        "all_source_ids": all_sources,
+        "unassigned_source_ids": unassigned,
     }
 
 
@@ -362,6 +412,22 @@ def create_app(db_path: str = "ledger.db") -> FastAPI:
         page: int = Query(1),
     ) -> dict:
         return _transactions(db_path, account, asset, page)
+
+    @app.get("/api/account-groups")
+    def get_account_groups() -> dict:
+        return _get_account_groups(db_path)
+
+    @app.put("/api/account-groups")
+    def put_account_groups(body: dict[str, Any]) -> dict:
+        groups = body.get("groups")
+        if not isinstance(groups, dict):
+            raise HTTPException(status_code=422, detail="groups must be an object")
+        # バリデーション: 各値はリストであること
+        for name, ids in groups.items():
+            if not isinstance(name, str) or not isinstance(ids, list):
+                raise HTTPException(status_code=422, detail="invalid groups format")
+        _save_groups(db_path, groups)
+        return {"ok": True, "groups": groups}
 
     @app.get("/api/meta")
     def meta() -> dict:

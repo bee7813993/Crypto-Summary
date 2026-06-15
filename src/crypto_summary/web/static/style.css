@@ -339,6 +339,105 @@ tbody tr:hover { background: var(--bg-elev); }
 }
 .tx-link-btn:hover { border-color: var(--accent); color: var(--accent); }
 
+/* ---- 口座設定パネル ---- */
+.settings-panel {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 20px 24px;
+  margin-bottom: 20px;
+}
+.settings-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: .4px;
+  margin-bottom: 16px;
+}
+.settings-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 16px;
+}
+.settings-label {
+  font-size: 13px;
+  color: var(--text-dim);
+}
+.settings-input {
+  background: var(--bg-elev);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 14px;
+  max-width: 320px;
+}
+.settings-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.settings-hint {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.source-ids-wrap {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-height: 28px;
+}
+.source-id-chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 12px;
+  font-family: monospace;
+  color: var(--text);
+  cursor: pointer;
+  user-select: none;
+}
+.source-id-chip input[type="checkbox"] {
+  accent-color: var(--accent);
+  width: 14px;
+  height: 14px;
+  cursor: pointer;
+}
+.source-id-chip.unassigned {
+  border-color: #2a3340;
+  color: var(--text-dim);
+}
+.settings-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 4px;
+}
+.settings-save-btn {
+  background: var(--accent);
+  border: none;
+  color: #fff;
+  font-size: 14px;
+  font-weight: 600;
+  padding: 8px 20px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.settings-save-btn:hover { background: #4a94ff; border: none; }
+.settings-result {
+  margin-top: 10px;
+  font-size: 13px;
+  padding: 6px 12px;
+  border-radius: 6px;
+}
+.settings-result.ok { background: #1a3a28; color: #3fb950; }
+.settings-result.err { background: #3a1a1a; color: #f85149; }
+
 /* ---- Mobile: サイドバーを上部に折りたたむ ---- */
 @media (max-width: 640px) {
   body { overflow: auto; }

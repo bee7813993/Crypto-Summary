@@ -145,7 +145,33 @@
             <button id="account-back" class="back-btn">← 口座一覧</button>
             <h1 class="page-title" id="account-detail-name"></h1>
             <button id="account-tx-link" class="action-btn">≡ この口座の取引履歴</button>
+            <button id="account-settings-btn" class="action-btn">⚙ 設定</button>
           </div>
+
+          <!-- 口座設定パネル（トグル表示） -->
+          <div id="account-settings-panel" class="settings-panel hidden">
+            <h3 class="settings-title">口座設定</h3>
+            <div class="settings-row">
+              <label class="settings-label">表示名</label>
+              <input id="settings-display-name" class="settings-input" type="text" />
+            </div>
+            <div class="settings-row">
+              <label class="settings-label">ソースID</label>
+              <div id="settings-source-ids" class="source-ids-wrap"></div>
+              <p class="settings-hint">チェックを外すと「未割り当て」になります</p>
+            </div>
+            <div class="settings-row">
+              <label class="settings-label">未割り当てのソースID</label>
+              <div id="settings-unassigned-ids" class="source-ids-wrap"></div>
+              <p class="settings-hint">チェックするとこの口座に追加します</p>
+            </div>
+            <div class="settings-actions">
+              <button id="settings-save" class="settings-save-btn">保存</button>
+              <button id="settings-cancel" class="link-btn">キャンセル</button>
+            </div>
+            <div id="settings-result" class="settings-result hidden"></div>
+          </div>
+
           <section class="card">
             <p class="card-hint">クリックでこの口座内の資産の取引履歴</p>
             <div class="table-wrap">
