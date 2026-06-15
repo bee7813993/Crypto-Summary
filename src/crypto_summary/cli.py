@@ -14,6 +14,59 @@ from .core.ledger import Ledger
 from .core.models import CanonicalTx, TxType
 from .sources.csv_import import EXCHANGE_SOURCES
 
+_COINGECKO_IDS: dict[str, str] = {
+    "BTC": "bitcoin", "ETH": "ethereum", "SOL": "solana",
+    "MATIC": "matic-network", "POL": "matic-network",
+    "USDC": "usd-coin", "USDT": "tether", "BNB": "binancecoin",
+    "ARB": "arbitrum", "OP": "optimism", "AVAX": "avalanche-2",
+    "XRP": "ripple", "ADA": "cardano", "DOT": "polkadot",
+    "LINK": "chainlink", "UNI": "uniswap", "AAVE": "aave",
+    "JPY": "japanese-yen-stablecoin",
+}
+
+
+def _fetch_prices(assets: list[str], currency: str) -> dict[str, Decimal]:
+    """Fetch current prices from CoinGecko for the given assets in the given currency.
+
+    Returns a dict mapping asset symbol to price as Decimal.
+    Assets not in the CoinGecko ID map or with fetch errors will be missing from the result.
+    """
+    import httpx
+
+    # Build mapping: coingecko_id -> asset symbol
+    id_to_asset: dict[str, str] = {}
+    for asset in assets:
+        cg_id = _COINGECKO_IDS.get(asset.upper())
+        if cg_id and cg_id not in id_to_asset:
+            id_to_asset[cg_id] = asset.upper()
+
+    if not id_to_asset:
+        return {}
+
+    ids_str = ",".join(id_to_asset.keys())
+    currency_lower = currency.lower()
+    url = (
+        f"https://api.coingecko.com/api/v3/simple/price"
+        f"?ids={ids_str}&vs_currencies={currency_lower}"
+    )
+
+    try:
+        response = httpx.get(url, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+    except Exception as e:
+        console.print(f"[yellow]警告: CoinGecko価格の取得に失敗しました: {e}[/yellow]")
+        return {}
+
+    result: dict[str, Decimal] = {}
+    for cg_id, asset in id_to_asset.items():
+        entry = data.get(cg_id, {})
+        price = entry.get(currency_lower)
+        if price is not None:
+            result[asset] = Decimal(str(price))
+
+    return result
+
 # .env をカレントディレクトリ起点で検索してロード
 try:
     from dotenv import load_dotenv, find_dotenv
@@ -604,16 +657,49 @@ def _filter_dust(bals: dict[str, Decimal], hide_dust: bool) -> dict[str, Decimal
             if not hide_dust or abs(v) >= _DUST_THRESHOLD}
 
 
-def _print_balance_table(filtered: dict[str, Decimal], *, title: str,
-                         total_before_filter: int, hide_dust: bool) -> None:
+def _print_balance_table(
+    filtered: dict[str, Decimal],
+    *,
+    title: str,
+    total_before_filter: int,
+    hide_dust: bool,
+    prices: dict[str, Decimal] | None = None,
+    currency: str | None = None,
+) -> None:
     table = Table(title=title, box=box.ROUNDED)
     table.add_column("資産", style="cyan", min_width=8)
     table.add_column("残高", justify="right", min_width=24)
+    if prices is not None and currency:
+        table.add_column("評価額", justify="right", min_width=20)
+
+    total_fiat = Decimal(0)
+    has_any_price = False
 
     for asset in sorted(filtered):
         v = filtered[asset]
         style = "red" if v < 0 else "green" if v > 0 else "dim"
-        table.add_row(asset, f"[{style}]{v:.8f}[/{style}]")
+        balance_str = f"[{style}]{v:.8f}[/{style}]"
+
+        if prices is not None and currency:
+            price = prices.get(asset)
+            if price is not None:
+                fiat_val = v * price
+                total_fiat += fiat_val
+                has_any_price = True
+                fiat_str = f"{fiat_val:,.2f} {currency}"
+            else:
+                fiat_str = "-"
+            table.add_row(asset, balance_str, fiat_str)
+        else:
+            table.add_row(asset, balance_str)
+
+    if prices is not None and currency and has_any_price:
+        table.add_section()
+        table.add_row(
+            "[bold]合計[/bold]",
+            "",
+            f"[bold]{total_fiat:,.2f} {currency}[/bold]",
+        )
 
     console.print(table)
     if hide_dust:
@@ -631,13 +717,18 @@ def _print_balance_table(filtered: dict[str, Decimal], *, title: str,
 @click.option("--until", default=None, metavar="YYYY-MM-DD", help="集計終了日（UTC）")
 @click.option("--hide-dust", is_flag=True, default=True, show_default=True,
               help="残高が±0.00000001未満の資産を非表示")
+@click.option("--currency", default=None,
+              type=click.Choice(["USD", "JPY", "EUR", "GBP"]),
+              help="法定通貨建ての評価額を表示（CoinGecko APIを使用）")
 @click.pass_context
 def balance(ctx: click.Context, sources: tuple[str, ...], by_source: bool,
-            since: str | None, until: str | None, hide_dust: bool) -> None:
+            since: str | None, until: str | None, hide_dust: bool,
+            currency: str | None) -> None:
     """資産ごとの純残高（受取 − 送出 − 手数料）を表示する。
 
     --source は複数指定できる (例: --source nexo_spot --source nexo_dnw)。
     --by-source を付けると口座ごとに内訳を表示する。
+    --currency を指定すると CoinGecko から現在価格を取得して評価額を表示する。
     """
     since_dt = _parse_date(since)
     until_dt = _parse_date(until, end_of_day=True)
@@ -658,11 +749,17 @@ def balance(ctx: click.Context, sources: tuple[str, ...], by_source: bool,
             return
 
         for src in sorted(per_source):
+            filtered = _filter_dust(per_source[src], hide_dust)
+            prices: dict[str, Decimal] | None = None
+            if currency:
+                prices = _fetch_prices(list(filtered.keys()), currency)
             _print_balance_table(
-                _filter_dust(per_source[src], hide_dust),
+                filtered,
                 title=f"残高サマリー ({src}){range_suffix}",
                 total_before_filter=len(per_source[src]),
                 hide_dust=hide_dust,
+                prices=prices,
+                currency=currency,
             )
         return
 
@@ -678,11 +775,18 @@ def balance(ctx: click.Context, sources: tuple[str, ...], by_source: bool,
     if label: title += f" ({label})"
     title += range_suffix
 
+    filtered = _filter_dust(bals, hide_dust)
+    prices = None
+    if currency:
+        prices = _fetch_prices(list(filtered.keys()), currency)
+
     _print_balance_table(
-        _filter_dust(bals, hide_dust),
+        filtered,
         title=title,
         total_before_filter=len(bals),
         hide_dust=hide_dust,
+        prices=prices,
+        currency=currency,
     )
 
 
@@ -690,17 +794,106 @@ def balance(ctx: click.Context, sources: tuple[str, ...], by_source: bool,
 # show
 # ---------------------------------------------------------------------------
 
+def _compute_running_balances(
+    all_txs: list[CanonicalTx],
+) -> dict[str, dict[str, Decimal]]:
+    """Walk all_txs in timestamp order and return per-tx running balances.
+
+    Returns: {tx_id: {asset: balance_after_tx}}
+    """
+    balances: dict[str, Decimal] = {}
+    result: dict[str, dict[str, Decimal]] = {}
+
+    for tx in all_txs:
+        if tx.received_asset and tx.received_amount is not None:
+            balances[tx.received_asset] = (
+                balances.get(tx.received_asset, Decimal(0)) + tx.received_amount
+            )
+        if tx.sent_asset and tx.sent_amount is not None:
+            balances[tx.sent_asset] = (
+                balances.get(tx.sent_asset, Decimal(0)) - tx.sent_amount
+            )
+        if tx.fee_asset and tx.fee_amount is not None:
+            balances[tx.fee_asset] = (
+                balances.get(tx.fee_asset, Decimal(0)) - tx.fee_amount
+            )
+        result[tx.id] = dict(balances)
+
+    return result
+
+
+def _running_balance_str(tx: CanonicalTx, balances_at: dict[str, dict[str, Decimal]]) -> str:
+    """Format the running balance string for a given tx."""
+    bal = balances_at.get(tx.id, {})
+    tx_type = tx.type.value.lower()
+
+    if tx_type == "trade":
+        parts = []
+        if tx.sent_asset and tx.sent_asset in bal:
+            sv = bal[tx.sent_asset]
+            parts.append(f"{tx.sent_asset}: {sv:.6f}")
+        if tx.received_asset and tx.received_asset in bal:
+            rv = bal[tx.received_asset]
+            parts.append(f"{tx.received_asset}: {rv:.6f}")
+        return " / ".join(parts) if parts else "-"
+
+    if tx_type == "fee":
+        if tx.fee_asset and tx.fee_asset in bal:
+            return f"{tx.fee_asset}: {bal[tx.fee_asset]:.6f}"
+        return "-"
+
+    if tx_type in ("deposit", "reward"):
+        if tx.received_asset and tx.received_asset in bal:
+            return f"{tx.received_asset}: {bal[tx.received_asset]:.6f}"
+        return "-"
+
+    if tx_type in ("withdraw", "transfer"):
+        if tx.sent_asset and tx.sent_asset in bal:
+            return f"{tx.sent_asset}: {bal[tx.sent_asset]:.6f}"
+        return "-"
+
+    # Fallback: prefer non-fee asset
+    for asset in (tx.received_asset, tx.sent_asset, tx.fee_asset):
+        if asset and asset in bal:
+            return f"{asset}: {bal[asset]:.6f}"
+    return "-"
+
+
 @cli.command()
 @click.option("--source", default=None, help="Filter by source")
 @click.option("--type", "tx_type", default=None,
               type=click.Choice(["trade", "deposit", "withdraw", "fee", "reward", "transfer"]),
               help="Filter by transaction type")
+@click.option("--since", default=None, metavar="YYYY-MM-DD", help="Filter from date (UTC)")
+@click.option("--until", default=None, metavar="YYYY-MM-DD", help="Filter until date (UTC)")
 @click.option("--limit", default=30, show_default=True, help="Max rows to display")
+@click.option("--running-balance", "running_balance", is_flag=True, default=False,
+              help="Show per-asset running balance after each transaction")
 @click.pass_context
-def show(ctx: click.Context, source: str | None, tx_type: str | None, limit: int) -> None:
+def show(ctx: click.Context, source: str | None, tx_type: str | None,
+         since: str | None, until: str | None, limit: int,
+         running_balance: bool) -> None:
     """Display normalized transactions from the ledger."""
+    since_dt = _parse_date(since)
+    until_dt = _parse_date(until, end_of_day=True)
+
     ledger = Ledger(ctx.obj["db"])
-    txs = ledger.all(source=source, tx_type=tx_type, limit=limit)
+
+    balances_at: dict[str, dict[str, Decimal]] = {}
+    if running_balance:
+        # Fetch ALL matching txs (no limit) to compute running balances
+        all_txs = ledger.all(
+            source=source, tx_type=tx_type,
+            since=since_dt, until=until_dt,
+            limit=None,
+        )
+        balances_at = _compute_running_balances(all_txs)
+
+    txs = ledger.all(
+        source=source, tx_type=tx_type,
+        since=since_dt, until=until_dt,
+        limit=limit,
+    )
     ledger.close()
 
     if not txs:
@@ -712,6 +905,10 @@ def show(ctx: click.Context, source: str | None, tx_type: str | None, limit: int
         title += f", source={source}"
     if tx_type:
         title += f", type={tx_type}"
+    if since_dt:
+        title += f", from={since_dt.date()}"
+    if until_dt:
+        title += f", until={until_dt.date()}"
     title += ")"
 
     table = Table(title=title, box=box.ROUNDED)
@@ -722,6 +919,8 @@ def show(ctx: click.Context, source: str | None, tx_type: str | None, limit: int
     table.add_column("Received", style="green",  min_width=20)
     table.add_column("Sent",     style="red",    min_width=20)
     table.add_column("Fee",      style="yellow", min_width=16)
+    if running_balance:
+        table.add_column("残高", style="blue", min_width=28)
 
     for tx in txs:
         recv = (
@@ -739,7 +938,7 @@ def show(ctx: click.Context, source: str | None, tx_type: str | None, limit: int
             if tx.fee_amount is not None and tx.fee_asset
             else "-"
         )
-        table.add_row(
+        row = [
             tx.id,
             tx.timestamp.strftime("%Y-%m-%d %H:%M"),
             tx.type.value.upper(),
@@ -747,7 +946,10 @@ def show(ctx: click.Context, source: str | None, tx_type: str | None, limit: int
             recv,
             sent,
             fee,
-        )
+        ]
+        if running_balance:
+            row.append(_running_balance_str(tx, balances_at))
+        table.add_row(*row)
 
     console.print(table)
     console.print("[dim]  削除: crypto-summary remove --id <ID>[/dim]")
