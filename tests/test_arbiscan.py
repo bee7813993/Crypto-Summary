@@ -305,3 +305,47 @@ def test_token_to_eth_swap(tmp_path):
     assert tx.sent_asset == "WETH"
     assert tx.received_asset == "ETH"
     assert tx.received_amount == Decimal("0.71")
+
+
+# ── 15. フィッシング系トークン名はスキップ ───────────────────────────
+
+def test_phishing_token_skipped(tmp_path):
+    """API が返すフィッシング系トークン名はスパム扱いでスキップされる。"""
+    h = _hash(15)
+    n = _normal(tmp_path,
+        f'"{h}","1","1","2025-09-28 12:00:00","{OTHER}","{WALLET}","","0","0","0","0","0","4000","","","Transfer"')
+    e = _erc20(tmp_path,
+        f'"{h}","1","1","2025-09-28 12:00:00","{OTHER}","{WALLET}","5000","N/A","0xspam","ARB | T.ME/S/CLAIMARB | GET REWARD","SPAM"')
+    txs = _src().load_multi(n, e)
+    assert txs == []
+
+
+def test_phishing_token_url_pattern(tmp_path):
+    """URL パターンを含むトークン名もスパム扱い。"""
+    h = _hash(16)
+    n = _normal(tmp_path,
+        f'"{h}","1","1","2025-09-28 12:00:00","{OTHER}","{WALLET}","","0","0","0","0","0","4000","","","Transfer"')
+    e = _erc20(tmp_path,
+        f'"{h}","1","1","2025-09-28 12:00:00","{OTHER}","{WALLET}","10000","N/A","0xspam2","Visit https://scam.io/claim to get free airdrop","SCAM"')
+    txs = _src().load_multi(n, e)
+    assert txs == []
+
+
+# ── 16. ETH シンボルの ERC20 トークンは ETH 残高を汚染しない ─────────
+
+def test_erc20_named_eth_does_not_pollute_eth_balance(tmp_path):
+    """ERC20 トークンのシンボルが 'ETH' でも native ETH とは別扱いにする。"""
+    h = _hash(17)
+    # 通常 TX では ETH 移動なし（コントラクト呼び出しのみ）
+    n = _normal(tmp_path,
+        f'"{h}","1","1","2025-09-29 11:57:00","{WALLET}","{OTHER}","","0","0","0","0.001","1","4000","","","bridge"')
+    # ERC20: bridge token with symbol "ETH" sent from wallet
+    e = _erc20(tmp_path,
+        f'"{h}","1","1","2025-09-29 11:57:00","{WALLET}","{OTHER}","0.75066","N/A","0xbridgeaddr","Bridged ETH","ETH"')
+    txs = _src().load_multi(n, e)
+    assert len(txs) == 1
+    tx = txs[0]
+    # Should be classified as a token WITHDRAW, NOT as ETH WITHDRAW
+    assert tx.type == TxType.WITHDRAW
+    assert tx.sent_asset != "ETH"
+    assert tx.sent_asset == "ETH_ERC20"

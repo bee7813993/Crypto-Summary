@@ -29,9 +29,20 @@ from ...core.models import CanonicalTx, TxType
 _ZERO = Decimal("0")
 _DUST = Decimal("0.000001")
 _DATE_FMT = "%Y-%m-%d %H:%M:%S"
+_ZERO_ADDR = "0x0000000000000000000000000000000000000000"
 
-# Arbiscan がマスクする未検証トークン名
+# Arbiscan がマスクする未検証トークン名（CSV パス）
 _SPAM_RE = re.compile(r"ERC-?\d+\s+TOKEN\*|ERC\d*\s+\*+", re.IGNORECASE)
+# API パスで返ってくるフィッシング系トークン名パターン
+_PHISHING_RE = re.compile(
+    r"t\.me/|https?://|\.(com|io|net|org|xyz|top)/|"
+    r"get\s+reward|claim\s+at|visit\s+|free\s*airdrop|"
+    r"\|\s*https?://|\|\s*t\.me",
+    re.IGNORECASE,
+)
+
+# ネイティブ通貨シンボルと同名の ERC20 トークンは残高を汚染しないよう改名する
+_NATIVE_SYMBOLS = frozenset({"ETH", "BNB", "MATIC", "POL"})
 
 
 def _d(v: str) -> Decimal:
@@ -49,7 +60,17 @@ def _parse_ts(s: str) -> datetime:
 
 
 def _is_spam(token_name: str) -> bool:
-    return bool(_SPAM_RE.search(token_name))
+    return bool(_SPAM_RE.search(token_name) or _PHISHING_RE.search(token_name))
+
+
+def _erc20_sym(r: dict) -> str:
+    """トークンシンボルを返す。ネイティブ通貨と同名の ERC20 は '_ERC20' を付加する。"""
+    sym = (r.get("TokenSymbol") or "").upper()
+    if sym in _NATIVE_SYMBOLS:
+        contract = (r.get("ContractAddress") or "").lower()
+        if contract and contract != _ZERO_ADDR:
+            sym = sym + "_ERC20"
+    return sym
 
 
 def _read_csv(path: Path) -> list[dict[str, str]]:
@@ -63,7 +84,7 @@ class ArbiscanCsvSource:
     import コマンドではなく import-wallet コマンドから呼び出す。
     """
 
-    ZERO_ADDR = "0x0000000000000000000000000000000000000000"
+    ZERO_ADDR = _ZERO_ADDR
 
     def __init__(self, source_id: str, wallet_address: str) -> None:
         self.source_id = source_id
@@ -151,13 +172,13 @@ class ArbiscanCsvSource:
 
         # トークンフロー（スパム・ダスト除去）
         t_recv = [
-            (r["TokenSymbol"].upper(), _d(r["TokenValue"].replace(",", "")))
+            (_erc20_sym(r), _d(r["TokenValue"].replace(",", "")))
             for r in erc
             if r["To"].lower() == self.wallet
             and not _is_spam(r.get("TokenName", ""))
         ]
         t_sent = [
-            (r["TokenSymbol"].upper(), _d(r["TokenValue"].replace(",", "")))
+            (_erc20_sym(r), _d(r["TokenValue"].replace(",", "")))
             for r in erc
             if r["From"].lower() == self.wallet
             and not _is_spam(r.get("TokenName", ""))
