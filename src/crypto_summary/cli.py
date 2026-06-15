@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -11,6 +12,13 @@ from rich.table import Table
 
 from .core.ledger import Ledger
 from .sources.csv_import import EXCHANGE_SOURCES
+
+# .env があれば自動ロード（なくてもエラーにしない）
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 
 console = Console()
 DEFAULT_DB = "ledger.db"
@@ -363,3 +371,90 @@ def export_cmd(
             console.print(f"  Date filter: [dim]{' '.join(range_parts)}[/dim]")
         if filter_source:
             console.print(f"  Source filter: [dim]{filter_source}[/dim]")
+
+
+# ---------------------------------------------------------------------------
+# fetch (API)
+# ---------------------------------------------------------------------------
+
+_API_EXCHANGES = ["bitflyer"]
+
+
+@cli.command("fetch")
+@click.option(
+    "--exchange", required=True,
+    type=click.Choice(_API_EXCHANGES),
+    help="API連携する取引所",
+)
+@click.option("--source-id", default=None, help="カスタムソースID（デフォルト: exchange名）")
+@click.option(
+    "--api-key", default=None, envvar="BITFLYER_API_KEY",
+    help="APIキー（環境変数 BITFLYER_API_KEY でも可）",
+)
+@click.option(
+    "--api-secret", default=None, envvar="BITFLYER_API_SECRET",
+    help="APIシークレット（環境変数 BITFLYER_API_SECRET でも可）",
+)
+@click.pass_context
+def fetch_cmd(
+    ctx: click.Context,
+    exchange: str,
+    source_id: str | None,
+    api_key: str | None,
+    api_secret: str | None,
+) -> None:
+    """取引所 API から最新データを取得してledgerに保存する。
+
+    APIキーは読み取り専用権限のみ付与してください（出金権限は不要）。
+    .env ファイルに BITFLYER_API_KEY / BITFLYER_API_SECRET を書くか、
+    OS 環境変数として設定してください。リポジトリには絶対に含めないこと。
+    """
+    sid = source_id or exchange
+
+    if not api_key or not api_secret:
+        console.print(
+            "[red]エラー:[/red] APIキーとシークレットが必要です。\n"
+            "  .env に BITFLYER_API_KEY / BITFLYER_API_SECRET を設定するか、\n"
+            "  --api-key / --api-secret オプションで指定してください。"
+        )
+        raise click.Abort()
+
+    if exchange == "bitflyer":
+        _fetch_bitflyer(ctx, sid, api_key, api_secret)
+
+
+def _fetch_bitflyer(
+    ctx: click.Context, source_id: str, api_key: str, api_secret: str
+) -> None:
+    from .sources.api.bitflyer import BitflyerApiSource
+
+    ledger = Ledger(ctx.obj["db"])
+    before = ledger.count(source_id)
+    console.print(f"Fetching [cyan]bitFlyer[/cyan] as [bold]{source_id}[/bold] ...")
+
+    try:
+        src = BitflyerApiSource(source_id, api_key, api_secret)
+        txs = src.fetch_all()
+    except Exception as e:
+        ledger.close()
+        console.print(f"[red]API エラー:[/red] {e}")
+        raise click.Abort()
+
+    if not txs:
+        console.print("[yellow]新しいトランザクションがありません。[/yellow]")
+        ledger.close()
+        return
+
+    ledger.upsert_many(txs)
+    latest_ts = max(t.timestamp for t in txs)
+    ledger.set_cursor(source_id, latest_ts)
+    after = ledger.count(source_id)
+    ledger.close()
+
+    new = after - before
+    console.print(
+        f"[green]✓[/green] {len(txs)} 件取得  |  "
+        f"[green]+{new} new[/green]  |  "
+        f"{len(txs) - new} already existed (skipped)  |  "
+        f"latest: {latest_ts.strftime('%Y-%m-%d %H:%M')} UTC"
+    )
