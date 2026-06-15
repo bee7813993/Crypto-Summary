@@ -63,13 +63,10 @@ class NexoSpotCsvSource(CsvSourceAdapter):
         return txs
 
     def _parse_row(self, row: dict[str, str], idx: int) -> CanonicalTx | None:
-        status = row.get("status", "").strip()
-        if status == "cancelled":
-            return None
-
         filled = _d(row.get("filledAmount", ""))
         if not filled or filled == 0:
-            return None
+            return None  # 未約定（キャンセル含む）はスキップ
+        # 一部約定後キャンセルも filledAmount > 0 なら実取引として記録
 
         exec_price = _d(row.get("executedPrice", ""))
         if exec_price is None:
