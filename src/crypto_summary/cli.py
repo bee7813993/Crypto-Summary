@@ -196,14 +196,21 @@ def import_wallet_cmd(
 @cli.command("fetch-wallet")
 @click.option(
     "--chain", required=True,
-    type=click.Choice(["ethereum", "arbitrum", "polygon", "base", "optimism"]),
-    help="取得するEVMチェーン",
+    type=click.Choice([
+        "ethereum", "arbitrum", "polygon", "base", "optimism", "solana",
+    ]),
+    help="取得するチェーン（EVM 5種 + solana）",
 )
-@click.option("--wallet", "wallet_address", required=True, help="ウォレットアドレス (0x...)")
+@click.option("--wallet", "wallet_address", required=True,
+              help="ウォレットアドレス（EVM: 0x... / Solana: base58）")
 @click.option("--source-id", default=None, help="ソース識別子（デフォルト: chain名）")
 @click.option(
     "--api-key", default=None, envvar="ETHERSCAN_API_KEY",
-    help="Etherscan V2 APIキー（環境変数 ETHERSCAN_API_KEY でも可）",
+    help="Etherscan V2 APIキー（EVM用、環境変数 ETHERSCAN_API_KEY でも可）",
+)
+@click.option(
+    "--solscan-api-key", default=None, envvar="SOLSCAN_API_KEY",
+    help="Solscan Pro APIキー（Solana用、環境変数 SOLSCAN_API_KEY でも可）",
 )
 @click.option("--gas/--no-gas", "record_gas", default=True, show_default=True,
               help="ガス代を FEE として記録する（実残高と一致させるため既定で有効）")
@@ -214,37 +221,55 @@ def fetch_wallet_cmd(
     wallet_address: str,
     source_id: str | None,
     api_key: str | None,
+    solscan_api_key: str | None,
     record_gas: bool,
 ) -> None:
-    """Etherscan V2 API で EVM ウォレットの取引履歴を取得して ledger に保存する。
+    """取引履歴を API で取得して ledger に保存する。
 
-    CSV のダウンロード不要。APIキー1つで複数チェーンに対応する。
-    APIキーは読み取り専用（出金権限という概念は存在しない）。
-    https://etherscan.io/myapikey で無料発行し、.env の ETHERSCAN_API_KEY に設定。
+    EVM チェーン（Etherscan V2 API）と Solana（Solscan Pro API）に対応。
+    APIキーはいずれも読み取り専用で出金権限は不要。
 
     \b
-    例:
+    EVM 例:
       crypto-summary fetch-wallet --chain arbitrum \\
           --wallet 0xABC...123 --source-id my_arbitrum
-      crypto-summary fetch-wallet --chain polygon --wallet 0xABC...123
+    Solana 例:
+      crypto-summary fetch-wallet --chain solana \\
+          --wallet YOURWALLET... --source-id my_solana
     """
-    from .sources.api.etherscan import EtherscanApiSource, CHAIN_IDS
-
     sid = source_id or chain
 
-    if not api_key:
-        console.print(
-            "[red]エラー:[/red] APIキーが必要です。\n"
-            "  .env に ETHERSCAN_API_KEY を設定するか、--api-key で指定してください。\n"
-            "  発行: https://etherscan.io/myapikey"
-        )
-        raise click.Abort()
+    if chain == "solana":
+        from .sources.solana.solscan import SolscanApiSource
 
-    adapter = EtherscanApiSource(sid, wallet_address, api_key, CHAIN_IDS[chain])
+        key = solscan_api_key
+        if not key:
+            console.print(
+                "[red]エラー:[/red] Solana には Solscan Pro APIキーが必要です。\n"
+                "  .env に SOLSCAN_API_KEY を設定するか、--solscan-api-key で指定してください。\n"
+                "  発行: https://pro.solscan.io/api-pro"
+            )
+            raise click.Abort()
+
+        adapter = SolscanApiSource(sid, wallet_address, key)
+    else:
+        from .sources.api.etherscan import EtherscanApiSource, CHAIN_IDS
+
+        key = api_key
+        if not key:
+            console.print(
+                "[red]エラー:[/red] EVM には Etherscan V2 APIキーが必要です。\n"
+                "  .env に ETHERSCAN_API_KEY を設定するか、--api-key で指定してください。\n"
+                "  発行: https://etherscan.io/myapikey"
+            )
+            raise click.Abort()
+
+        adapter = EtherscanApiSource(sid, wallet_address, key, CHAIN_IDS[chain])
     console.print(
         f"Fetching [cyan]{chain}[/cyan] wallet "
         f"[dim]{wallet_address}[/dim] as [bold]{sid}[/bold] ..."
     )
+
 
     try:
         txs = adapter.fetch_all(record_gas=record_gas)
