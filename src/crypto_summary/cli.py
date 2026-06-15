@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import os
+import time
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -15,25 +17,76 @@ from .core.models import CanonicalTx, TxType
 from .sources.csv_import import EXCHANGE_SOURCES
 
 _COINGECKO_IDS: dict[str, str] = {
-    "BTC": "bitcoin", "ETH": "ethereum", "SOL": "solana",
+    "BTC": "bitcoin", "ETH": "ethereum", "WETH": "weth", "SOL": "solana",
     "MATIC": "matic-network", "POL": "matic-network",
-    "USDC": "usd-coin", "USDT": "tether", "BNB": "binancecoin",
+    "USDC": "usd-coin", "USDT": "tether", "DAI": "dai", "BNB": "binancecoin",
     "ARB": "arbitrum", "OP": "optimism", "AVAX": "avalanche-2",
     "XRP": "ripple", "ADA": "cardano", "DOT": "polkadot",
     "LINK": "chainlink", "UNI": "uniswap", "AAVE": "aave",
-    "JPY": "japanese-yen-stablecoin",
+    "NEXO": "nexo", "TRX": "tron", "LPT": "livepeer", "MONA": "monacoin",
 }
+
+# 法定通貨は CoinGecko の暗号資産IDではなく為替として扱う。
+# 同一通貨建てなら 1.0。CoinGecko simple/price は法定通貨同士の換算を
+# サポートしないため、ここでは対象通貨と一致する場合のみ 1.0 を返す。
+_FIAT_ASSETS = frozenset({"USD", "JPY", "EUR", "GBP"})
+
+_PRICE_CACHE_TTL = 300  # 秒。連続実行時の 429 を避けるためのキャッシュ有効期間。
+
+
+def _price_cache_path() -> Path:
+    return Path.home() / ".crypto_summary_prices.json"
+
+
+def _load_price_cache(currency: str) -> dict[str, Decimal] | None:
+    """TTL 内のキャッシュ価格を返す（なければ None）。"""
+    path = _price_cache_path()
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    entry = data.get(currency.upper())
+    if not entry:
+        return None
+    if time.time() - entry.get("ts", 0) > _PRICE_CACHE_TTL:
+        return None
+    return {k: Decimal(v) for k, v in entry.get("prices", {}).items()}
+
+
+def _save_price_cache(currency: str, prices: dict[str, Decimal]) -> None:
+    path = _price_cache_path()
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        data = {}
+    data[currency.upper()] = {
+        "ts": time.time(),
+        "prices": {k: str(v) for k, v in prices.items()},
+    }
+    try:
+        path.write_text(json.dumps(data))
+    except OSError:
+        pass
 
 
 def _fetch_prices(assets: list[str], currency: str) -> dict[str, Decimal]:
-    """Fetch current prices from CoinGecko for the given assets in the given currency.
+    """指定資産の現在価格を currency 建てで返す（CoinGecko）。
 
-    Returns a dict mapping asset symbol to price as Decimal.
-    Assets not in the CoinGecko ID map or with fetch errors will be missing from the result.
+    - 法定通貨資産は対象通貨と一致すれば 1.0 を返す。
+    - 連続実行による 429 を避けるため TTL 付きファイルキャッシュを使う。
+    - 429 が出た場合は指数バックオフで最大 3 回リトライする。
+    - CoinGecko ID 未登録 / 取得失敗の資産は結果から欠落する（表示は "-"）。
     """
     import httpx
 
-    # Build mapping: coingecko_id -> asset symbol
+    result: dict[str, Decimal] = {}
+
+    # 法定通貨は為替として処理（対象通貨と同じなら等価）
+    for asset in assets:
+        if asset.upper() in _FIAT_ASSETS and asset.upper() == currency.upper():
+            result[asset.upper()] = Decimal("1")
+
+    # CoinGecko ID にマップできる暗号資産だけ収集
     id_to_asset: dict[str, str] = {}
     for asset in assets:
         cg_id = _COINGECKO_IDS.get(asset.upper())
@@ -41,7 +94,16 @@ def _fetch_prices(assets: list[str], currency: str) -> dict[str, Decimal]:
             id_to_asset[cg_id] = asset.upper()
 
     if not id_to_asset:
-        return {}
+        return result
+
+    # キャッシュ確認（必要な資産がすべて揃っていれば API を呼ばない）
+    cached = _load_price_cache(currency)
+    if cached is not None:
+        needed = set(id_to_asset.values())
+        if needed.issubset(cached.keys()):
+            for a in needed:
+                result[a] = cached[a]
+            return result
 
     ids_str = ",".join(id_to_asset.keys())
     currency_lower = currency.lower()
@@ -50,20 +112,41 @@ def _fetch_prices(assets: list[str], currency: str) -> dict[str, Decimal]:
         f"?ids={ids_str}&vs_currencies={currency_lower}"
     )
 
-    try:
-        response = httpx.get(url, timeout=10)
-        response.raise_for_status()
-        data = response.json()
-    except Exception as e:
-        console.print(f"[yellow]警告: CoinGecko価格の取得に失敗しました: {e}[/yellow]")
-        return {}
+    data = None
+    for attempt in range(3):
+        try:
+            response = httpx.get(url, timeout=10)
+            if response.status_code == 429:
+                if attempt < 2:
+                    time.sleep(2 ** attempt)  # 1s, 2s
+                    continue
+                console.print(
+                    "[yellow]警告: CoinGecko のレート制限 (429) です。"
+                    "しばらく待って再実行してください。[/yellow]"
+                )
+                return result
+            response.raise_for_status()
+            data = response.json()
+            break
+        except Exception as e:
+            console.print(f"[yellow]警告: CoinGecko価格の取得に失敗しました: {e}[/yellow]")
+            return result
 
-    result: dict[str, Decimal] = {}
+    if data is None:
+        return result
+
+    fetched: dict[str, Decimal] = {}
     for cg_id, asset in id_to_asset.items():
-        entry = data.get(cg_id, {})
-        price = entry.get(currency_lower)
+        price = (data.get(cg_id) or {}).get(currency_lower)
         if price is not None:
-            result[asset] = Decimal(str(price))
+            fetched[asset] = Decimal(str(price))
+
+    if fetched:
+        # キャッシュは既存とマージして保存（他資産の価格を消さない）
+        merged = _load_price_cache(currency) or {}
+        merged.update(fetched)
+        _save_price_cache(currency, merged)
+        result.update(fetched)
 
     return result
 
@@ -748,11 +831,14 @@ def balance(ctx: click.Context, sources: tuple[str, ...], by_source: bool,
             console.print("[yellow]残高データがありません。[/yellow]")
             return
 
+        # 全ソースの資産をまとめて一度だけ価格取得する（429 回避）
+        prices: dict[str, Decimal] | None = None
+        if currency:
+            all_assets = {a for bals in per_source.values() for a in bals}
+            prices = _fetch_prices(sorted(all_assets), currency)
+
         for src in sorted(per_source):
             filtered = _filter_dust(per_source[src], hide_dust)
-            prices: dict[str, Decimal] | None = None
-            if currency:
-                prices = _fetch_prices(list(filtered.keys()), currency)
             _print_balance_table(
                 filtered,
                 title=f"残高サマリー ({src}){range_suffix}",
