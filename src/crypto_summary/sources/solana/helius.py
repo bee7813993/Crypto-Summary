@@ -31,7 +31,7 @@ import httpx
 
 from ...core.models import CanonicalTx, TxType
 
-_TX_BASE = "https://api.mainnet.helius-rpc.com/v0/addresses"
+_TX_BASE = "https://api-mainnet.helius-rpc.com/v0/addresses"
 _RPC_BASE = "https://mainnet.helius-rpc.com/"
 _LAMPORTS = Decimal(10) ** 9  # 1 SOL = 10^9 lamports
 _ZERO = Decimal("0")
