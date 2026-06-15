@@ -102,6 +102,12 @@ tbody tr:hover { background: var(--bg-elev); }
   background: #3a2d00; border: 1px solid #6b5400; color: #f0d77a;
   border-radius: 8px; padding: 10px 14px; margin-bottom: 16px; font-size: 13px;
 }
+.toggle-row { text-align: center; margin-top: 12px; }
+.link-btn {
+  background: none; border: none; color: var(--accent);
+  font-size: 13px; cursor: pointer; padding: 6px 10px;
+}
+.link-btn:hover { text-decoration: underline; border: none; }
 .unpriced { margin-top: 12px; font-size: 13px; color: var(--text-dim); }
 .footer { margin-top: 24px; color: var(--text-dim); font-size: 12px; text-align: center; }
 .footer .dot { margin: 0 8px; }

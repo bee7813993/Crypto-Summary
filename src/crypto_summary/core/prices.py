@@ -16,7 +16,7 @@ from typing import Callable
 
 COINGECKO_IDS: dict[str, str] = {
     "BTC": "bitcoin", "ETH": "ethereum", "WETH": "weth", "SOL": "solana",
-    "MATIC": "matic-network", "POL": "matic-network",
+    "MATIC": "polygon-ecosystem-token", "POL": "polygon-ecosystem-token",
     "USDC": "usd-coin", "USDT": "tether", "DAI": "dai", "BNB": "binancecoin",
     "ARB": "arbitrum", "OP": "optimism", "AVAX": "avalanche-2",
     "XRP": "ripple", "ADA": "cardano", "DOT": "polkadot",
@@ -68,6 +68,40 @@ def _save_cache(currency: str, prices: dict[str, Decimal]) -> None:
         pass
 
 
+def _fiat_rates(warn: WarnFn | None = None) -> dict[str, Decimal]:
+    """法定通貨の BTC 建てレート表を返す（CoinGecko /exchange_rates）。
+
+    返り値: {"USD": Decimal(...), "JPY": Decimal(...), ...}
+    1 BTC = value[通貨] なので、A→B 換算は value[B]/value[A]。
+    TTL 付きでキャッシュ（キー "_FX"）して 429 を避ける。
+    """
+    import httpx
+
+    cached = _load_cache("_FX")
+    if cached:
+        return cached
+
+    try:
+        resp = httpx.get(
+            "https://api.coingecko.com/api/v3/exchange_rates", timeout=10
+        )
+        resp.raise_for_status()
+        rates = resp.json().get("rates", {})
+    except Exception as e:  # noqa: BLE001
+        if warn:
+            warn(f"為替レートの取得に失敗しました: {e}")
+        return {}
+
+    out: dict[str, Decimal] = {}
+    for fiat in FIAT_ASSETS:
+        entry = rates.get(fiat.lower())
+        if entry and entry.get("value") is not None:
+            out[fiat] = Decimal(str(entry["value"]))
+    if out:
+        _save_cache("_FX", out)
+    return out
+
+
 def fetch_prices(
     assets: list[str],
     currency: str,
@@ -85,10 +119,21 @@ def fetch_prices(
 
     result: dict[str, Decimal] = {}
 
-    # 法定通貨は為替として処理（対象通貨と同じなら等価）
-    for asset in assets:
-        if asset.upper() in FIAT_ASSETS and asset.upper() == currency.upper():
-            result[asset.upper()] = Decimal("1")
+    # 法定通貨は為替として処理する。
+    # - 対象通貨と同じなら 1.0
+    # - 異なる法定通貨は /exchange_rates（BTC基準）からクロスレートを算出
+    fiat_assets = {a.upper() for a in assets if a.upper() in FIAT_ASSETS}
+    for fa in fiat_assets:
+        if fa == currency.upper():
+            result[fa] = Decimal("1")
+    cross_needed = {fa for fa in fiat_assets if fa != currency.upper()}
+    if cross_needed:
+        rates = _fiat_rates(_warn)
+        tgt = rates.get(currency.upper())
+        for fa in cross_needed:
+            src = rates.get(fa)
+            if tgt and src and src != 0:
+                result[fa] = tgt / src  # 1 fa = (BTC建てtgt / BTC建てsrc) 対象通貨
 
     # CoinGecko ID にマップできる暗号資産だけ収集
     id_to_asset: dict[str, str] = {}
