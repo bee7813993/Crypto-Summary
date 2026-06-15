@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 from datetime import datetime, timezone
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 import click
@@ -11,6 +11,7 @@ from rich.console import Console
 from rich.table import Table
 
 from .core.ledger import Ledger
+from .core.models import CanonicalTx, TxType
 from .sources.csv_import import EXCHANGE_SOURCES
 
 # .env をカレントディレクトリ起点で検索してロード
@@ -78,6 +79,94 @@ def import_cmd(ctx: click.Context, filepath: Path, exchange: str, source_id: str
         f"{len(txs) - new} already existed (skipped)  |  "
         f"latest: {latest_ts.strftime('%Y-%m-%d %H:%M')} UTC"
     )
+
+
+# ---------------------------------------------------------------------------
+# add (手動でトランザクションを1件追加)
+# ---------------------------------------------------------------------------
+
+@cli.command("add")
+@click.option("--source", required=True,
+              help="追加先のソース識別子（例: pbr_lending）")
+@click.option("--type", "tx_type", required=True,
+              type=click.Choice([t.value for t in TxType]),
+              help="取引種別")
+@click.option("--date", "date_str", required=True, metavar="YYYY-MM-DD[THH:MM:SS]",
+              help="日時（UTC）。時刻省略時は 00:00:00")
+@click.option("--received", nargs=2, type=str, default=None, metavar="ASSET AMOUNT",
+              help="受取（入金/報酬など）。例: --received BTC 0.1")
+@click.option("--sent", nargs=2, type=str, default=None, metavar="ASSET AMOUNT",
+              help="送出（出金など）。例: --sent XRP 50")
+@click.option("--fee", nargs=2, type=str, default=None, metavar="ASSET AMOUNT",
+              help="手数料。例: --fee JPY 100")
+@click.option("--note", default=None, help="メモ（label に格納）")
+@click.pass_context
+def add_cmd(ctx: click.Context, source: str, tx_type: str, date_str: str,
+            received: tuple[str, str] | None, sent: tuple[str, str] | None,
+            fee: tuple[str, str] | None, note: str | None) -> None:
+    """トランザクションを1件、手動で ledger に追加する。
+
+    CSV出力がない期間の入出金などを手で補うための簡易コマンド。
+    \b
+    例:
+      crypto-summary add --source pbr_lending --type deposit \\
+          --date 2026-01-13 --received USDC 3000
+      crypto-summary add --source pbr_lending --type withdraw \\
+          --date 2026-06-02 --sent XRP 50 --note "返還"
+    """
+    ts = _parse_date(date_str)
+    if ts is None:
+        raise click.BadParameter("--date は必須です。")
+
+    def _pair(p: tuple[str, str] | None) -> tuple[str | None, Decimal | None]:
+        if not p:
+            return None, None
+        asset, amount = p
+        try:
+            return asset.upper(), Decimal(amount)
+        except InvalidOperation as e:
+            raise click.BadParameter(f"金額が不正です: {amount!r}") from e
+
+    recv_asset, recv_amount = _pair(received)
+    sent_asset, sent_amount = _pair(sent)
+    fee_asset, fee_amount = _pair(fee)
+
+    if not any([recv_amount, sent_amount, fee_amount]):
+        raise click.BadParameter(
+            "--received / --sent / --fee のいずれか1つは指定してください。")
+
+    # 同一内容の重複追加を避けるため、入力値からIDを生成する
+    raw_key = (f"manual|{date_str}|{tx_type}|"
+               f"{recv_asset}:{recv_amount}|{sent_asset}:{sent_amount}|"
+               f"{fee_asset}:{fee_amount}|{note or ''}")
+    tx = CanonicalTx(
+        id=CanonicalTx.make_id(source, raw_key),
+        source=source,
+        timestamp=ts,
+        type=TxType(tx_type),
+        received_asset=recv_asset, received_amount=recv_amount,
+        sent_asset=sent_asset, sent_amount=sent_amount,
+        fee_asset=fee_asset, fee_amount=fee_amount,
+        label=note,
+        raw={"manual": True},
+    )
+
+    ledger = Ledger(ctx.obj["db"])
+    before = ledger.count(source)
+    ledger.upsert(tx)
+    after = ledger.count(source)
+    cursor = ledger.get_cursor(source)
+    if cursor is None or ts > cursor:
+        ledger.set_cursor(source, ts)
+    ledger.close()
+
+    if after > before:
+        console.print(
+            f"[green]✓[/green] 追加しました（{source}）: "
+            f"{tx_type} {ts.strftime('%Y-%m-%d %H:%M')} UTC  id={tx.id}")
+    else:
+        console.print(
+            f"[yellow]同一内容が既に存在します（スキップ）: id={tx.id}[/yellow]")
 
 
 # ---------------------------------------------------------------------------

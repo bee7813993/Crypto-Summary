@@ -40,3 +40,4 @@ Thumbs.db
 .pytest_cache/
 .coverage
 htmlcov/
+pbr_lending_2026_manual.csv
