@@ -80,7 +80,7 @@ class GmoCsvSource(CsvSourceAdapter):
         GMO は1注文を複数の約定行に分割出力するが約定IDが空のため、
         (日時, 注文ID, 銘柄名, 売買区分) をキーとして約定数量・金額・手数料を合算する。
         """
-        from collections import defaultdict, OrderedDict
+        from collections import OrderedDict
 
         # 出現順を保持しつつグルーピング
         groups: dict[tuple, dict] = OrderedDict()
@@ -95,27 +95,26 @@ class GmoCsvSource(CsvSourceAdapter):
                 row["売買区分"].strip(),
             )
             if key not in groups:
-                groups[key] = {"rows": [], "qty": _ZERO, "amount": _ZERO, "fee": _ZERO}
+                groups[key] = {"rows": [], "qty": _ZERO, "net_jpy": _ZERO}
             g = groups[key]
             g["rows"].append(row)
-            g["qty"]    += _d(row["約定数量"]) or _ZERO
-            g["amount"] += _d(row["約定金額"]) or _ZERO
-            fee_raw = _d(row["注文手数料"]) or _ZERO
-            if fee_raw > _ZERO:   # 負値（リベート）は除外
-                g["fee"] += fee_raw
+            g["qty"]     += _d(row["約定数量"]) or _ZERO
+            # 「日本円受渡金額」= 手数料・リベート込みの正味JPY (買=負, 売=正)。
+            # これを正味JPYとして使うことでGMO本体の残高と一致する。
+            g["net_jpy"] += _d(row["日本円受渡金額"]) or _ZERO
 
         txs = []
         for (ts_str, order_id, asset, side), g in groups.items():
             ts = datetime.strptime(ts_str, _DATE_FMT).replace(tzinfo=timezone.utc)
-            qty    = g["qty"]
-            amount = g["amount"]
-            fee    = g["fee"] if g["fee"] > _ZERO else None
+            qty     = g["qty"]
+            jpy     = abs(g["net_jpy"])   # 正味JPY (手数料込み)
 
             if side == "買":
+                # JPY を支払って暗号資産を受取 (手数料は取得価額に織り込み済み)
                 recv_asset, recv_amount = asset, qty
-                sent_asset, sent_amount = "JPY", amount
+                sent_asset, sent_amount = "JPY", jpy
             else:  # 売
-                recv_asset, recv_amount = "JPY", amount
+                recv_asset, recv_amount = "JPY", jpy
                 sent_asset, sent_amount = asset, qty
 
             # 注文IDをキーにすることで同一注文は常に同一IDになる（冪等性）
@@ -130,8 +129,6 @@ class GmoCsvSource(CsvSourceAdapter):
                 received_amount=recv_amount,
                 sent_asset=sent_asset,
                 sent_amount=sent_amount,
-                fee_asset="JPY" if fee else None,
-                fee_amount=fee,
                 raw={"fills": len(g["rows"]), "first_row": g["rows"][0]},
             ))
         return txs
