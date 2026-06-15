@@ -74,6 +74,30 @@ window.addEventListener("popstate", (e) => {
   showPage((e.state && e.state.page) || "dashboard");
 });
 
+/** ページのナビ状態だけ切り替える（list/detail のリセットはしない）。 */
+function activatePage(name) {
+  PAGES.forEach((p) => {
+    const el = document.getElementById(`page-${p}`);
+    if (el) el.classList.toggle("hidden", p !== name);
+  });
+  document.querySelectorAll(".nav-link[data-page]").forEach((a) => {
+    a.classList.toggle("active", a.dataset.page === name);
+  });
+  history.pushState({ page: name }, "", `#${name}`);
+}
+
+/** ダッシュボードの資産クリック → 資産別ページの口座内訳へ直接遷移。 */
+function navigateToAssetDetail(symbol) {
+  activatePage("assets");
+  showAssetDetail(symbol);
+}
+
+/** ダッシュボードの口座クリック → 口座別ページの資産内訳へ直接遷移。 */
+function navigateToAccountDetail(name) {
+  activatePage("accounts");
+  showAccountDetail(name);
+}
+
 // ---- ダッシュボード ----
 
 function renderWarnings(warnings) {
@@ -144,15 +168,21 @@ function renderSummary(data) {
     const pct = a.value && total > 0 ? (Number(a.value) / total) * 100 : null;
     const color = colorByAsset[a.asset] || (a.has_price ? OTHER_COLOR : "transparent");
     const tr = document.createElement("tr");
+    tr.className = "clickable";
     tr.innerHTML = `
-      <td><span class="asset-name"><span class="swatch" style="background:${color}"></span>${escapeHtml(a.asset)}</span></td>
+      <td><span class="asset-name"><span class="swatch" style="background:${color}"></span>${escapeHtml(a.asset)} <span class="row-arrow">›</span></span></td>
       <td class="num">${fmtAmount(a.balance)}</td>
       <td class="num">${a.price ? fmtMoney(a.price, cur) : '<span class="muted">-</span>'}</td>
       <td class="num">${a.value ? fmtMoney(a.value, cur) : '<span class="muted">-</span>'}</td>
       <td class="num">${pct !== null ? pct.toFixed(1) + "%" : '<span class="muted">-</span>'}</td>
     `;
+    // クリックで資産別ページの口座内訳ドリルダウンへ
+    tr.addEventListener("click", () => navigateToAssetDetail(a.asset));
     tbody.appendChild(tr);
   });
+
+  // 円グラフ下の凡例（資産 / 比率 / 評価額）
+  renderLegend(slices, cur, total);
 
   const toggleBtn = document.getElementById("toggle-small");
   if (hiddenCount > 0 || showSmall) {
@@ -182,13 +212,45 @@ function renderSources(data) {
   tbody.innerHTML = "";
   data.sources.forEach((s) => {
     const tr = document.createElement("tr");
+    tr.className = "clickable";
     tr.innerHTML = `
-      <td>${escapeHtml(s.source)}</td>
+      <td>${escapeHtml(s.source)} <span class="row-arrow">›</span></td>
       <td class="num">${s.tx_count}</td>
       <td class="num">${fmtMoney(s.total_value, cur)}</td>
     `;
+    // クリックで口座別ページの資産内訳ドリルダウンへ
+    tr.addEventListener("click", () => navigateToAccountDetail(s.source));
     tbody.appendChild(tr);
   });
+}
+
+/** 円グラフ下に凡例（資産 / 比率 / 評価額）を描画。ホバーで中央表示と連動。 */
+function renderLegend(slices, currency, total) {
+  const el = document.getElementById("chart-legend");
+  el.innerHTML = "";
+  slices.forEach((s, i) => {
+    const pct = total > 0 ? (s.value / total) * 100 : 0;
+    const row = document.createElement("div");
+    row.className = "legend-item";
+    row.innerHTML = `
+      <span class="legend-swatch" style="background:${s.color}"></span>
+      <span class="legend-name">${escapeHtml(s.label)}</span>
+      <span class="legend-pct">${pct.toFixed(1)}%</span>
+      <span class="legend-value">${fmtMoney(s.value, currency)}</span>
+    `;
+    // 凡例ホバー → 円グラフ中央に該当スライスの詳細を表示
+    row.addEventListener("mouseenter", () => setChartActive(i));
+    row.addEventListener("mouseleave", () => setChartActive(null));
+    el.appendChild(row);
+  });
+}
+
+function setChartActive(idx) {
+  if (!allocChart) return;
+  if (allocChart.$activeIndex !== idx) {
+    allocChart.$activeIndex = idx;
+    allocChart.draw();
+  }
 }
 
 // ---- チャート ----

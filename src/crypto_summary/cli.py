@@ -1078,12 +1078,29 @@ def _fetch_bitflyer(
 # web (ダッシュボード WebUI)
 # ---------------------------------------------------------------------------
 
+def _lan_ip() -> str | None:
+    """このマシンの LAN IP アドレスを推定して返す（取得失敗時は None）。"""
+    import socket
+
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        # 実際には送信しないが、ルーティングから自分の出口IPを得る
+        s.connect(("8.8.8.8", 80))
+        return s.getsockname()[0]
+    except OSError:
+        return None
+    finally:
+        s.close()
+
+
 @cli.command("web")
 @click.option("--host", default="127.0.0.1", show_default=True, help="バインドするホスト")
 @click.option("--port", default=8000, show_default=True, type=int, help="ポート番号")
+@click.option("--lan", is_flag=True, default=False,
+              help="LAN 内の他端末（スマホ等）からアクセス可能にする（host=0.0.0.0）")
 @click.option("--reload", is_flag=True, default=False, help="開発用オートリロード")
 @click.pass_context
-def web_cmd(ctx: click.Context, host: str, port: int, reload: bool) -> None:
+def web_cmd(ctx: click.Context, host: str, port: int, lan: bool, reload: bool) -> None:
     """ダッシュボード WebUI を起動する。
 
     ブラウザで http://HOST:PORT を開くと資産サマリーを表示できる。
@@ -1092,6 +1109,7 @@ def web_cmd(ctx: click.Context, host: str, port: int, reload: bool) -> None:
     \b
     例:
       crypto-summary web
+      crypto-summary web --lan          # スマホなど同じWi-Fiの端末から見る
       crypto-summary --db my.db web --port 8080
     """
     try:
@@ -1105,12 +1123,27 @@ def web_cmd(ctx: click.Context, host: str, port: int, reload: bool) -> None:
         )
         raise click.Abort()
 
+    # --lan 指定時は全インターフェースにバインドする
+    if lan:
+        host = "0.0.0.0"
+
     db = ctx.obj["db"]
     app = create_app(db)
-    console.print(
-        f"[green]Crypto-Summary Web UI[/green] → "
-        f"[cyan]http://{host}:{port}[/cyan]  (db: [dim]{db}[/dim])\n"
-        f"[dim]停止: Ctrl+C[/dim]"
-    )
+
+    # アクセス用URLを案内する
+    if host == "0.0.0.0":
+        console.print("[green]Crypto-Summary Web UI[/green] でアクセス可能なURL:")
+        console.print(f"  [cyan]http://127.0.0.1:{port}[/cyan]  (このPC)")
+        ip = _lan_ip()
+        if ip:
+            console.print(f"  [cyan]http://{ip}:{port}[/cyan]  (同じWi-Fiのスマホ等から)")
+        console.print(f"  (db: [dim]{db}[/dim])  [dim]停止: Ctrl+C[/dim]")
+    else:
+        console.print(
+            f"[green]Crypto-Summary Web UI[/green] → "
+            f"[cyan]http://{host}:{port}[/cyan]  (db: [dim]{db}[/dim])\n"
+            f"[dim]同じWi-Fiのスマホ等から見るには --lan を付けて再起動してください[/dim]\n"
+            f"[dim]停止: Ctrl+C[/dim]"
+        )
     import uvicorn
     uvicorn.run(app, host=host, port=port, reload=reload, log_level="warning")

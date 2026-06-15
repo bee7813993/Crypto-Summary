@@ -147,7 +147,34 @@ select { flex: 1; }
 }
 .card:last-child { margin-bottom: 0; }
 .card h2 { font-size: 15px; font-weight: 600; margin-bottom: 14px; color: var(--text); }
+.card-hint { font-size: 12px; color: var(--text-dim); margin: -8px 0 14px; }
 .chart-wrap { position: relative; height: 280px; display: flex; align-items: center; justify-content: center; }
+
+/* ---- Chart legend (円グラフ下の凡例: 資産 / 比率 / 評価額) ---- */
+.chart-legend {
+  margin-top: 16px;
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.legend-item {
+  display: grid;
+  grid-template-columns: 14px 1fr auto auto;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 4px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.legend-item:hover { background: var(--bg-elev); }
+.legend-swatch { width: 11px; height: 11px; border-radius: 3px; }
+.legend-name { color: var(--text); font-weight: 500; }
+.legend-pct { color: var(--text-dim); font-variant-numeric: tabular-nums; text-align: right; min-width: 46px; }
+.legend-value { color: var(--text); font-variant-numeric: tabular-nums; text-align: right; min-width: 84px; }
+.legend-item.dim { opacity: .45; }
 
 /* ---- Tables ---- */
 .table-wrap { overflow-x: auto; }
