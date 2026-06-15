@@ -149,7 +149,7 @@ class SolscanApiSource:
         resp = httpx.get(
             f"{_BASE}/account/transfer",
             params=params,
-            headers={"token": self.api_key},
+            headers={"Authorization": f"Bearer {self.api_key}"},
             timeout=self.timeout,
         )
         resp.raise_for_status()
