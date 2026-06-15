@@ -102,6 +102,38 @@ def status(ctx: click.Context) -> None:
 
 
 # ---------------------------------------------------------------------------
+# clear
+# ---------------------------------------------------------------------------
+
+@cli.command()
+@click.option("--source", default=None,
+              help="削除するソース（省略すると全データ削除）")
+@click.option("--yes", "-y", is_flag=True, default=False,
+              help="確認プロンプトをスキップ")
+@click.pass_context
+def clear(ctx: click.Context, source: str | None, yes: bool) -> None:
+    """ledger からトランザクションを削除する（再取り込み前のリセット用）。"""
+    ledger = Ledger(ctx.obj["db"])
+    target_count = ledger.count(source)
+
+    if target_count == 0:
+        console.print(f"[yellow]削除対象がありません"
+                      f"{f'（source={source}）' if source else ''}。[/yellow]")
+        ledger.close()
+        return
+
+    if not yes:
+        if not click.confirm(f"{target_count} 件削除します（{source or '全ソース'}）。よろしいですか？"):
+            console.print("[dim]キャンセルしました。[/dim]")
+            ledger.close()
+            return
+
+    n = ledger.clear(source)
+    ledger.close()
+    console.print(f"[green]✓[/green] {n} 件を削除しました（{source or '全ソース'}）。")
+
+
+# ---------------------------------------------------------------------------
 # balance
 # ---------------------------------------------------------------------------
 

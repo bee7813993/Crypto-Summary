@@ -98,6 +98,27 @@ class Ledger:
         )
         self._conn.commit()
 
+    def clear(self, source: str | None = None) -> int:
+        """トランザクションを削除する。source指定時はそのソースのみ。
+
+        削除した件数を返す。cursors も併せて削除する。
+        """
+        if source:
+            n = self.count(source)
+            self._conn.execute("DELETE FROM transactions WHERE source=?", (source,))
+            self._conn.execute("DELETE FROM cursors WHERE source=?", (source,))
+            self._conn.execute(
+                "DELETE FROM exports WHERE tx_id IN "
+                "(SELECT id FROM transactions WHERE source=?)", (source,)
+            )
+        else:
+            n = self.count()
+            self._conn.execute("DELETE FROM transactions")
+            self._conn.execute("DELETE FROM cursors")
+            self._conn.execute("DELETE FROM exports")
+        self._conn.commit()
+        return n
+
     def mark_exported(self, tx_ids: list[str], sink: str) -> None:
         now = datetime.utcnow().isoformat()
         self._conn.executemany(

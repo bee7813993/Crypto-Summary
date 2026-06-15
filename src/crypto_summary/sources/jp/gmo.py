@@ -34,6 +34,9 @@ def _d(value: str) -> Decimal | None:
 
 _ZERO = Decimal("0")
 
+# 売買として集約処理する精算区分（取引所現物・販売所）
+_TRADE_SETTLEMENTS = {"取引所現物取引", "販売所取引"}
+
 
 class GmoCsvSource(CsvSourceAdapter):
     """GMOコイン 取引レポートCSV パーサー
@@ -49,13 +52,13 @@ class GmoCsvSource(CsvSourceAdapter):
 
         txs: list[CanonicalTx] = []
 
-        # 「取引所現物取引」は注文単位に集約してから処理
+        # 「取引所現物取引」「販売所取引」は注文単位に集約してから処理
         txs.extend(self._load_spot_trades(all_rows))
 
         # その他の精算区分は1行1トランザクション
         for i, row in enumerate(all_rows):
             settlement = row["精算区分"].strip()
-            if settlement == "取引所現物取引":
+            if settlement in _TRADE_SETTLEMENTS:
                 continue  # 上で処理済み
             try:
                 ts = datetime.strptime(row["日時"].strip(), _DATE_FMT).replace(tzinfo=timezone.utc)
@@ -75,10 +78,12 @@ class GmoCsvSource(CsvSourceAdapter):
         return txs
 
     def _load_spot_trades(self, all_rows: list[dict]) -> list[CanonicalTx]:
-        """取引所現物取引を注文単位に集約して CanonicalTx を生成する。
+        """現物取引（取引所・販売所）を注文単位に集約して CanonicalTx を生成する。
 
-        GMO は1注文を複数の約定行に分割出力するが約定IDが空のため、
-        (日時, 注文ID, 銘柄名, 売買区分) をキーとして約定数量・金額・手数料を合算する。
+        - 取引所現物取引: 注文ID あり / 約定ID 空（1注文が複数約定に分割される）
+        - 販売所取引:     注文ID 空 / 約定ID あり（通常1約定）
+        存在する方のID（注文ID優先、なければ約定ID）でグルーピングし、
+        約定数量・正味JPY（日本円受渡金額）を合算する。
         """
         from collections import OrderedDict
 
@@ -86,11 +91,14 @@ class GmoCsvSource(CsvSourceAdapter):
         groups: dict[tuple, dict] = OrderedDict()
 
         for row in all_rows:
-            if row["精算区分"].strip() != "取引所現物取引":
+            settlement = row["精算区分"].strip()
+            if settlement not in _TRADE_SETTLEMENTS:
                 continue
+            order_key = row["注文ID"].strip() or row.get("約定ID", "").strip()
             key = (
+                settlement,
                 row["日時"].strip(),
-                row["注文ID"].strip(),
+                order_key,
                 row["銘柄名"].strip().upper(),
                 row["売買区分"].strip(),
             )
@@ -104,7 +112,7 @@ class GmoCsvSource(CsvSourceAdapter):
             g["net_jpy"] += _d(row["日本円受渡金額"]) or _ZERO
 
         txs = []
-        for (ts_str, order_id, asset, side), g in groups.items():
+        for (settlement, ts_str, order_id, asset, side), g in groups.items():
             ts = datetime.strptime(ts_str, _DATE_FMT).replace(tzinfo=timezone.utc)
             qty     = g["qty"]
             jpy     = abs(g["net_jpy"])   # 正味JPY (手数料込み)
@@ -117,8 +125,8 @@ class GmoCsvSource(CsvSourceAdapter):
                 recv_asset, recv_amount = "JPY", jpy
                 sent_asset, sent_amount = asset, qty
 
-            # 注文IDをキーにすることで同一注文は常に同一IDになる（冪等性）
-            raw_key = f"{ts_str}|{order_id}|{asset}|{side}"
+            # 精算区分+注文ID(or約定ID)で同一取引は常に同一IDになる（冪等性）
+            raw_key = f"{settlement}|{ts_str}|{order_id}|{asset}|{side}"
 
             txs.append(CanonicalTx(
                 id=CanonicalTx.make_id(self.source_id, raw_key),

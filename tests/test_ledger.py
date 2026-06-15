@@ -114,3 +114,29 @@ def test_sources_summary(ledger):
     src_map = {r[0]: r[1] for r in rows}
     assert src_map["binance"] == 2
     assert src_map["bybit"] == 1
+
+
+def test_clear_by_source(ledger):
+    ledger.upsert(_tx("1", source="binance"))
+    ledger.upsert(_tx("2", source="binance"))
+    ledger.upsert(_tx("1", source="bybit"))
+    n = ledger.clear(source="binance")
+    assert n == 2
+    assert ledger.count("binance") == 0
+    assert ledger.count("bybit") == 1
+
+
+def test_clear_all(ledger):
+    ledger.upsert(_tx("1", source="binance"))
+    ledger.upsert(_tx("1", source="bybit"))
+    n = ledger.clear()
+    assert n == 2
+    assert ledger.count() == 0
+
+
+def test_balances(ledger):
+    ledger.upsert(_tx("1"))  # +0.1 BTC, -4200 USDT
+    ledger.upsert(_tx("2"))  # +0.1 BTC, -4200 USDT
+    bals = ledger.balances()
+    assert bals["BTC"] == Decimal("0.2")
+    assert bals["USDT"] == Decimal("-8400")
