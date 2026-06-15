@@ -4,7 +4,7 @@ Solana ウォレット取引の分類ロジックを検証する。
 """
 from decimal import Decimal
 
-from crypto_summary.sources.solana.helius import HeliusApiSource, _KNOWN_MINTS
+from crypto_summary.sources.solana.helius import HeliusApiSource, _KNOWN_MINTS, _WSOL_MINT
 from crypto_summary.core.models import TxType
 
 WALLET = "AniMLiuHWAguMpBytchfKaC9rc6YpEuumGQhxAiX9Dt4"
@@ -171,6 +171,77 @@ def test_staking_reward_is_reward():
     assert len(txs) == 1
     assert txs[0].type == TxType.REWARD
     assert txs[0].received_asset == "SOL"
+
+
+# ── WSOL ラップ二重計上防止 ──────────────────────────────────────────
+
+WSOL_TOKEN_ACCT = "CoqYCRCaWmmZ4NEYioAUxBaXeuN7CsUaXKhqwiBKwL8d"
+WSOL_TOKEN_ACCT2 = "4ct7br2vTPzfdmY3S5HLtTxcGSBfn6pnw98hsS6v359A"
+
+
+def _wsol_token(frm_ta, to_ta, frm_ua, to_ua, amount):
+    return {
+        "fromTokenAccount": frm_ta, "toTokenAccount": to_ta,
+        "fromUserAccount": frm_ua, "toUserAccount": to_ua,
+        "tokenAmount": amount, "mint": _WSOL_MINT, "tokenStandard": "Fungible",
+    }
+
+
+def test_wsol_wrap_not_double_counted():
+    """SOL→WSOLラップ＋WSOLスワップは二重計上しない（JupiterのSOL→USDC swap相当）。
+
+    nativeTransfer: WALLET → WSOLアカウント(CoqYCR) 6.01 SOL  ← ラップ（除外される）
+    nativeTransfer: CoqYCR → WALLET 0.059 SOL               ← 返金（除外される）
+    nativeTransfer: WALLET → 手数料先 0.0036 SOL             ← 本物の送出
+    tokenTransfer(WSOL): WALLET → OTHER 5.953 WSOL           ← SOL として集計
+    tokenTransfer(USDC): OTHER → WALLET 569 USDC             ← 受取
+    """
+    src = FakeHelius([{
+        "signature": SIG1, "timestamp": _TS, "fee": 5000, "feePayer": WALLET,
+        "type": "SWAP",
+        "nativeTransfers": [
+            # ラップ: WSOLアカウント宛（除外対象）
+            {"fromUserAccount": WALLET, "toUserAccount": WSOL_TOKEN_ACCT, "amount": 6_010_297_848},
+            # ラップ: WSOLアカウントから返金（除外対象）
+            {"fromUserAccount": WSOL_TOKEN_ACCT, "toUserAccount": WALLET, "amount": 59_308_774},
+            # 本物の手数料（WSOLアカウント無関係 → 集計対象）
+            {"fromUserAccount": WALLET, "toUserAccount": OTHER, "amount": 3_606_178},
+        ],
+        "tokenTransfers": [
+            # WSOL送出（SOL として集計）
+            _wsol_token(WSOL_TOKEN_ACCT, WSOL_TOKEN_ACCT2, WALLET, OTHER, 5.953028354),
+            # USDC受取
+            _token(OTHER, WALLET, USDC_MINT, 569.38),
+        ],
+    }])
+    txs = src.fetch_all(record_gas=False)
+    trade = [t for t in txs if t.type == TxType.TRADE]
+    assert len(trade) == 1
+    tx = trade[0]
+    assert tx.sent_asset == "SOL"
+    # 正味SOL送出: 手数料3,606,178 lamports(0.0036) + WSOL 5.953 ≈ 5.9566
+    # ラップの 6.01 と 0.059 は相殺されて計上されない
+    assert tx.sent_amount == Decimal("3606178") / 10**9 + Decimal("5.953028354")
+    assert tx.received_asset == "USDC"
+    assert tx.received_amount == Decimal("569.38")
+
+
+def test_wsol_no_double_count_in_balance():
+    """WSOL送出がSOLに統合され、独立したWSOL残高が生じないことを確認。"""
+    src = FakeHelius([{
+        "signature": SIG1, "timestamp": _TS, "fee": 0, "feePayer": WALLET,
+        "type": "TRANSFER",
+        "nativeTransfers": [
+            {"fromUserAccount": WALLET, "toUserAccount": WSOL_TOKEN_ACCT, "amount": 1_000_000_000},
+        ],
+        "tokenTransfers": [
+            _wsol_token(WSOL_TOKEN_ACCT, WSOL_TOKEN_ACCT2, WALLET, OTHER, 0.99),
+        ],
+    }])
+    txs = src.fetch_all(record_gas=False)
+    # WSOL残高がゼロ。SOLのみが計上されるはず（WSOL受取なし = 純送出）
+    assets = {t.sent_asset for t in txs if t.sent_asset}
+    assert "WSOL" not in assets
 
 
 # ── スワップのおつり（net 相殺）──────────────────────────────────────
