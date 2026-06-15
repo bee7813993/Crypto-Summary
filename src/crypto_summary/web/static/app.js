@@ -44,7 +44,7 @@ function escapeHtml(s) {
 
 // ---- ページナビゲーション ----
 
-const PAGES = ["dashboard", "accounts", "assets", "transactions"];
+const PAGES = ["dashboard", "accounts", "assets", "transactions", "import"];
 
 function showPage(name) {
   if (!PAGES.includes(name)) name = "dashboard";
@@ -60,7 +60,8 @@ function showPage(name) {
   if (name === "dashboard") { load(); }
   else if (name === "accounts") { showAccountsList(); loadAccountsPage(); }
   else if (name === "assets") { showAssetsList(); loadAssetsPage(); }
-  else if (name === "transactions") { /* filters set by caller */ }
+  else if (name === "import") { loadImportPage(); }
+  // transactions: caller sets filters
 }
 
 document.querySelectorAll(".nav-link[data-page]").forEach((a) => {
@@ -78,13 +79,17 @@ document.querySelectorAll(".nav-link[data-page]").forEach((a) => {
 
 window.addEventListener("popstate", (e) => {
   const state = e.state || {};
-  showPage(state.page || "dashboard");
-  if (state.page === "transactions") {
-    loadTransactionsPage(state.txAccount || null, state.txAsset || null, state.txPage || 1);
+  const page = state.page || "dashboard";
+  showPage(page);
+  if (page === "transactions") {
+    loadTransactionsPage(
+      state.txAccount || null, state.txAsset || null,
+      state.txSince || null, state.txUntil || null,
+      state.txPage || 1,
+    );
   }
 });
 
-/** ページのナビ状態だけ切り替える（list/detail のリセットはしない）。 */
 function activatePage(name) {
   PAGES.forEach((p) => {
     const el = document.getElementById(`page-${p}`);
@@ -95,26 +100,23 @@ function activatePage(name) {
   });
 }
 
-/** ダッシュボードの資産クリック → 資産別ページの口座内訳へ直接遷移。 */
 function navigateToAssetDetail(symbol) {
   history.pushState({ page: "assets" }, "", "#assets");
   activatePage("assets");
   showAssetDetail(symbol);
 }
 
-/** ダッシュボードの口座クリック → 口座別ページの資産内訳へ直接遷移。 */
 function navigateToAccountDetail(name) {
   history.pushState({ page: "accounts" }, "", "#accounts");
   activatePage("accounts");
   showAccountDetail(name);
 }
 
-/** 取引履歴ページへ遷移（フィルタ付き）。 */
-function navigateToTransactions({ account = null, asset = null, page = 1 } = {}) {
-  const state = { page: "transactions", txAccount: account, txAsset: asset, txPage: page };
+function navigateToTransactions({ account = null, asset = null, since = null, until = null, page = 1 } = {}) {
+  const state = { page: "transactions", txAccount: account, txAsset: asset, txSince: since, txUntil: until, txPage: page };
   history.pushState(state, "", "#transactions");
   activatePage("transactions");
-  loadTransactionsPage(account, asset, page);
+  loadTransactionsPage(account, asset, since, until, page);
 }
 
 // ---- ダッシュボード ----
@@ -208,7 +210,6 @@ function renderSummary(data) {
     tbody.appendChild(tr);
   });
 
-  // 少額トグル
   const toggleBtn = document.getElementById("toggle-small");
   if (hiddenCount > 0 || showSmall) {
     toggleBtn.style.display = "";
@@ -335,7 +336,6 @@ function renderChart(slices, currency, total) {
   allocChart.$activeIndex = null;
 }
 
-/** 円グラフ下の凡例（資産 / 比率 / 評価額）。凡例ホバーで中央表示と連動。 */
 function renderLegend(slices, currency, total) {
   const el = document.getElementById("chart-legend");
   el.innerHTML = "";
@@ -375,7 +375,6 @@ function showAccountDetail(name) {
   document.getElementById("accounts-list-view").classList.add("hidden");
   const detail = document.getElementById("account-detail-view");
   detail.classList.remove("hidden");
-  // 設定パネルを閉じてリセット
   document.getElementById("account-settings-panel").classList.add("hidden");
   document.getElementById("settings-result").classList.add("hidden");
   document.getElementById("account-detail-name").textContent = name;
@@ -435,7 +434,6 @@ async function loadAccountDetail(name) {
         <td class="num">${a.value ? fmtMoney(a.value, currency) : '<span class="muted">-</span>'}</td>
         <td><button class="tx-link-btn">≡ 履歴</button></td>
       `;
-      // 口座内の資産行 → 口座×資産の取引履歴
       tr.querySelector(".tx-link-btn").addEventListener("click", () =>
         navigateToTransactions({ account: name, asset: a.asset }));
       tbody.appendChild(tr);
@@ -451,7 +449,7 @@ async function loadAccountDetail(name) {
 
 // ---- 口座設定パネル ----
 
-let _currentAccountName = null;  // 設定パネルが開いている口座名
+let _currentAccountName = null;
 
 document.getElementById("account-settings-btn").addEventListener("click", () => {
   const panel = document.getElementById("account-settings-panel");
@@ -474,16 +472,13 @@ async function openAccountSettings(accountName) {
 
   document.getElementById("settings-display-name").value = accountName;
 
-  // この口座の実際のソースID（自動命名含む）と全ソースIDを取得
   try {
     const [groupData, sourcesData] = await Promise.all([
       fetchJSON("/api/account-groups"),
       fetchJSON("/api/sources?currency=USD"),
     ]);
-    // この口座が現在束ねているソースID
     const thisAccount = sourcesData.sources.find((s) => s.source === accountName);
     const assignedIds = thisAccount ? thisAccount.source_ids : [];
-    // 他のソースID（他口座のもの。チェックすればこの口座へ移動）
     const otherIds = groupData.all_source_ids.filter((s) => !assignedIds.includes(s));
     renderSettingsSourceIds(assignedIds, otherIds);
   } catch (e) {
@@ -494,7 +489,6 @@ async function openAccountSettings(accountName) {
 }
 
 function renderSettingsSourceIds(assignedIds, otherIds) {
-  // この口座に属するソースID（チェック済み）
   const assignedWrap = document.getElementById("settings-source-ids");
   assignedWrap.innerHTML = "";
   assignedIds.forEach((sid) => assignedWrap.appendChild(makeSourceChip(sid, true)));
@@ -502,7 +496,6 @@ function renderSettingsSourceIds(assignedIds, otherIds) {
     assignedWrap.innerHTML = '<span class="muted" style="font-size:12px">なし</span>';
   }
 
-  // 他口座のソースID（チェックするとこの口座へ移動）
   const unassignedWrap = document.getElementById("settings-unassigned-ids");
   unassignedWrap.innerHTML = "";
   if (otherIds.length === 0) {
@@ -537,23 +530,19 @@ document.getElementById("settings-save").addEventListener("click", async () => {
     return;
   }
 
-  // チェックされているソースIDを収集（割り当て済み + 未割り当てから追加分）
   const checkedIds = [
     ...document.querySelectorAll("#settings-source-ids input[type=checkbox]:checked"),
     ...document.querySelectorAll("#settings-unassigned-ids input[type=checkbox]:checked"),
   ].map((cb) => cb.dataset.sid);
 
   try {
-    // 現在の明示的グループを取得
     const data = await fetchJSON("/api/account-groups");
     const groups = {};
-    // 既存グループから、今回チェックしたIDと旧名エントリを取り除いてコピー
     for (const [name, ids] of Object.entries(data.groups)) {
-      if (name === _currentAccountName) continue;  // 旧名は作り直す
+      if (name === _currentAccountName) continue;
       const remaining = ids.filter((id) => !checkedIds.includes(id));
       if (remaining.length > 0) groups[name] = remaining;
     }
-    // この口座を新しい名前 + 選択したソースIDで登録
     if (checkedIds.length > 0) {
       groups[newName] = checkedIds;
     }
@@ -569,7 +558,6 @@ document.getElementById("settings-save").addEventListener("click", async () => {
     result.textContent = "保存しました";
     result.classList.remove("hidden");
 
-    // 口座名が変わった場合はリスト/ヘッダーを更新
     if (newName !== _currentAccountName) {
       _currentAccountName = newName;
       document.getElementById("account-detail-name").textContent = newName;
@@ -577,8 +565,10 @@ document.getElementById("settings-save").addEventListener("click", async () => {
         navigateToTransactions({ account: newName });
     }
 
-    // 口座一覧を裏でリロード（次に戻ったとき反映）
     loadAccountsPage();
+    // 取引履歴フィルタ選択肢も更新
+    _txAccountsLoaded = false;
+    _rebuildAccountFilter();
 
   } catch (e) {
     result.className = "settings-result err";
@@ -599,7 +589,6 @@ function showAssetDetail(symbol) {
   const detail = document.getElementById("asset-detail-view");
   detail.classList.remove("hidden");
   document.getElementById("asset-detail-name").textContent = symbol;
-  // 取引履歴ボタンに資産名をセット
   document.getElementById("asset-tx-link").onclick = () =>
     navigateToTransactions({ asset: symbol });
   loadAssetDetail(symbol);
@@ -661,7 +650,6 @@ async function loadAssetDetail(symbol) {
         <td class="num">${a.value ? fmtMoney(a.value, currency) : '<span class="muted">-</span>'}</td>
         <td><button class="tx-link-btn">≡ 履歴</button></td>
       `;
-      // 資産内の口座行 → 口座×資産の取引履歴
       tr.querySelector(".tx-link-btn").addEventListener("click", () =>
         navigateToTransactions({ account: a.account, asset: symbol }));
       tbody.appendChild(tr);
@@ -677,50 +665,76 @@ async function loadAssetDetail(symbol) {
 
 // ---- 取引履歴ページ ----
 
-let _txFiltersLoaded = false;  // フィルタ用の口座・資産リスト取得済みフラグ
+let _txAccountsLoaded = false;
 
-async function ensureTxFilterOptions() {
-  if (_txFiltersLoaded) return;
+async function _rebuildAccountFilter() {
+  _txAccountsLoaded = false;
+  const accSel = document.getElementById("tx-filter-account");
+  [...accSel.options].forEach((o) => { if (o.value) o.remove(); });
+  await _ensureAccountOptions();
+}
+
+async function _ensureAccountOptions() {
+  if (_txAccountsLoaded) return;
   try {
-    // 口座リストと資産リストを並行取得
-    const [sources, summary] = await Promise.all([
-      fetchJSON("/api/sources?currency=USD"),
-      fetchJSON("/api/summary?currency=USD"),
-    ]);
-
+    const sources = await fetchJSON("/api/sources?currency=USD");
     const accSel = document.getElementById("tx-filter-account");
+    // clear existing non-empty options to avoid duplication
+    [...accSel.options].forEach((o) => { if (o.value) o.remove(); });
     sources.sources.forEach((s) => {
       const opt = document.createElement("option");
       opt.value = s.source;
       opt.textContent = s.source;
       accSel.appendChild(opt);
     });
-
-    const assetSel = document.getElementById("tx-filter-asset");
-    // 資産名（アルファベット順）
-    summary.assets
-      .map((a) => a.asset)
-      .sort((x, y) => x.localeCompare(y))
-      .forEach((sym) => {
-        const opt = document.createElement("option");
-        opt.value = sym;
-        opt.textContent = sym;
-        assetSel.appendChild(opt);
-      });
-
-    _txFiltersLoaded = true;
+    _txAccountsLoaded = true;
   } catch (_) { /* サイレント */ }
 }
 
-async function loadTransactionsPage(account, asset, page = 1) {
-  await ensureTxFilterOptions();
+async function _updateAssetDropdown(account) {
+  const assetSel = document.getElementById("tx-filter-asset");
+  const prevValue = assetSel.value;
+  // clear all asset options except the first ("すべての資産")
+  [...assetSel.options].forEach((o) => { if (o.value) o.remove(); });
+
+  try {
+    let assets;
+    if (account) {
+      const data = await fetchJSON(`/api/account-assets?account=${encodeURIComponent(account)}&currency=USD`);
+      assets = data.assets.map((a) => a.asset).sort((x, y) => x.localeCompare(y));
+    } else {
+      const data = await fetchJSON("/api/summary?currency=USD");
+      assets = data.assets.map((a) => a.asset).sort((x, y) => x.localeCompare(y));
+    }
+    assets.forEach((sym) => {
+      const opt = document.createElement("option");
+      opt.value = sym;
+      opt.textContent = sym;
+      assetSel.appendChild(opt);
+    });
+    // restore previous selection if still available
+    if ([...assetSel.options].some((o) => o.value === prevValue)) {
+      assetSel.value = prevValue;
+    }
+  } catch (_) { /* サイレント */ }
+}
+
+async function loadTransactionsPage(account, asset, since, until, page = 1) {
+  await _ensureAccountOptions();
 
   // フィルタUIを同期
   const selAccount = document.getElementById("tx-filter-account");
   const selAsset = document.getElementById("tx-filter-asset");
+  const selSince = document.getElementById("tx-filter-since");
+  const selUntil = document.getElementById("tx-filter-until");
+
   selAccount.value = account || "";
+  selSince.value = since || "";
+  selUntil.value = until || "";
+
+  // 資産ドロップダウンを口座に合わせて更新してから選択値を設定
+  await _updateAssetDropdown(account || null);
   if (asset) {
-    // asset の option が未追加なら追加
     if (![...selAsset.options].some((o) => o.value === asset)) {
       const opt = document.createElement("option");
       opt.value = asset; opt.textContent = asset;
@@ -736,6 +750,8 @@ async function loadTransactionsPage(account, asset, page = 1) {
   const parts = [];
   if (account) parts.push(`口座: <strong>${escapeHtml(account)}</strong>`);
   if (asset) parts.push(`資産: <strong>${escapeHtml(asset)}</strong>`);
+  if (since) parts.push(`開始: <strong>${since}</strong>`);
+  if (until) parts.push(`終了: <strong>${until}</strong>`);
   if (parts.length) {
     banner.innerHTML = "絞り込み中 — " + parts.join(" ／ ");
     banner.classList.remove("hidden");
@@ -754,14 +770,11 @@ async function loadTransactionsPage(account, asset, page = 1) {
     let url = `/api/transactions?page=${page}`;
     if (account) url += `&account=${encodeURIComponent(account)}`;
     if (asset) url += `&asset=${encodeURIComponent(asset)}`;
+    if (since) url += `&since=${encodeURIComponent(since)}`;
+    if (until) url += `&until=${encodeURIComponent(until)}`;
 
     const data = await fetchJSON(url);
     loading.classList.add("hidden");
-
-    // 取引後残高の列は資産が選ばれているときだけ表示
-    const showBal = !!data.show_running_balance;
-    document.querySelectorAll("#tx-table .bal-col").forEach((th) =>
-      th.classList.toggle("hidden", !showBal));
 
     if (data.transactions.length === 0) {
       empty.classList.remove("hidden");
@@ -780,16 +793,27 @@ async function loadTransactionsPage(account, asset, page = 1) {
         const hash = tx.tx_hash
           ? `<span class="tx-hash" title="${escapeHtml(tx.tx_hash)}">${escapeHtml(tx.tx_hash)}</span>`
           : "";
-        let balCells = "";
-        if (showBal) {
-          const g = tx.balance_after != null
-            ? `${fmtAmount(tx.balance_after)} ${escapeHtml(asset)}`
-            : '<span class="muted">-</span>';
-          const a = tx.account_balance_after != null
-            ? `${fmtAmount(tx.account_balance_after)} ${escapeHtml(asset)}`
-            : '<span class="muted">-</span>';
-          balCells = `<td class="num bal-col">${g}</td><td class="num bal-col">${a}</td>`;
+
+        // 取引後残高 — 複数資産対応
+        const rb = tx.running_balances || {};
+        let balHtml = "";
+        const rbEntries = Object.entries(rb);
+        if (rbEntries.length === 0) {
+          balHtml = '<span class="muted">-</span>';
+        } else {
+          balHtml = '<div class="bal-cell">';
+          rbEntries.forEach(([sym, bal]) => {
+            balHtml += `<div class="bal-entry">
+              <span class="bal-asset">${escapeHtml(sym)}</span>
+              <span class="bal-vals">${fmtAmount(bal.global)}<span class="bal-acct"> (${fmtAmount(bal.account)})</span></span>
+            </div>`;
+          });
+          balHtml += "</div>";
         }
+
+        const isManual = tx.id.startsWith("manual:");
+        const delBtn = `<button class="delete-btn" title="削除" data-txid="${escapeHtml(tx.id)}" data-txdesc="${escapeHtml(fmtDate(tx.timestamp) + " " + (tx.type_ja || tx.type))}">✕</button>`;
+
         tr.innerHTML = `
           <td style="white-space:nowrap">${fmtDate(tx.timestamp)}</td>
           <td>${escapeHtml(tx.account)}</td>
@@ -797,38 +821,51 @@ async function loadTransactionsPage(account, asset, page = 1) {
           <td>${recv}</td>
           <td>${sent}</td>
           <td>${fee}</td>
-          ${balCells}
-          <td class="muted">${tx.label ? escapeHtml(tx.label) : ""}${hash}</td>
+          <td class="num">${balHtml}</td>
+          <td style="white-space:nowrap">${tx.label ? '<span class="muted" style="font-size:12px">' + escapeHtml(tx.label) + '</span>' : ""}${hash}${delBtn}</td>
         `;
+
+        tr.querySelector(".delete-btn").addEventListener("click", (e) => {
+          e.stopPropagation();
+          const btn = e.currentTarget;
+          showDeleteDialog(btn.dataset.txid, btn.dataset.txdesc, () => {
+            loadTransactionsPage(account, asset, since, until, page);
+          });
+        });
+
         tbody.appendChild(tr);
       });
     }
 
-    renderTxPagination(data, account, asset);
+    renderTxPagination(data, account, asset, since, until);
   } catch (e) {
     loading.classList.add("hidden");
-    tbody.innerHTML = `<tr><td colspan="9" class="muted">エラー: ${escapeHtml(e.message)}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="8" class="muted">エラー: ${escapeHtml(e.message)}</td></tr>`;
     document.getElementById("tx-pagination").innerHTML = "";
   }
 }
 
-function renderTxPagination(data, account, asset) {
+function renderTxPagination(data, account, asset, since, until) {
   const el = document.getElementById("tx-pagination");
   el.innerHTML = "";
-  if (data.total_pages <= 1) return;
+  if (data.total_pages <= 1) {
+    const info = document.createElement("span");
+    info.className = "page-info";
+    info.textContent = `${data.total.toLocaleString()} 件`;
+    el.appendChild(info);
+    return;
+  }
 
   const cur = data.page;
   const total = data.total_pages;
 
-  // 前へ
   if (cur > 1) {
     const btn = document.createElement("button");
     btn.textContent = "‹";
-    btn.addEventListener("click", () => navigateToTransactions({ account, asset, page: cur - 1 }));
+    btn.addEventListener("click", () => navigateToTransactions({ account, asset, since, until, page: cur - 1 }));
     el.appendChild(btn);
   }
 
-  // ページ番号（最大7個表示）
   const pages = pageRange(cur, total);
   pages.forEach((p) => {
     if (p === "…") {
@@ -840,16 +877,15 @@ function renderTxPagination(data, account, asset) {
       const btn = document.createElement("button");
       btn.textContent = p;
       if (p === cur) btn.classList.add("active");
-      btn.addEventListener("click", () => navigateToTransactions({ account, asset, page: p }));
+      btn.addEventListener("click", () => navigateToTransactions({ account, asset, since, until, page: p }));
       el.appendChild(btn);
     }
   });
 
-  // 次へ
   if (cur < total) {
     const btn = document.createElement("button");
     btn.textContent = "›";
-    btn.addEventListener("click", () => navigateToTransactions({ account, asset, page: cur + 1 }));
+    btn.addEventListener("click", () => navigateToTransactions({ account, asset, since, until, page: cur + 1 }));
     el.appendChild(btn);
   }
 
@@ -871,20 +907,292 @@ function pageRange(cur, total) {
 
 // ---- フィルタUI変更 ----
 
-document.getElementById("tx-filter-account").addEventListener("change", (e) => {
+document.getElementById("tx-filter-account").addEventListener("change", async (e) => {
   const account = e.target.value || null;
-  const asset = document.getElementById("tx-filter-asset").value || null;
-  navigateToTransactions({ account, asset, page: 1 });
+  const since = document.getElementById("tx-filter-since").value || null;
+  const until = document.getElementById("tx-filter-until").value || null;
+  // 口座を変えたら資産ドロップダウンを更新してから遷移
+  await _updateAssetDropdown(account);
+  navigateToTransactions({ account, asset: null, since, until, page: 1 });
 });
 
 document.getElementById("tx-filter-asset").addEventListener("change", (e) => {
   const asset = e.target.value || null;
   const account = document.getElementById("tx-filter-account").value || null;
-  navigateToTransactions({ account, asset, page: 1 });
+  const since = document.getElementById("tx-filter-since").value || null;
+  const until = document.getElementById("tx-filter-until").value || null;
+  navigateToTransactions({ account, asset, since, until, page: 1 });
+});
+
+document.getElementById("tx-filter-since").addEventListener("change", (e) => {
+  const since = e.target.value || null;
+  const account = document.getElementById("tx-filter-account").value || null;
+  const asset = document.getElementById("tx-filter-asset").value || null;
+  const until = document.getElementById("tx-filter-until").value || null;
+  navigateToTransactions({ account, asset, since, until, page: 1 });
+});
+
+document.getElementById("tx-filter-until").addEventListener("change", (e) => {
+  const until = e.target.value || null;
+  const account = document.getElementById("tx-filter-account").value || null;
+  const asset = document.getElementById("tx-filter-asset").value || null;
+  const since = document.getElementById("tx-filter-since").value || null;
+  navigateToTransactions({ account, asset, since, until, page: 1 });
 });
 
 document.getElementById("tx-filter-clear").addEventListener("click", () => {
+  document.getElementById("tx-filter-since").value = "";
+  document.getElementById("tx-filter-until").value = "";
   navigateToTransactions({});
+});
+
+// ---- 手動追加フォーム ----
+
+document.getElementById("tx-add-btn").addEventListener("click", async () => {
+  const form = document.getElementById("tx-add-form");
+  const isHidden = form.classList.contains("hidden");
+  if (isHidden) {
+    // 口座セレクトを最新化
+    const accSel = document.getElementById("manual-account");
+    accSel.innerHTML = "";
+    try {
+      const data = await fetchJSON("/api/sources?currency=USD");
+      data.sources.forEach((s) => {
+        const opt = document.createElement("option");
+        opt.value = s.source;
+        opt.textContent = s.source;
+        accSel.appendChild(opt);
+      });
+    } catch (_) { /* サイレント */ }
+    // デフォルト日時を今にセット
+    const now = new Date();
+    const local = new Date(now - now.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+    document.getElementById("manual-timestamp").value = local;
+    document.getElementById("manual-result").classList.add("hidden");
+  }
+  form.classList.toggle("hidden");
+});
+
+document.getElementById("manual-cancel").addEventListener("click", () => {
+  document.getElementById("tx-add-form").classList.add("hidden");
+});
+
+document.getElementById("manual-save").addEventListener("click", async () => {
+  const result = document.getElementById("manual-result");
+  result.classList.add("hidden");
+
+  const account = document.getElementById("manual-account").value;
+  const timestamp = document.getElementById("manual-timestamp").value;
+  const type = document.getElementById("manual-type").value;
+  const recvAsset = document.getElementById("manual-recv-asset").value.trim().toUpperCase() || null;
+  const recvAmount = document.getElementById("manual-recv-amount").value || null;
+  const sentAsset = document.getElementById("manual-sent-asset").value.trim().toUpperCase() || null;
+  const sentAmount = document.getElementById("manual-sent-amount").value || null;
+  const feeAsset = document.getElementById("manual-fee-asset").value.trim().toUpperCase() || null;
+  const feeAmount = document.getElementById("manual-fee-amount").value || null;
+  const label = document.getElementById("manual-label").value.trim() || null;
+
+  if (!account || !timestamp) {
+    result.className = "settings-result err";
+    result.textContent = "口座と日時は必須です";
+    result.classList.remove("hidden");
+    return;
+  }
+
+  try {
+    const resp = await fetch("/api/transactions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        account,
+        timestamp,
+        type,
+        received_asset: recvAsset,
+        received_amount: recvAmount,
+        sent_asset: sentAsset,
+        sent_amount: sentAmount,
+        fee_asset: feeAsset,
+        fee_amount: feeAmount,
+        label,
+      }),
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      throw new Error(err.detail || `HTTP ${resp.status}`);
+    }
+    result.className = "settings-result ok";
+    result.textContent = "追加しました";
+    result.classList.remove("hidden");
+    // フォームをリセット
+    ["manual-recv-asset", "manual-recv-amount", "manual-sent-asset", "manual-sent-amount",
+      "manual-fee-asset", "manual-fee-amount", "manual-label"].forEach((id) => {
+      document.getElementById(id).value = "";
+    });
+    // 現在のフィルタで再ロード
+    const account2 = document.getElementById("tx-filter-account").value || null;
+    const asset2 = document.getElementById("tx-filter-asset").value || null;
+    const since2 = document.getElementById("tx-filter-since").value || null;
+    const until2 = document.getElementById("tx-filter-until").value || null;
+    loadTransactionsPage(account2, asset2, since2, until2, 1);
+  } catch (e) {
+    result.className = "settings-result err";
+    result.textContent = "追加に失敗しました: " + e.message;
+    result.classList.remove("hidden");
+  }
+});
+
+// ---- 削除ダイアログ ----
+
+let _deleteCallback = null;
+
+function showDeleteDialog(txId, desc, onSuccess) {
+  _deleteCallback = { txId, onSuccess };
+  document.getElementById("delete-dialog-msg").textContent =
+    `「${desc}」を削除します。この操作は取り消せません。`;
+  document.getElementById("delete-dialog").classList.remove("hidden");
+}
+
+document.getElementById("delete-confirm").addEventListener("click", async () => {
+  if (!_deleteCallback) return;
+  const { txId, onSuccess } = _deleteCallback;
+  _deleteCallback = null;
+  document.getElementById("delete-dialog").classList.add("hidden");
+
+  try {
+    const resp = await fetch(`/api/transactions/${encodeURIComponent(txId)}`, { method: "DELETE" });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    if (onSuccess) onSuccess();
+  } catch (e) {
+    alert("削除に失敗しました: " + e.message);
+  }
+});
+
+document.getElementById("delete-cancel").addEventListener("click", () => {
+  _deleteCallback = null;
+  document.getElementById("delete-dialog").classList.add("hidden");
+});
+
+// ダイアログ外クリックで閉じる
+document.getElementById("delete-dialog").addEventListener("click", (e) => {
+  if (e.target === e.currentTarget) {
+    _deleteCallback = null;
+    e.currentTarget.classList.add("hidden");
+  }
+});
+
+// ---- インポートページ ----
+
+async function loadImportPage() {
+  setupImportTabs();
+  loadImportAccountsTable();
+}
+
+function setupImportTabs() {
+  document.querySelectorAll(".import-tab").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const tab = btn.dataset.tab;
+      document.querySelectorAll(".import-tab").forEach((b) => b.classList.remove("active"));
+      btn.classList.add("active");
+      document.querySelectorAll(".import-tab-content").forEach((c) => c.classList.add("hidden"));
+      const content = document.getElementById(`import-tab-${tab}`);
+      if (content) content.classList.remove("hidden");
+    });
+  });
+}
+
+async function loadImportAccountsTable() {
+  const tbody = document.querySelector("#import-accounts-table tbody");
+  if (!tbody) return;
+  tbody.innerHTML = '<tr><td colspan="4" class="loading">読み込み中…</td></tr>';
+  try {
+    const data = await fetchJSON("/api/sources?currency=USD");
+    tbody.innerHTML = "";
+    if (data.sources.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="4" class="muted">口座なし</td></tr>';
+      return;
+    }
+    data.sources.forEach((s) => {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td>${escapeHtml(s.source)}</td>
+        <td><span class="muted" style="font-size:12px;font-family:monospace">${escapeHtml(s.source_ids.join(", "))}</span></td>
+        <td class="num">${s.tx_count}</td>
+        <td>
+          <button class="tx-link-btn" data-acc="${escapeHtml(s.source)}">CSV 追加インポート</button>
+        </td>
+      `;
+      tr.querySelector(".tx-link-btn").addEventListener("click", () => {
+        // CSVタブへ切り替えて口座名をプリセット
+        document.querySelector(".import-tab[data-tab='csv']").click();
+        document.getElementById("import-csv-account").value = s.source;
+        document.getElementById("import-csv-account").scrollIntoView({ behavior: "smooth" });
+      });
+      tbody.appendChild(tr);
+    });
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="4" class="muted">エラー: ${escapeHtml(e.message)}</td></tr>`;
+  }
+}
+
+// CSV インポートボタン
+document.getElementById("import-csv-btn").addEventListener("click", async () => {
+  const result = document.getElementById("import-csv-result");
+  result.classList.add("hidden");
+
+  const exchange = document.getElementById("import-csv-exchange").value;
+  const fileInput = document.getElementById("import-csv-file");
+  const accountName = document.getElementById("import-csv-account").value.trim();
+
+  if (!fileInput.files || fileInput.files.length === 0) {
+    result.className = "settings-result err";
+    result.textContent = "CSVファイルを選択してください";
+    result.classList.remove("hidden");
+    return;
+  }
+
+  if (exchange !== "nexo") {
+    result.className = "settings-result err";
+    result.textContent = `${exchange} は近日対応予定です。現在は Nexo のみサポートしています。`;
+    result.classList.remove("hidden");
+    return;
+  }
+
+  const formData = new FormData();
+  formData.append("file", fileInput.files[0]);
+  formData.append("exchange", exchange);
+  if (accountName) formData.append("account", accountName);
+
+  result.className = "settings-result ok";
+  result.textContent = "インポート中…";
+  result.classList.remove("hidden");
+
+  try {
+    const resp = await fetch("/api/import/csv", { method: "POST", body: formData });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      throw new Error(err.detail || `HTTP ${resp.status}`);
+    }
+    const d = await resp.json();
+    result.className = "settings-result ok";
+    result.textContent = `インポート完了: ${d.imported ?? "?"} 件追加`;
+    result.classList.remove("hidden");
+    fileInput.value = "";
+    loadImportAccountsTable();
+    // ダッシュボードの選択肢リセット
+    _txAccountsLoaded = false;
+  } catch (e) {
+    result.className = "settings-result err";
+    result.textContent = "インポートに失敗しました: " + e.message;
+    result.classList.remove("hidden");
+  }
+});
+
+// ウォレット追加ボタン（スタブ — API未実装）
+document.getElementById("import-wallet-btn").addEventListener("click", () => {
+  const result = document.getElementById("import-wallet-result");
+  result.className = "settings-result err";
+  result.textContent = "ウォレットスキャンは近日対応予定です。";
+  result.classList.remove("hidden");
 });
 
 // ---- メインロード ----
@@ -903,11 +1211,9 @@ async function load() {
     renderSummary(summary);
     renderSources(sources);
     // 取引履歴のフィルタ選択肢を再構築させる（口座名変更などを反映）
-    _txFiltersLoaded = false;
+    _txAccountsLoaded = false;
     const accSel = document.getElementById("tx-filter-account");
-    const assetSel = document.getElementById("tx-filter-asset");
     [...accSel.options].forEach((o) => { if (o.value) o.remove(); });
-    [...assetSel.options].forEach((o) => { if (o.value) o.remove(); });
   } catch (e) {
     document.getElementById("total-sub").textContent = "読み込みエラー: " + e.message;
   } finally {
@@ -928,7 +1234,6 @@ document.getElementById("currency").addEventListener("change", () => {
   if (cur === "dashboard") load();
   else if (cur === "accounts") loadAccountsPage();
   else if (cur === "assets") loadAssetsPage();
-  // 取引履歴は通貨フィルタ不要のためそのまま
 });
 
 document.getElementById("refresh").addEventListener("click", () => {
@@ -936,10 +1241,13 @@ document.getElementById("refresh").addEventListener("click", () => {
   if (cur === "dashboard") load();
   else if (cur === "accounts") loadAccountsPage();
   else if (cur === "assets") loadAssetsPage();
+  else if (cur === "import") loadImportPage();
   else if (cur === "transactions") {
     const account = document.getElementById("tx-filter-account").value || null;
     const asset = document.getElementById("tx-filter-asset").value || null;
-    loadTransactionsPage(account, asset, 1);
+    const since = document.getElementById("tx-filter-since").value || null;
+    const until = document.getElementById("tx-filter-until").value || null;
+    loadTransactionsPage(account, asset, since, until, 1);
   }
 });
 
@@ -958,5 +1266,5 @@ if (saved) document.getElementById("currency").value = saved;
 
 const initHash = location.hash.replace("#", "") || "dashboard";
 const initPage = PAGES.includes(initHash) ? initHash : "dashboard";
-showPage(initPage);  // dashboard/accounts/assets は内部で自動ロードされる
-if (initPage === "transactions") loadTransactionsPage(null, null, 1);
+showPage(initPage);
+if (initPage === "transactions") loadTransactionsPage(null, null, null, null, 1);
