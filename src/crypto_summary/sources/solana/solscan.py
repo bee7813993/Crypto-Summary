@@ -141,17 +141,22 @@ class SolscanApiSource:
             "address": self.wallet,
             "page": page,
             "page_size": _PAGE_SIZE,
-            "sort_by": "block_time",
-            "sort_order": "asc",
-            "exclude_amount_zero": "true",
         }
         time.sleep(_RATE_LIMIT_SLEEP)
         resp = httpx.get(
             f"{_BASE}/account/transfer",
             params=params,
-            headers={"Authorization": f"Bearer {self.api_key}"},
+            headers={"token": self.api_key},
             timeout=self.timeout,
         )
+        if resp.status_code == 401:
+            raise RuntimeError(
+                "Solscan API 認証エラー (401)。\n"
+                "  1. Solscan ダッシュボード https://pro.solscan.io/api-pro でキーが\n"
+                "     Activated（有効）になっているか確認してください。\n"
+                "  2. 発行直後は数分かかる場合があります。\n"
+                "  3. .env の SOLSCAN_API_KEY が正しくコピーされているか確認してください。"
+            )
         resp.raise_for_status()
         data = resp.json()
         if not data.get("success"):
