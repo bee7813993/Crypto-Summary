@@ -36,8 +36,10 @@ out/
 .DS_Store
 Thumbs.db
 
+# Claude Code internal worktrees
+.claude/
+
 # pytest
-.pytest_cache/
-.coverage
+.pytest_cache/.coverage
 htmlcov/
 pbr_lending_2026_manual.csv
