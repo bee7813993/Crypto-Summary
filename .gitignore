@@ -21,6 +21,7 @@ env/
 # Environment / secrets
 .env
 .env.*
+!.env.example
 
 # Output files
 out/
