@@ -118,9 +118,11 @@ class ArbiscanCsvSource:
         record_gas: bool,
     ) -> list[CanonicalTx]:
 
-        # 失敗した取引はスキップ（ErrCode が非空 = revert）
-        if norm and norm.get("ErrCode", "").strip():
-            return []
+        # 失敗した取引（execution reverted）の扱い:
+        #   ネイティブ ETH は移動せず（ガスのみ消費）→ ETH 値は無視する。
+        #   ただし Arbiscan の ERC20 エクスポートに載るトークン転送は実際に
+        #   成立しているため通常どおり処理する。ガスは失敗時も消費される。
+        reverted = bool(norm and norm.get("ErrCode", "").strip())
 
         if norm:
             ts = _parse_ts(norm["DateTime (UTC)"])
@@ -130,9 +132,12 @@ class ArbiscanCsvSource:
             return []
 
         gas = _d(norm.get("TxnFee(ETH)", "0")) if norm else _ZERO
-        eth_in = _d(norm.get("Value_IN(ETH)", "0")) if norm else _ZERO
-        eth_out = _d(norm.get("Value_OUT(ETH)", "0")) if norm else _ZERO
-        int_eth_in = sum(_d(r.get("Value_IN(ETH)", "0")) for r in intern)
+        if reverted:
+            eth_in = eth_out = int_eth_in = _ZERO
+        else:
+            eth_in = _d(norm.get("Value_IN(ETH)", "0")) if norm else _ZERO
+            eth_out = _d(norm.get("Value_OUT(ETH)", "0")) if norm else _ZERO
+            int_eth_in = sum(_d(r.get("Value_IN(ETH)", "0")) for r in intern)
         method = (norm.get("Method", "") if norm else "").strip()
 
         # トークンフロー（スパム・ダスト除去）

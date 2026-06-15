@@ -88,15 +88,30 @@ def test_eth_withdraw(tmp_path):
     assert tx.sent_amount == Decimal("0.5")
 
 
-# ── 3. 失敗した取引はスキップ ────────────────────────────────────────
+# ── 3a. 失敗扱いでもトークン転送は記録される（Arbiscanの仕様）───────
 
-def test_failed_tx_skipped(tmp_path):
+def test_reverted_tx_with_token_is_recorded(tmp_path):
+    """ErrCode が付いていても ERC20 エクスポートに載る転送は実際に成立済み。"""
     h = _hash(3)
     n = _normal(tmp_path,
-        f'"{h}","1","1","2025-09-28 12:00:00","{WALLET}","{OTHER}","","0","0","0","0.001","1","4000","Error(1)","execution reverted","Deposit"')
+        f'"{h}","1","1","2025-09-28 12:00:00","{WALLET}","{OTHER}","","0","0","0","0.001","1","4000","Error(1)","execution reverted","Create Redemption"')
     e = _erc20(tmp_path,
         f'"{h}","1","1","2025-09-28 12:00:00","{WALLET}","{OTHER}","0.05","$200","{WBTC}","Wrapped BTC","WBTC"')
     txs = _src().load_multi(n, e)
+    assert len(txs) == 1
+    tx = txs[0]
+    assert tx.type == TxType.WITHDRAW
+    assert tx.sent_asset == "WBTC"
+    assert tx.sent_amount == Decimal("0.05")
+
+
+# ── 3b. 失敗かつトークン移動なし → 何も記録しない ───────────────────
+
+def test_reverted_tx_no_token_skipped(tmp_path):
+    h = _hash(33)
+    n = _normal(tmp_path,
+        f'"{h}","1","1","2025-09-28 12:00:00","{WALLET}","{OTHER}","","0","0","0","0.001","1","4000","Error(1)","execution reverted","Deposit"')
+    txs = _src().load_multi(n)
     assert txs == []
 
 

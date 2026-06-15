@@ -115,8 +115,8 @@ _WALLET_EXCHANGES = ["arbiscan"]
 )
 @click.option("--source-id", default=None,
               help="ソース識別子（デフォルト: exchange名）")
-@click.option("--record-gas", is_flag=True, default=False,
-              help="ガス代を FEE として ledger に記録する")
+@click.option("--gas/--no-gas", "record_gas", default=True, show_default=True,
+              help="ガス代を FEE として記録する（実際のウォレット残高と一致させるため既定で有効）")
 @click.pass_context
 def import_wallet_cmd(
     ctx: click.Context,
