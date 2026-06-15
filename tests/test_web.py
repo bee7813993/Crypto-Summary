@@ -166,18 +166,20 @@ def test_transactions_type_ja(client):
 def test_transactions_running_balance(client):
     # 資産フィルタありなら取引後残高を返す
     d = client.get("/api/transactions?asset=BTC").json()
-    assert d["show_running_balance"] is True
     tx = d["transactions"][0]
     # BTC は acct_a に 0.5 入金の1件のみ → 全体・口座内とも 0.5
-    assert Decimal(tx["balance_after"]) == Decimal("0.5")
-    assert Decimal(tx["account_balance_after"]) == Decimal("0.5")
+    assert "BTC" in tx["running_balances"]
+    assert Decimal(tx["running_balances"]["BTC"]["global"]) == Decimal("0.5")
+    assert Decimal(tx["running_balances"]["BTC"]["account"]) == Decimal("0.5")
 
 
-def test_transactions_no_running_balance_without_asset(client):
+def test_transactions_running_balance_without_asset_filter(client):
+    # 資産フィルタなしでも running_balances が返る
     d = client.get("/api/transactions").json()
-    assert d["show_running_balance"] is False
-    assert d["transactions"][0]["balance_after"] is None
-    assert d["transactions"][0]["account_balance_after"] is None
+    tx = d["transactions"][0]
+    assert "running_balances" in tx
+    # 何らかの資産が含まれている
+    assert len(tx["running_balances"]) > 0
 
 
 def test_running_balance_cumulative(tmp_path, monkeypatch):
@@ -194,15 +196,15 @@ def test_running_balance_cumulative(tmp_path, monkeypatch):
     d = client.get("/api/transactions?asset=SOL").json()
     # 新しい順: d3(acct_a +5), d2(acct_b +3), d1(acct_a +10)
     by_amount = {Decimal(t["received_amount"]): t for t in d["transactions"]}
-    # d3: 全体 = 10+3+5 = 18, Acct A 内 = 10+5 = 15
-    assert Decimal(by_amount[Decimal("5")]["balance_after"]) == Decimal("18")
-    assert Decimal(by_amount[Decimal("5")]["account_balance_after"]) == Decimal("15")
-    # d2: 全体 = 10+3 = 13, Acct B 内 = 3
-    assert Decimal(by_amount[Decimal("3")]["balance_after"]) == Decimal("13")
-    assert Decimal(by_amount[Decimal("3")]["account_balance_after"]) == Decimal("3")
-    # d1: 全体 = 10, Acct A 内 = 10
-    assert Decimal(by_amount[Decimal("10")]["balance_after"]) == Decimal("10")
-    assert Decimal(by_amount[Decimal("10")]["account_balance_after"]) == Decimal("10")
+    # d3(+5): 全体 = 10+3+5=18, Acct A 内 = 10+5=15
+    assert Decimal(by_amount[Decimal("5")]["running_balances"]["SOL"]["global"]) == Decimal("18")
+    assert Decimal(by_amount[Decimal("5")]["running_balances"]["SOL"]["account"]) == Decimal("15")
+    # d2(+3): 全体 = 10+3=13, Acct B 内 = 3
+    assert Decimal(by_amount[Decimal("3")]["running_balances"]["SOL"]["global"]) == Decimal("13")
+    assert Decimal(by_amount[Decimal("3")]["running_balances"]["SOL"]["account"]) == Decimal("3")
+    # d1(+10): 全体 = 10, Acct A 内 = 10
+    assert Decimal(by_amount[Decimal("10")]["running_balances"]["SOL"]["global"]) == Decimal("10")
+    assert Decimal(by_amount[Decimal("10")]["running_balances"]["SOL"]["account"]) == Decimal("10")
 
 
 def test_account_groups_get(client):

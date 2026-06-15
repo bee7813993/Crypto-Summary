@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -16,6 +17,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from ..core.ledger import Ledger
+from ..core.models import CanonicalTx, TxType
 from ..core.prices import SUPPORTED_CURRENCIES, fetch_prices
 
 _STATIC_DIR = Path(__file__).parent / "static"
@@ -302,87 +304,104 @@ _TX_TYPE_JA: dict[str, str] = {
 _TX_PAGE_SIZE = 50
 
 
-def _asset_delta(tx, asset: str) -> Decimal:
-    """1取引における asset の純増減（受取 - 送付 - 手数料）を返す。"""
-    delta = Decimal("0")
-    if tx.received_asset == asset and tx.received_amount is not None:
-        delta += tx.received_amount
-    if tx.sent_asset == asset and tx.sent_amount is not None:
-        delta -= tx.sent_amount
-    if tx.fee_asset == asset and tx.fee_amount is not None:
-        delta -= tx.fee_amount
-    return delta
+def _tx_asset_deltas(tx) -> dict[str, Decimal]:
+    """1取引で動く全資産のデルタ（受取 +, 送付/手数料 -）を返す。"""
+    d: dict[str, Decimal] = {}
+    if tx.received_asset and tx.received_amount is not None:
+        d[tx.received_asset] = d.get(tx.received_asset, Decimal("0")) + tx.received_amount
+    if tx.sent_asset and tx.sent_amount is not None:
+        d[tx.sent_asset] = d.get(tx.sent_asset, Decimal("0")) - tx.sent_amount
+    if tx.fee_asset and tx.fee_amount is not None:
+        d[tx.fee_asset] = d.get(tx.fee_asset, Decimal("0")) - tx.fee_amount
+    return d
 
 
-def _running_balances(
-    db_path: str, asset: str, groups: dict[str, list[str]]
-) -> dict[str, tuple[Decimal, Decimal]]:
-    """asset の全取引を時系列に走査し、各取引IDごとの
-    (取引後の全体残高, 取引後の口座内残高) を返す。
+def _build_running_balances(
+    all_txs: list,
+    groups: dict[str, list[str]],
+) -> dict[str, dict[str, dict[str, str]]]:
+    """全取引を時系列走査し {tx_id: {asset: {"global": str, "account": str}}} を返す。
 
-    口座内残高はその取引が属するグループ（口座）内での累計。
+    全体残高はすべてのソース合算、口座内残高はその取引が属するグループ内の累計。
     """
+    all_txs = sorted(all_txs, key=lambda t: (t.timestamp, t.id))
+    global_bal: dict[str, Decimal] = {}
+    account_bal: dict[str, Decimal] = {}  # f"{gname}\x00{asset}" → Decimal
+    result: dict[str, dict] = {}
+    for tx in all_txs:
+        gname = _display_name(tx.source, groups)
+        affected = {}
+        for asset, delta in _tx_asset_deltas(tx).items():
+            global_bal[asset] = global_bal.get(asset, Decimal("0")) + delta
+            akey = f"{gname}\x00{asset}"
+            account_bal[akey] = account_bal.get(akey, Decimal("0")) + delta
+            affected[asset] = {
+                "global": str(global_bal[asset]),
+                "account": str(account_bal[akey]),
+            }
+        result[tx.id] = affected
+    return result
+
+
+def _resolve_source_ids(
+    account: str | None, db_path: str, groups: dict[str, list[str]]
+) -> list[str] | None:
+    if not account:
+        return None
     ledger = Ledger(db_path)
     try:
-        all_txs, _ = ledger.transactions(asset=asset, limit=10_000_000, offset=0)
+        all_ids = [src for src, *_ in ledger.sources()]
     finally:
         ledger.close()
+    mapped = [s for s in all_ids if _display_name(s, groups) == account]
+    return mapped if mapped else [account]
 
-    # 時系列昇順（同時刻は id で安定化）に並べ替え
-    all_txs.sort(key=lambda t: (t.timestamp, t.id))
 
-    result: dict[str, tuple[Decimal, Decimal]] = {}
-    global_run = Decimal("0")
-    group_run: dict[str, Decimal] = {}
-    for tx in all_txs:
-        delta = _asset_delta(tx, asset)
-        global_run += delta
-        gname = _display_name(tx.source, groups)
-        group_run[gname] = group_run.get(gname, Decimal("0")) + delta
-        result[tx.id] = (global_run, group_run[gname])
-    return result
+def _parse_date(s: str | None) -> datetime | None:
+    if not s:
+        return None
+    try:
+        return datetime.fromisoformat(s).replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
 
 
 def _transactions(
     db_path: str,
     account: str | None,
     asset: str | None,
+    since_str: str | None,
+    until_str: str | None,
     page: int,
 ) -> dict:
     """取引履歴ページを返す。account は表示名（グループ名）で受け取る。"""
     groups = _load_groups(db_path)
+    source_ids = _resolve_source_ids(account, db_path, groups)
+    since = _parse_date(since_str)
+    until = _parse_date(until_str)
 
-    source_ids: list[str] | None = None
-    if account:
-        ledger_tmp = Ledger(db_path)
-        try:
-            all_source_ids = [src for src, *_ in ledger_tmp.sources()]
-        finally:
-            ledger_tmp.close()
-        mapped = [s for s in all_source_ids if _display_name(s, groups) == account]
-        source_ids = mapped if mapped else [account]
-
-    # 資産が指定されていれば、取引後残高（全体・口座内）を事前計算する
-    running = _running_balances(db_path, asset, groups) if asset else {}
-
-    offset = (max(page, 1) - 1) * _TX_PAGE_SIZE
     ledger = Ledger(db_path)
     try:
+        # 残高計算用: アカウントフィルタなし・日付フィルタなし・資産フィルタのみ
+        bal_txs, _ = ledger.transactions(asset=asset, limit=10_000_000)
+        # 表示用: 全フィルタ適用
+        offset = (max(page, 1) - 1) * _TX_PAGE_SIZE
         txs, total = ledger.transactions(
             source=source_ids,
             asset=asset,
+            since=since,
+            until=until,
             limit=_TX_PAGE_SIZE,
             offset=offset,
         )
     finally:
         ledger.close()
 
+    running = _build_running_balances(bal_txs, groups)
+
     rows = []
     for tx in txs:
-        bal_global, bal_account = (None, None)
-        if asset and tx.id in running:
-            g, a = running[tx.id]
-            bal_global, bal_account = str(g), str(a)
+        row_balances = running.get(tx.id, {})
         rows.append({
             "id": tx.id,
             "timestamp": tx.timestamp.isoformat(),
@@ -398,8 +417,7 @@ def _transactions(
             "fee_amount": str(tx.fee_amount) if tx.fee_amount is not None else None,
             "label": tx.label,
             "tx_hash": tx.tx_hash,
-            "balance_after": bal_global,
-            "account_balance_after": bal_account,
+            "running_balances": row_balances,
         })
 
     total_pages = max(1, (total + _TX_PAGE_SIZE - 1) // _TX_PAGE_SIZE)
@@ -411,8 +429,55 @@ def _transactions(
         "page_size": _TX_PAGE_SIZE,
         "filter_account": account,
         "filter_asset": asset,
-        "show_running_balance": bool(asset),
     }
+
+
+def _add_manual_transaction(db_path: str, body: dict[str, Any]) -> dict:
+    """手動で取引を追加する。"""
+    groups = _load_groups(db_path)
+    # source は表示名 → ソースIDに変換
+    account_name = body.get("account", "")
+    src_ids = _resolve_source_ids(account_name, db_path, groups)
+    source_id = src_ids[0] if src_ids else account_name
+
+    ts_str = body.get("timestamp", "")
+    try:
+        ts = datetime.fromisoformat(ts_str)
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+    except (ValueError, AttributeError):
+        raise HTTPException(status_code=422, detail="invalid timestamp")
+
+    type_str = body.get("type", "deposit").lower()
+    try:
+        tx_type = TxType(type_str)
+    except ValueError:
+        raise HTTPException(status_code=422, detail=f"invalid type: {type_str}")
+
+    def _dec(v: Any) -> Decimal | None:
+        return Decimal(str(v)) if v not in (None, "", 0, "0") else None
+
+    tx_id = f"manual:{uuid.uuid4().hex[:12]}"
+    tx = CanonicalTx(
+        id=tx_id,
+        source=source_id,
+        timestamp=ts,
+        type=tx_type,
+        received_asset=body.get("received_asset") or None,
+        received_amount=_dec(body.get("received_amount")),
+        sent_asset=body.get("sent_asset") or None,
+        sent_amount=_dec(body.get("sent_amount")),
+        fee_asset=body.get("fee_asset") or None,
+        fee_amount=_dec(body.get("fee_amount")),
+        label=(body.get("label") or "手動追加"),
+        raw={},
+    )
+    ledger = Ledger(db_path)
+    try:
+        ledger.upsert(tx)
+    finally:
+        ledger.close()
+    return {"ok": True, "id": tx_id}
 
 
 def _get_account_groups(db_path: str) -> dict:
@@ -460,9 +525,26 @@ def create_app(db_path: str = "ledger.db") -> FastAPI:
     def transactions_api(
         account: str | None = Query(None),
         asset: str | None = Query(None),
+        since: str | None = Query(None),
+        until: str | None = Query(None),
         page: int = Query(1),
     ) -> dict:
-        return _transactions(db_path, account, asset, page)
+        return _transactions(db_path, account, asset, since, until, page)
+
+    @app.post("/api/transactions")
+    def add_transaction(body: dict[str, Any]) -> dict:
+        return _add_manual_transaction(db_path, body)
+
+    @app.delete("/api/transactions/{tx_id}")
+    def delete_transaction(tx_id: str) -> dict:
+        ledger = Ledger(db_path)
+        try:
+            deleted = ledger.delete_by_id(tx_id)
+        finally:
+            ledger.close()
+        if not deleted:
+            raise HTTPException(status_code=404, detail="Transaction not found")
+        return {"ok": True}
 
     @app.get("/api/account-groups")
     def get_account_groups() -> dict:
@@ -473,7 +555,6 @@ def create_app(db_path: str = "ledger.db") -> FastAPI:
         groups = body.get("groups")
         if not isinstance(groups, dict):
             raise HTTPException(status_code=422, detail="groups must be an object")
-        # バリデーション: 各値はリストであること
         for name, ids in groups.items():
             if not isinstance(name, str) or not isinstance(ids, list):
                 raise HTTPException(status_code=422, detail="invalid groups format")

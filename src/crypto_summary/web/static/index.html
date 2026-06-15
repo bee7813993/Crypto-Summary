@@ -29,9 +29,9 @@
         <a class="nav-link" data-page="transactions" href="#transactions">
           <span class="nav-icon">≡</span><span>取引履歴</span>
         </a>
-        <span class="nav-link disabled">
+        <a class="nav-link" data-page="import" href="#import">
           <span class="nav-icon">↑</span><span>インポート</span>
-        </span>
+        </a>
       </nav>
 
       <div class="sidebar-controls">
@@ -117,7 +117,6 @@
 
       <!-- 口座別ページ -->
       <div id="page-accounts" class="page hidden">
-        <!-- 口座一覧 -->
         <div id="accounts-list-view">
           <h1 class="page-title">口座別</h1>
           <section class="card">
@@ -139,7 +138,6 @@
           </section>
         </div>
 
-        <!-- 口座ドリルダウン -->
         <div id="account-detail-view" class="hidden">
           <div class="detail-header">
             <button id="account-back" class="back-btn">← 口座一覧</button>
@@ -148,7 +146,6 @@
             <button id="account-settings-btn" class="action-btn">⚙ 設定</button>
           </div>
 
-          <!-- 口座設定パネル（トグル表示） -->
           <div id="account-settings-panel" class="settings-panel hidden">
             <h3 class="settings-title">口座設定</h3>
             <div class="settings-row">
@@ -195,7 +192,6 @@
 
       <!-- 資産別ページ -->
       <div id="page-assets" class="page hidden">
-        <!-- 資産一覧 -->
         <div id="assets-list-view">
           <h1 class="page-title">資産別</h1>
           <section class="card">
@@ -218,7 +214,6 @@
           </section>
         </div>
 
-        <!-- 資産ドリルダウン -->
         <div id="asset-detail-view" class="hidden">
           <div class="detail-header">
             <button id="asset-back" class="back-btn">← 資産一覧</button>
@@ -249,18 +244,86 @@
       <div id="page-transactions" class="page hidden">
         <div class="tx-header">
           <h1 class="page-title">取引履歴</h1>
-          <div class="tx-filters">
-            <select id="tx-filter-account">
-              <option value="">すべての口座</option>
-            </select>
-            <select id="tx-filter-asset">
-              <option value="">すべての資産</option>
-            </select>
-            <button id="tx-filter-clear" class="link-btn">絞り込みを解除</button>
+          <button id="tx-add-btn" class="action-btn">＋ 手動追加</button>
+        </div>
+
+        <div class="tx-filters">
+          <div class="filter-group">
+            <label class="filter-label">口座</label>
+            <select id="tx-filter-account"><option value="">すべての口座</option></select>
           </div>
+          <div class="filter-group">
+            <label class="filter-label">資産</label>
+            <select id="tx-filter-asset"><option value="">すべての資産</option></select>
+          </div>
+          <div class="filter-group">
+            <label class="filter-label">開始日</label>
+            <input type="date" id="tx-filter-since" class="filter-date" />
+          </div>
+          <div class="filter-group">
+            <label class="filter-label">終了日</label>
+            <input type="date" id="tx-filter-until" class="filter-date" />
+          </div>
+          <button id="tx-filter-clear" class="link-btn">絞り込みを解除</button>
         </div>
 
         <div id="tx-active-filter" class="tx-active-filter hidden"></div>
+
+        <!-- 手動追加フォーム -->
+        <div id="tx-add-form" class="settings-panel hidden">
+          <h3 class="settings-title">取引を手動追加</h3>
+          <div class="manual-add-grid">
+            <div class="settings-row">
+              <label class="settings-label">口座 *</label>
+              <select id="manual-account" class="settings-input"></select>
+            </div>
+            <div class="settings-row">
+              <label class="settings-label">日時 *</label>
+              <input id="manual-timestamp" class="settings-input" type="datetime-local" />
+            </div>
+            <div class="settings-row">
+              <label class="settings-label">種別 *</label>
+              <select id="manual-type" class="settings-input">
+                <option value="deposit">入金</option>
+                <option value="withdraw">出金</option>
+                <option value="trade">売買</option>
+                <option value="fee">手数料</option>
+                <option value="reward">報酬</option>
+                <option value="transfer">振替</option>
+              </select>
+            </div>
+            <div class="settings-row">
+              <label class="settings-label">受取資産</label>
+              <div class="input-pair">
+                <input id="manual-recv-asset" class="settings-input" type="text" placeholder="例: BTC" />
+                <input id="manual-recv-amount" class="settings-input" type="number" step="any" placeholder="数量" />
+              </div>
+            </div>
+            <div class="settings-row">
+              <label class="settings-label">送付資産</label>
+              <div class="input-pair">
+                <input id="manual-sent-asset" class="settings-input" type="text" placeholder="例: ETH" />
+                <input id="manual-sent-amount" class="settings-input" type="number" step="any" placeholder="数量" />
+              </div>
+            </div>
+            <div class="settings-row">
+              <label class="settings-label">手数料</label>
+              <div class="input-pair">
+                <input id="manual-fee-asset" class="settings-input" type="text" placeholder="例: ETH" />
+                <input id="manual-fee-amount" class="settings-input" type="number" step="any" placeholder="数量" />
+              </div>
+            </div>
+            <div class="settings-row">
+              <label class="settings-label">メモ</label>
+              <input id="manual-label" class="settings-input" type="text" placeholder="任意のメモ" />
+            </div>
+          </div>
+          <div class="settings-actions">
+            <button id="manual-save" class="settings-save-btn">追加</button>
+            <button id="manual-cancel" class="link-btn">キャンセル</button>
+          </div>
+          <div id="manual-result" class="settings-result hidden"></div>
+        </div>
 
         <section class="card tx-card">
           <div class="table-wrap">
@@ -273,9 +336,8 @@
                   <th>受取</th>
                   <th>送付</th>
                   <th>手数料</th>
-                  <th class="num bal-col hidden">取引後残高<br><span class="th-sub">全体</span></th>
-                  <th class="num bal-col hidden">取引後残高<br><span class="th-sub">口座内</span></th>
-                  <th>メモ</th>
+                  <th class="num">取引後残高</th>
+                  <th></th>
                 </tr>
               </thead>
               <tbody></tbody>
@@ -288,7 +350,121 @@
         <div class="tx-pagination" id="tx-pagination"></div>
       </div>
 
+      <!-- インポートページ -->
+      <div id="page-import" class="page hidden">
+        <h1 class="page-title">インポート</h1>
+
+        <!-- 新規口座追加 -->
+        <section class="card import-section">
+          <h2>新規口座を追加</h2>
+          <div class="import-tabs">
+            <button class="import-tab active" data-tab="csv">📄 CSV インポート</button>
+            <button class="import-tab" data-tab="api">🔑 取引所 API</button>
+            <button class="import-tab" data-tab="wallet">💼 ウォレットアドレス</button>
+          </div>
+
+          <!-- CSV タブ -->
+          <div id="import-tab-csv" class="import-tab-content">
+            <div class="settings-row">
+              <label class="settings-label">取引所・サービス</label>
+              <select id="import-csv-exchange" class="settings-input" style="max-width:240px">
+                <option value="nexo">Nexo</option>
+                <option value="bitflyer">bitFlyer（近日対応）</option>
+                <option value="coincheck">Coincheck（近日対応）</option>
+              </select>
+            </div>
+            <div class="settings-row">
+              <label class="settings-label">CSVファイル</label>
+              <input id="import-csv-file" type="file" accept=".csv,.xlsx,.xls" class="file-input" />
+            </div>
+            <div class="settings-row">
+              <label class="settings-label">口座名（任意）</label>
+              <input id="import-csv-account" class="settings-input" type="text" placeholder="未入力の場合は取引所名を使用" style="max-width:240px" />
+            </div>
+            <div class="settings-actions">
+              <button id="import-csv-btn" class="settings-save-btn">インポート</button>
+            </div>
+            <div id="import-csv-result" class="settings-result hidden"></div>
+          </div>
+
+          <!-- API タブ -->
+          <div id="import-tab-api" class="import-tab-content hidden">
+            <div class="coming-soon-box">
+              <span class="coming-soon-icon">🔑</span>
+              <div>
+                <strong>取引所 API 連携（近日対応）</strong>
+                <p>bitFlyer、Coincheck 等の APIキーを登録して自動同期します。</p>
+                <ul>
+                  <li>読み取り専用 API キーのみ使用</li>
+                  <li>取引履歴・残高を自動取得</li>
+                  <li>定期同期スケジュール設定</li>
+                </ul>
+              </div>
+            </div>
+          </div>
+
+          <!-- ウォレット タブ -->
+          <div id="import-tab-wallet" class="import-tab-content hidden">
+            <div class="settings-row">
+              <label class="settings-label">ウォレットアドレス *</label>
+              <input id="import-wallet-address" class="settings-input" type="text"
+                placeholder="0x... または ソルアドレス" style="max-width:420px; font-family:monospace" />
+            </div>
+            <div class="settings-row">
+              <label class="settings-label">表示名（任意）</label>
+              <input id="import-wallet-name" class="settings-input" type="text"
+                placeholder="マイウォレット" style="max-width:240px" />
+            </div>
+            <div class="import-note">
+              <strong>対応予定チェーン（アドレスから自動判定）</strong><br>
+              Ethereum / Polygon / Arbitrum / Optimism / Base / Solana<br>
+              取引のないチェーンは履歴に含みません。
+            </div>
+            <div class="settings-row">
+              <label class="settings-label">Helius API Key（Solana 必須）</label>
+              <input id="import-wallet-helius" class="settings-input" type="password"
+                placeholder="環境変数 HELIUS_API_KEY でも可" style="max-width:300px" />
+            </div>
+            <div class="settings-actions">
+              <button id="import-wallet-btn" class="settings-save-btn">追加してスキャン</button>
+            </div>
+            <div id="import-wallet-result" class="settings-result hidden"></div>
+          </div>
+        </section>
+
+        <!-- 既存口座の操作 -->
+        <section class="card import-section">
+          <h2>既存の口座</h2>
+          <p class="card-hint">各口座のインポート・同期操作</p>
+          <div class="table-wrap">
+            <table id="import-accounts-table">
+              <thead>
+                <tr>
+                  <th>口座</th>
+                  <th>ソースID</th>
+                  <th class="num">取引数</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+
     </main>
+  </div>
+
+  <!-- 削除確認ダイアログ -->
+  <div id="delete-dialog" class="dialog-overlay hidden">
+    <div class="dialog">
+      <h3 class="dialog-title">取引を削除しますか？</h3>
+      <p id="delete-dialog-msg" class="dialog-msg"></p>
+      <div class="dialog-actions">
+        <button id="delete-confirm" class="settings-save-btn" style="background:#f85149">削除</button>
+        <button id="delete-cancel" class="link-btn">キャンセル</button>
+      </div>
+    </div>
   </div>
 
   <script src="/static/app.js"></script>
