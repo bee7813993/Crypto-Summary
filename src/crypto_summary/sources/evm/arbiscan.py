@@ -59,18 +59,36 @@ def _parse_ts(s: str) -> datetime:
     return datetime.strptime(s.strip(), _DATE_FMT).replace(tzinfo=timezone.utc)
 
 
-def _is_spam(token_name: str) -> bool:
-    return bool(_SPAM_RE.search(token_name) or _PHISHING_RE.search(token_name))
+def _is_spam(token_name: str, token_symbol: str = "") -> bool:
+    """TokenName または TokenSymbol がスパム/フィッシングパターンに一致するか。
+
+    CSV パスでは Arbiscan が TokenName を "ERC-20 TOKEN*" にマスクするため
+    _SPAM_RE で捕捉できる。API パスでは実際の名称が返るため、TokenSymbol にも
+    フィッシング文字列が埋め込まれることがある。
+    """
+    for text in (token_name, token_symbol):
+        if text and (_SPAM_RE.search(text) or _PHISHING_RE.search(text)):
+            return True
+    return False
+
+
+def _is_bridge_artifact(r: dict) -> bool:
+    """ネイティブ通貨と同名シンボルの ERC20 はブリッジ内部トークンとして除外する。
+
+    Arbitrum / Ethereum ブリッジは "ETH" シンボルの ERC20 を内部で利用することがある。
+    CSV エクスポートでは Arbiscan が ERC-20 TOKEN* にマスクするため既にスキップされる。
+    API パスでは実際の symbol が返るため、ネイティブ資産名と衝突するものを弾く。
+    """
+    sym = (r.get("TokenSymbol") or "").upper()
+    if sym not in _NATIVE_SYMBOLS:
+        return False
+    contract = (r.get("ContractAddress") or "").lower()
+    return bool(contract and contract != _ZERO_ADDR)
 
 
 def _erc20_sym(r: dict) -> str:
-    """トークンシンボルを返す。ネイティブ通貨と同名の ERC20 は '_ERC20' を付加する。"""
-    sym = (r.get("TokenSymbol") or "").upper()
-    if sym in _NATIVE_SYMBOLS:
-        contract = (r.get("ContractAddress") or "").lower()
-        if contract and contract != _ZERO_ADDR:
-            sym = sym + "_ERC20"
-    return sym
+    """ERC20 行のトークンシンボルを返す（大文字化のみ）。"""
+    return (r.get("TokenSymbol") or "").upper()
 
 
 def _read_csv(path: Path) -> list[dict[str, str]]:
@@ -170,18 +188,22 @@ class ArbiscanCsvSource:
             int_eth_in = sum(_d(r.get("Value_IN(ETH)", "0")) for r in intern)
         method = (norm.get("Method", "") if norm else "").strip()
 
-        # トークンフロー（スパム・ダスト除去）
+        # トークンフロー（スパム・ブリッジアーティファクト・ダスト除去）
+        def _keep(r: dict) -> bool:
+            return (
+                not _is_spam(r.get("TokenName", ""), r.get("TokenSymbol", ""))
+                and not _is_bridge_artifact(r)
+            )
+
         t_recv = [
             (_erc20_sym(r), _d(r["TokenValue"].replace(",", "")))
             for r in erc
-            if r["To"].lower() == self.wallet
-            and not _is_spam(r.get("TokenName", ""))
+            if r["To"].lower() == self.wallet and _keep(r)
         ]
         t_sent = [
             (_erc20_sym(r), _d(r["TokenValue"].replace(",", "")))
             for r in erc
-            if r["From"].lower() == self.wallet
-            and not _is_spam(r.get("TokenName", ""))
+            if r["From"].lower() == self.wallet and _keep(r)
         ]
         t_recv = [(s, a) for s, a in t_recv if a > _DUST]
         t_sent = [(s, a) for s, a in t_sent if a > _DUST]

@@ -307,10 +307,10 @@ def test_token_to_eth_swap(tmp_path):
     assert tx.received_amount == Decimal("0.71")
 
 
-# ── 15. フィッシング系トークン名はスキップ ───────────────────────────
+# ── 15. フィッシング系トークン名・シンボルはスキップ ─────────────────
 
-def test_phishing_token_skipped(tmp_path):
-    """API が返すフィッシング系トークン名はスパム扱いでスキップされる。"""
+def test_phishing_in_token_name_skipped(tmp_path):
+    """TokenName にフィッシングパターンを含む場合はスパム扱い。"""
     h = _hash(15)
     n = _normal(tmp_path,
         f'"{h}","1","1","2025-09-28 12:00:00","{OTHER}","{WALLET}","","0","0","0","0","0","4000","","","Transfer"')
@@ -320,9 +320,21 @@ def test_phishing_token_skipped(tmp_path):
     assert txs == []
 
 
-def test_phishing_token_url_pattern(tmp_path):
-    """URL パターンを含むトークン名もスパム扱い。"""
+def test_phishing_in_token_symbol_skipped(tmp_path):
+    """API が TokenSymbol にフィッシング文字列を埋め込む実例（T.ME/）をスキップ。"""
     h = _hash(16)
+    n = _normal(tmp_path,
+        f'"{h}","1","1","2025-09-28 12:00:00","{OTHER}","{WALLET}","","0","0","0","0","0","4000","","","Transfer"')
+    # 実際の API 応答: tokenName="ARB", tokenSymbol="ARB | T.ME/S/CLAIMARB | GET REWARD"
+    e = _erc20(tmp_path,
+        f'"{h}","1","1","2025-09-28 12:00:00","{OTHER}","{WALLET}","5000","N/A","0xspam","ARB","ARB | T.ME/S/CLAIMARB | GET REWARD"')
+    txs = _src().load_multi(n, e)
+    assert txs == []
+
+
+def test_phishing_url_in_name_skipped(tmp_path):
+    """URL パターンを含むトークン名もスパム扱い。"""
+    h = _hash(17)
     n = _normal(tmp_path,
         f'"{h}","1","1","2025-09-28 12:00:00","{OTHER}","{WALLET}","","0","0","0","0","0","4000","","","Transfer"')
     e = _erc20(tmp_path,
@@ -331,11 +343,12 @@ def test_phishing_token_url_pattern(tmp_path):
     assert txs == []
 
 
-# ── 16. ETH シンボルの ERC20 トークンは ETH 残高を汚染しない ─────────
+# ── 16. ETH シンボルの ERC20 はブリッジアーティファクトとして除外 ─────
 
-def test_erc20_named_eth_does_not_pollute_eth_balance(tmp_path):
-    """ERC20 トークンのシンボルが 'ETH' でも native ETH とは別扱いにする。"""
-    h = _hash(17)
+def test_erc20_named_eth_is_filtered_as_bridge_artifact(tmp_path):
+    """ERC20 シンボルが 'ETH' かつコントラクトアドレスありの場合はブリッジ内部
+    トークンとして除外し、ETH ネイティブ残高を汚染しない。"""
+    h = _hash(18)
     # 通常 TX では ETH 移動なし（コントラクト呼び出しのみ）
     n = _normal(tmp_path,
         f'"{h}","1","1","2025-09-29 11:57:00","{WALLET}","{OTHER}","","0","0","0","0.001","1","4000","","","bridge"')
@@ -343,9 +356,18 @@ def test_erc20_named_eth_does_not_pollute_eth_balance(tmp_path):
     e = _erc20(tmp_path,
         f'"{h}","1","1","2025-09-29 11:57:00","{WALLET}","{OTHER}","0.75066","N/A","0xbridgeaddr","Bridged ETH","ETH"')
     txs = _src().load_multi(n, e)
+    # Bridge artifact は除外 → ETH 移動なし → 資産移動なし → スキップ
+    assert txs == []
+
+
+def test_weth_from_zero_not_filtered(tmp_path):
+    """ゼロアドレスから mint された WETH（ETH Wrap）は除外しない。"""
+    h = _hash(19)
+    n = _normal(tmp_path,
+        f'"{h}","1","1","2025-09-28 12:00:00","{WALLET}","{WETH_ADDR}","","0","0.4499","0","0.0001","0.1","4000","","","Deposit"')
+    e = _erc20(tmp_path,
+        f'"{h}","1","1","2025-09-28 12:00:00","{ZERO}","{WALLET}","0.4499","$1809","{WETH_ADDR}","Wrapped Ether","WETH"')
+    txs = _src().load_multi(n, e)
+    # ETH Wrap は TRADE として記録される
     assert len(txs) == 1
-    tx = txs[0]
-    # Should be classified as a token WITHDRAW, NOT as ETH WITHDRAW
-    assert tx.type == TxType.WITHDRAW
-    assert tx.sent_asset != "ETH"
-    assert tx.sent_asset == "ETH_ERC20"
+    assert txs[0].type == TxType.TRADE
