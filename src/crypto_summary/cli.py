@@ -13,10 +13,10 @@ from rich.table import Table
 from .core.ledger import Ledger
 from .sources.csv_import import EXCHANGE_SOURCES
 
-# .env があれば自動ロード（なくてもエラーにしない）
+# .env をカレントディレクトリ起点で検索してロード
 try:
-    from dotenv import load_dotenv
-    load_dotenv()
+    from dotenv import load_dotenv, find_dotenv
+    load_dotenv(find_dotenv(usecwd=True) or ".env")
 except ImportError:
     pass
 
