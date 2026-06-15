@@ -209,8 +209,8 @@ def import_wallet_cmd(
     help="Etherscan V2 APIキー（EVM用、環境変数 ETHERSCAN_API_KEY でも可）",
 )
 @click.option(
-    "--solscan-api-key", default=None, envvar="SOLSCAN_API_KEY",
-    help="Solscan Pro APIキー（Solana用、環境変数 SOLSCAN_API_KEY でも可）",
+    "--helius-api-key", default=None, envvar="HELIUS_API_KEY",
+    help="Helius APIキー（Solana用、環境変数 HELIUS_API_KEY でも可）",
 )
 @click.option("--gas/--no-gas", "record_gas", default=True, show_default=True,
               help="ガス代を FEE として記録する（実残高と一致させるため既定で有効）")
@@ -221,12 +221,12 @@ def fetch_wallet_cmd(
     wallet_address: str,
     source_id: str | None,
     api_key: str | None,
-    solscan_api_key: str | None,
+    helius_api_key: str | None,
     record_gas: bool,
 ) -> None:
     """取引履歴を API で取得して ledger に保存する。
 
-    EVM チェーン（Etherscan V2 API）と Solana（Solscan Pro API）に対応。
+    EVM チェーン（Etherscan V2 API）と Solana（Helius API）に対応。
     APIキーはいずれも読み取り専用で出金権限は不要。
 
     \b
@@ -240,18 +240,18 @@ def fetch_wallet_cmd(
     sid = source_id or chain
 
     if chain == "solana":
-        from .sources.solana.solscan import SolscanApiSource
+        from .sources.solana.helius import HeliusApiSource
 
-        key = solscan_api_key
+        key = helius_api_key
         if not key:
             console.print(
-                "[red]エラー:[/red] Solana には Solscan Pro APIキーが必要です。\n"
-                "  .env に SOLSCAN_API_KEY を設定するか、--solscan-api-key で指定してください。\n"
-                "  発行: https://pro.solscan.io/api-pro"
+                "[red]エラー:[/red] Solana には Helius APIキーが必要です。\n"
+                "  .env に HELIUS_API_KEY を設定するか、--helius-api-key で指定してください。\n"
+                "  発行: https://dev.helius.xyz （無料枠で取得可）"
             )
             raise click.Abort()
 
-        adapter = SolscanApiSource(sid, wallet_address, key)
+        adapter = HeliusApiSource(sid, wallet_address, key)
     else:
         from .sources.api.etherscan import EtherscanApiSource, CHAIN_IDS
 
