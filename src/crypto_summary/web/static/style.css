@@ -230,6 +230,115 @@ tbody tr:hover { background: var(--bg-elev); }
 .hidden { display: none !important; }
 .loading { color: var(--text-dim); padding: 20px; text-align: center; }
 
+/* ---- Action button (ドリルダウンヘッダーの取引履歴ボタン等) ---- */
+.action-btn {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  font-size: 13px;
+  padding: 6px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.action-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+/* ---- 取引履歴ページ ---- */
+.tx-header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+.tx-header .page-title { margin-bottom: 0; flex: 1; }
+.tx-filters { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.tx-filters select { min-width: 130px; font-size: 13px; }
+
+/* アクティブフィルター表示バナー */
+.tx-active-filter {
+  background: #1c2941;
+  border: 1px solid #2f4a7a;
+  color: #7cb8f8;
+  border-radius: 8px;
+  padding: 8px 14px;
+  margin-bottom: 14px;
+  font-size: 13px;
+}
+
+.tx-card { padding: 0; overflow: hidden; }
+.tx-card .table-wrap { margin: 0; }
+
+#tx-table th, #tx-table td { font-size: 13px; padding: 9px 10px; }
+#tx-table th { background: var(--bg-card); position: sticky; top: 0; z-index: 2; }
+
+/* 取引種別バッジ */
+.tx-type {
+  display: inline-block;
+  padding: 2px 7px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .3px;
+  white-space: nowrap;
+}
+.tx-type-deposit  { background: #1a3a28; color: #3fb950; }
+.tx-type-withdraw { background: #3a1a1a; color: #f85149; }
+.tx-type-trade    { background: #1e2a42; color: #79c0ff; }
+.tx-type-fee      { background: #2d2a1a; color: #e3b341; }
+.tx-type-reward   { background: #2a1a38; color: #bc8cff; }
+.tx-type-transfer { background: #1c2a2a; color: #56d364; }
+
+/* ハッシュ・ID の省略 */
+.tx-hash {
+  font-family: monospace;
+  font-size: 11px;
+  color: var(--text-dim);
+  max-width: 90px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: inline-block;
+  vertical-align: bottom;
+}
+
+/* ページネーション */
+.tx-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 16px 0 4px;
+  flex-wrap: wrap;
+}
+.tx-pagination button {
+  padding: 5px 12px;
+  font-size: 13px;
+  min-width: 36px;
+}
+.tx-pagination button.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.tx-pagination .page-info {
+  font-size: 13px;
+  color: var(--text-dim);
+}
+
+/* 取引履歴リンクボタン（テーブル行内） */
+.tx-link-btn {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 5px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.tx-link-btn:hover { border-color: var(--accent); color: var(--accent); }
+
 /* ---- Mobile: サイドバーを上部に折りたたむ ---- */
 @media (max-width: 640px) {
   body { overflow: auto; }

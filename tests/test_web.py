@@ -125,6 +125,44 @@ def test_asset_accounts_drilldown(client):
     assert Decimal(d["total_balance"]) == Decimal("0.5")
 
 
+def test_transactions_all(client):
+    r = client.get("/api/transactions")
+    assert r.status_code == 200
+    d = r.json()
+    assert d["total"] == 4
+    assert d["page"] == 1
+    assert d["total_pages"] == 1
+    # 新しい順
+    assert d["transactions"][0]["timestamp"] > d["transactions"][-1]["timestamp"]
+
+
+def test_transactions_filter_account(client):
+    r = client.get("/api/transactions?account=Acct+A")
+    d = r.json()
+    assert d["total"] == 2
+    assert all(t["account"] == "Acct A" for t in d["transactions"])
+
+
+def test_transactions_filter_asset(client):
+    r = client.get("/api/transactions?asset=BTC")
+    d = r.json()
+    assert d["total"] == 1
+    assert d["transactions"][0]["received_asset"] == "BTC"
+
+
+def test_transactions_filter_account_and_asset(client):
+    r = client.get("/api/transactions?account=Acct+B&asset=SOL")
+    d = r.json()
+    assert d["total"] == 1
+    assert d["transactions"][0]["received_asset"] == "SOL"
+
+
+def test_transactions_type_ja(client):
+    d = client.get("/api/transactions").json()
+    types = {t["type_ja"] for t in d["transactions"]}
+    assert "入金" in types
+
+
 def test_index_served(client):
     r = client.get("/")
     assert r.status_code == 200

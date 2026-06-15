@@ -262,6 +262,79 @@ def _asset_accounts(asset: str, db_path: str, currency: str) -> dict:
     }
 
 
+_TX_TYPE_JA: dict[str, str] = {
+    "trade": "売買",
+    "deposit": "入金",
+    "withdraw": "出金",
+    "fee": "手数料",
+    "reward": "報酬",
+    "transfer": "振替",
+}
+
+_TX_PAGE_SIZE = 50
+
+
+def _transactions(
+    db_path: str,
+    account: str | None,
+    asset: str | None,
+    page: int,
+) -> dict:
+    """取引履歴ページを返す。account は表示名（グループ名）で受け取る。"""
+    # 表示名 → ソースIDリストに変換
+    source_ids: list[str] | None = None
+    if account:
+        ledger_tmp = Ledger(db_path)
+        try:
+            all_source_ids = [src for src, *_ in ledger_tmp.sources()]
+        finally:
+            ledger_tmp.close()
+        mapped = [s for s in all_source_ids if _display_name(s) == account]
+        source_ids = mapped if mapped else [account]  # フォールバック
+
+    offset = (max(page, 1) - 1) * _TX_PAGE_SIZE
+    ledger = Ledger(db_path)
+    try:
+        txs, total = ledger.transactions(
+            source=source_ids,
+            asset=asset,
+            limit=_TX_PAGE_SIZE,
+            offset=offset,
+        )
+    finally:
+        ledger.close()
+
+    rows = []
+    for tx in txs:
+        rows.append({
+            "id": tx.id,
+            "timestamp": tx.timestamp.isoformat(),
+            "account": _display_name(tx.source),
+            "source_id": tx.source,
+            "type": tx.type.value,
+            "type_ja": _TX_TYPE_JA.get(tx.type.value, tx.type.value),
+            "received_asset": tx.received_asset,
+            "received_amount": str(tx.received_amount) if tx.received_amount is not None else None,
+            "sent_asset": tx.sent_asset,
+            "sent_amount": str(tx.sent_amount) if tx.sent_amount is not None else None,
+            "fee_asset": tx.fee_asset,
+            "fee_amount": str(tx.fee_amount) if tx.fee_amount is not None else None,
+            "label": tx.label,
+            "tx_hash": tx.tx_hash,
+        })
+
+    total_pages = max(1, (total + _TX_PAGE_SIZE - 1) // _TX_PAGE_SIZE)
+    return {
+        "transactions": rows,
+        "total": total,
+        "page": max(page, 1),
+        "total_pages": total_pages,
+        "page_size": _TX_PAGE_SIZE,
+        "filter_account": account,
+        "filter_asset": asset,
+    }
+
+
 def create_app(db_path: str = "ledger.db") -> FastAPI:
     """FastAPI アプリを生成する。db_path はクロージャで束縛する。"""
     app = FastAPI(title="Crypto-Summary", docs_url="/api/docs")
@@ -281,6 +354,14 @@ def create_app(db_path: str = "ledger.db") -> FastAPI:
     @app.get("/api/asset-accounts")
     def asset_accounts(asset: str = Query(...), currency: str = Query("USD")) -> dict:
         return _asset_accounts(asset, db_path, currency)
+
+    @app.get("/api/transactions")
+    def transactions_api(
+        account: str | None = Query(None),
+        asset: str | None = Query(None),
+        page: int = Query(1),
+    ) -> dict:
+        return _transactions(db_path, account, asset, page)
 
     @app.get("/api/meta")
     def meta() -> dict:

@@ -26,6 +26,9 @@
         <a class="nav-link" data-page="assets" href="#assets">
           <span class="nav-icon">◎</span><span>資産別</span>
         </a>
+        <a class="nav-link" data-page="transactions" href="#transactions">
+          <span class="nav-icon">≡</span><span>取引履歴</span>
+        </a>
         <span class="nav-link disabled">
           <span class="nav-icon">↑</span><span>インポート</span>
         </span>
@@ -69,11 +72,11 @@
 
           <section class="card">
             <h2>口座（ソース）別</h2>
-            <p class="card-hint">行をクリックすると資産内訳を表示</p>
+            <p class="card-hint">クリックで資産内訳 / 取引履歴</p>
             <div class="table-wrap">
               <table id="sources-table">
                 <thead>
-                  <tr><th>口座</th><th class="num">取引数</th><th class="num">評価額</th></tr>
+                  <tr><th>口座</th><th class="num">取引数</th><th class="num">評価額</th><th></th></tr>
                 </thead>
                 <tbody></tbody>
               </table>
@@ -83,7 +86,7 @@
 
         <section class="card">
           <h2>資産一覧</h2>
-          <p class="card-hint">行をクリックすると口座別の保有内訳を表示</p>
+          <p class="card-hint">クリックで口座別内訳 / 取引履歴</p>
           <div class="table-wrap">
             <table id="assets-table">
               <thead>
@@ -93,6 +96,7 @@
                   <th class="num">単価</th>
                   <th class="num">評価額</th>
                   <th class="num">構成比</th>
+                  <th></th>
                 </tr>
               </thead>
               <tbody></tbody>
@@ -117,6 +121,7 @@
         <div id="accounts-list-view">
           <h1 class="page-title">口座別</h1>
           <section class="card">
+            <p class="card-hint">クリックで資産内訳 / 取引履歴</p>
             <div class="table-wrap">
               <table id="accounts-table">
                 <thead>
@@ -125,6 +130,7 @@
                     <th class="num">取引数</th>
                     <th class="num">資産数</th>
                     <th class="num">評価額</th>
+                    <th></th>
                   </tr>
                 </thead>
                 <tbody></tbody>
@@ -138,8 +144,10 @@
           <div class="detail-header">
             <button id="account-back" class="back-btn">← 口座一覧</button>
             <h1 class="page-title" id="account-detail-name"></h1>
+            <button id="account-tx-link" class="action-btn">≡ この口座の取引履歴</button>
           </div>
           <section class="card">
+            <p class="card-hint">クリックでこの口座内の資産の取引履歴</p>
             <div class="table-wrap">
               <table id="account-assets-table">
                 <thead>
@@ -148,6 +156,7 @@
                     <th class="num">残高</th>
                     <th class="num">単価</th>
                     <th class="num">評価額</th>
+                    <th></th>
                   </tr>
                 </thead>
                 <tbody></tbody>
@@ -164,6 +173,7 @@
         <div id="assets-list-view">
           <h1 class="page-title">資産別</h1>
           <section class="card">
+            <p class="card-hint">クリックで口座別内訳 / 取引履歴</p>
             <div class="table-wrap">
               <table id="all-assets-table">
                 <thead>
@@ -173,6 +183,7 @@
                     <th class="num">単価</th>
                     <th class="num">評価額</th>
                     <th class="num">構成比</th>
+                    <th></th>
                   </tr>
                 </thead>
                 <tbody></tbody>
@@ -186,8 +197,10 @@
           <div class="detail-header">
             <button id="asset-back" class="back-btn">← 資産一覧</button>
             <h1 class="page-title" id="asset-detail-name"></h1>
+            <button id="asset-tx-link" class="action-btn">≡ この資産の取引履歴</button>
           </div>
           <section class="card">
+            <p class="card-hint">クリックでこの口座の保有資産の取引履歴</p>
             <div class="table-wrap">
               <table id="asset-accounts-table">
                 <thead>
@@ -195,6 +208,7 @@
                     <th>口座</th>
                     <th class="num">残高</th>
                     <th class="num">評価額</th>
+                    <th></th>
                   </tr>
                 </thead>
                 <tbody></tbody>
@@ -203,6 +217,47 @@
           </section>
           <div id="asset-detail-loading" class="loading hidden">読み込み中…</div>
         </div>
+      </div>
+
+      <!-- 取引履歴ページ -->
+      <div id="page-transactions" class="page hidden">
+        <div class="tx-header">
+          <h1 class="page-title">取引履歴</h1>
+          <div class="tx-filters">
+            <select id="tx-filter-account">
+              <option value="">すべての口座</option>
+            </select>
+            <select id="tx-filter-asset">
+              <option value="">すべての資産</option>
+            </select>
+            <button id="tx-filter-clear" class="link-btn">絞り込みを解除</button>
+          </div>
+        </div>
+
+        <div id="tx-active-filter" class="tx-active-filter hidden"></div>
+
+        <section class="card tx-card">
+          <div class="table-wrap">
+            <table id="tx-table">
+              <thead>
+                <tr>
+                  <th>日時</th>
+                  <th>口座</th>
+                  <th>種別</th>
+                  <th>受取</th>
+                  <th>送付</th>
+                  <th>手数料</th>
+                  <th>メモ</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <div id="tx-loading" class="loading hidden">読み込み中…</div>
+          <div id="tx-empty" class="loading hidden">取引履歴がありません</div>
+        </section>
+
+        <div class="tx-pagination" id="tx-pagination"></div>
       </div>
 
     </main>

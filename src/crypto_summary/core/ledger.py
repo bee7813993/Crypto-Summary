@@ -281,6 +281,49 @@ class Ledger:
         ).fetchall()
         return [self._row_to_tx(r) for r in rows]
 
+    def transactions(
+        self,
+        source: str | list[str] | None = None,
+        asset: str | None = None,
+        since: datetime | None = None,
+        until: datetime | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> tuple[list[CanonicalTx], int]:
+        """取引履歴をフィルタ付きで返す。戻り値: (取引リスト, 総件数)。
+
+        source: 単一文字列 / リスト / None(全ソース)
+        asset:  received_asset / sent_asset / fee_asset のいずれかに一致
+        """
+        clauses, params = [], []
+        src_clause, src_params = self._source_clause(source)
+        if src_clause:
+            clauses.append(src_clause)
+            params.extend(src_params)
+        if asset:
+            clauses.append(
+                "(received_asset=? OR sent_asset=? OR fee_asset=?)"
+            )
+            params.extend([asset, asset, asset])
+        if since:
+            clauses.append("timestamp >= ?")
+            params.append(since.isoformat())
+        if until:
+            clauses.append("timestamp <= ?")
+            params.append(until.isoformat())
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+
+        total: int = self._conn.execute(
+            f"SELECT COUNT(*) FROM transactions {where}", params
+        ).fetchone()[0]
+
+        rows = self._conn.execute(
+            f"SELECT * FROM transactions {where} "
+            f"ORDER BY timestamp DESC LIMIT ? OFFSET ?",
+            params + [limit, offset],
+        ).fetchall()
+        return [self._row_to_tx(r) for r in rows], total
+
     def close(self) -> None:
         self._conn.close()
 

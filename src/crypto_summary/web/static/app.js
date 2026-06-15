@@ -24,6 +24,13 @@ function fmtAmount(value) {
   return Number(value).toLocaleString(undefined, { maximumFractionDigits: 8 });
 }
 
+function fmtDate(iso) {
+  return new Date(iso).toLocaleString("ja-JP", {
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit",
+  });
+}
+
 async function fetchJSON(url) {
   const res = await fetch(url);
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -37,7 +44,7 @@ function escapeHtml(s) {
 
 // ---- ページナビゲーション ----
 
-const PAGES = ["dashboard", "accounts", "assets"];
+const PAGES = ["dashboard", "accounts", "assets", "transactions"];
 
 function showPage(name) {
   if (!PAGES.includes(name)) name = "dashboard";
@@ -46,32 +53,34 @@ function showPage(name) {
     const el = document.getElementById(`page-${p}`);
     if (el) el.classList.toggle("hidden", p !== name);
   });
-
   document.querySelectorAll(".nav-link[data-page]").forEach((a) => {
     a.classList.toggle("active", a.dataset.page === name);
   });
 
-  // ページ切り替え時はドリルダウンをリセット
-  if (name === "accounts") {
-    showAccountsList();
-    loadAccountsPage();
-  } else if (name === "assets") {
-    showAssetsList();
-    loadAssetsPage();
-  }
+  if (name === "accounts") { showAccountsList(); loadAccountsPage(); }
+  else if (name === "assets") { showAssetsList(); loadAssetsPage(); }
+  else if (name === "transactions") { /* filters set by caller */ }
 }
 
 document.querySelectorAll(".nav-link[data-page]").forEach((a) => {
   a.addEventListener("click", (e) => {
     e.preventDefault();
     const page = a.dataset.page;
-    history.pushState({ page }, "", `#${page}`);
-    showPage(page);
+    if (page === "transactions") {
+      navigateToTransactions({});
+    } else {
+      history.pushState({ page }, "", `#${page}`);
+      showPage(page);
+    }
   });
 });
 
 window.addEventListener("popstate", (e) => {
-  showPage((e.state && e.state.page) || "dashboard");
+  const state = e.state || {};
+  showPage(state.page || "dashboard");
+  if (state.page === "transactions") {
+    loadTransactionsPage(state.txAccount || null, state.txAsset || null, state.txPage || 1);
+  }
 });
 
 /** ページのナビ状態だけ切り替える（list/detail のリセットはしない）。 */
@@ -83,19 +92,28 @@ function activatePage(name) {
   document.querySelectorAll(".nav-link[data-page]").forEach((a) => {
     a.classList.toggle("active", a.dataset.page === name);
   });
-  history.pushState({ page: name }, "", `#${name}`);
 }
 
 /** ダッシュボードの資産クリック → 資産別ページの口座内訳へ直接遷移。 */
 function navigateToAssetDetail(symbol) {
+  history.pushState({ page: "assets" }, "", "#assets");
   activatePage("assets");
   showAssetDetail(symbol);
 }
 
 /** ダッシュボードの口座クリック → 口座別ページの資産内訳へ直接遷移。 */
 function navigateToAccountDetail(name) {
+  history.pushState({ page: "accounts" }, "", "#accounts");
   activatePage("accounts");
   showAccountDetail(name);
+}
+
+/** 取引履歴ページへ遷移（フィルタ付き）。 */
+function navigateToTransactions({ account = null, asset = null, page = 1 } = {}) {
+  const state = { page: "transactions", txAccount: account, txAsset: asset, txPage: page };
+  history.pushState(state, "", "#transactions");
+  activatePage("transactions");
+  loadTransactionsPage(account, asset, page);
 }
 
 // ---- ダッシュボード ----
@@ -168,22 +186,28 @@ function renderSummary(data) {
     const pct = a.value && total > 0 ? (Number(a.value) / total) * 100 : null;
     const color = colorByAsset[a.asset] || (a.has_price ? OTHER_COLOR : "transparent");
     const tr = document.createElement("tr");
-    tr.className = "clickable";
     tr.innerHTML = `
-      <td><span class="asset-name"><span class="swatch" style="background:${color}"></span>${escapeHtml(a.asset)} <span class="row-arrow">›</span></span></td>
+      <td class="clickable-cell" data-action="asset-detail">
+        <span class="asset-name">
+          <span class="swatch" style="background:${color}"></span>${escapeHtml(a.asset)}
+        </span>
+      </td>
       <td class="num">${fmtAmount(a.balance)}</td>
       <td class="num">${a.price ? fmtMoney(a.price, cur) : '<span class="muted">-</span>'}</td>
       <td class="num">${a.value ? fmtMoney(a.value, cur) : '<span class="muted">-</span>'}</td>
       <td class="num">${pct !== null ? pct.toFixed(1) + "%" : '<span class="muted">-</span>'}</td>
+      <td><button class="tx-link-btn" data-asset="${escapeHtml(a.asset)}">≡ 履歴</button></td>
     `;
-    // クリックで資産別ページの口座内訳ドリルダウンへ
-    tr.addEventListener("click", () => navigateToAssetDetail(a.asset));
+    tr.querySelector("[data-action='asset-detail']").addEventListener("click", () =>
+      navigateToAssetDetail(a.asset));
+    tr.querySelector(".tx-link-btn").addEventListener("click", (e) => {
+      e.stopPropagation();
+      navigateToTransactions({ asset: a.asset });
+    });
     tbody.appendChild(tr);
   });
 
-  // 円グラフ下の凡例（資産 / 比率 / 評価額）
-  renderLegend(slices, cur, total);
-
+  // 少額トグル
   const toggleBtn = document.getElementById("toggle-small");
   if (hiddenCount > 0 || showSmall) {
     toggleBtn.style.display = "";
@@ -203,6 +227,7 @@ function renderSummary(data) {
   }
 
   renderChart(slices, cur, total);
+  renderLegend(slices, cur, total);
   renderWarnings(data.warnings);
 }
 
@@ -212,45 +237,22 @@ function renderSources(data) {
   tbody.innerHTML = "";
   data.sources.forEach((s) => {
     const tr = document.createElement("tr");
-    tr.className = "clickable";
     tr.innerHTML = `
-      <td>${escapeHtml(s.source)} <span class="row-arrow">›</span></td>
+      <td class="clickable-cell" data-action="account-detail">
+        ${escapeHtml(s.source)} <span class="row-arrow">›</span>
+      </td>
       <td class="num">${s.tx_count}</td>
       <td class="num">${fmtMoney(s.total_value, cur)}</td>
+      <td><button class="tx-link-btn" data-account="${escapeHtml(s.source)}">≡ 履歴</button></td>
     `;
-    // クリックで口座別ページの資産内訳ドリルダウンへ
-    tr.addEventListener("click", () => navigateToAccountDetail(s.source));
+    tr.querySelector("[data-action='account-detail']").addEventListener("click", () =>
+      navigateToAccountDetail(s.source));
+    tr.querySelector(".tx-link-btn").addEventListener("click", (e) => {
+      e.stopPropagation();
+      navigateToTransactions({ account: s.source });
+    });
     tbody.appendChild(tr);
   });
-}
-
-/** 円グラフ下に凡例（資産 / 比率 / 評価額）を描画。ホバーで中央表示と連動。 */
-function renderLegend(slices, currency, total) {
-  const el = document.getElementById("chart-legend");
-  el.innerHTML = "";
-  slices.forEach((s, i) => {
-    const pct = total > 0 ? (s.value / total) * 100 : 0;
-    const row = document.createElement("div");
-    row.className = "legend-item";
-    row.innerHTML = `
-      <span class="legend-swatch" style="background:${s.color}"></span>
-      <span class="legend-name">${escapeHtml(s.label)}</span>
-      <span class="legend-pct">${pct.toFixed(1)}%</span>
-      <span class="legend-value">${fmtMoney(s.value, currency)}</span>
-    `;
-    // 凡例ホバー → 円グラフ中央に該当スライスの詳細を表示
-    row.addEventListener("mouseenter", () => setChartActive(i));
-    row.addEventListener("mouseleave", () => setChartActive(null));
-    el.appendChild(row);
-  });
-}
-
-function setChartActive(idx) {
-  if (!allocChart) return;
-  if (allocChart.$activeIndex !== idx) {
-    allocChart.$activeIndex = idx;
-    allocChart.draw();
-  }
 }
 
 // ---- チャート ----
@@ -332,6 +334,34 @@ function renderChart(slices, currency, total) {
   allocChart.$activeIndex = null;
 }
 
+/** 円グラフ下の凡例（資産 / 比率 / 評価額）。凡例ホバーで中央表示と連動。 */
+function renderLegend(slices, currency, total) {
+  const el = document.getElementById("chart-legend");
+  el.innerHTML = "";
+  slices.forEach((s, i) => {
+    const pct = total > 0 ? (s.value / total) * 100 : 0;
+    const row = document.createElement("div");
+    row.className = "legend-item";
+    row.innerHTML = `
+      <span class="legend-swatch" style="background:${s.color}"></span>
+      <span class="legend-name">${escapeHtml(s.label)}</span>
+      <span class="legend-pct">${pct.toFixed(1)}%</span>
+      <span class="legend-value">${fmtMoney(s.value, currency)}</span>
+    `;
+    row.addEventListener("mouseenter", () => setChartActive(i));
+    row.addEventListener("mouseleave", () => setChartActive(null));
+    el.appendChild(row);
+  });
+}
+
+function setChartActive(idx) {
+  if (!allocChart) return;
+  if (allocChart.$activeIndex !== idx) {
+    allocChart.$activeIndex = idx;
+    allocChart.draw();
+  }
+}
+
 // ---- 口座別ページ ----
 
 function showAccountsList() {
@@ -344,30 +374,40 @@ function showAccountDetail(name) {
   const detail = document.getElementById("account-detail-view");
   detail.classList.remove("hidden");
   document.getElementById("account-detail-name").textContent = name;
+  // 取引履歴ボタンに口座名をセット
+  document.getElementById("account-tx-link").onclick = () =>
+    navigateToTransactions({ account: name });
   loadAccountDetail(name);
 }
 
 async function loadAccountsPage() {
   const currency = document.getElementById("currency").value;
   const tbody = document.querySelector("#accounts-table tbody");
-  tbody.innerHTML = '<tr><td colspan="4" class="loading">読み込み中…</td></tr>';
+  tbody.innerHTML = '<tr><td colspan="5" class="loading">読み込み中…</td></tr>';
   try {
     const data = await fetchJSON(`/api/sources?currency=${currency}`);
     tbody.innerHTML = "";
     data.sources.forEach((s) => {
       const tr = document.createElement("tr");
-      tr.className = "clickable";
       tr.innerHTML = `
-        <td>${escapeHtml(s.source)} <span class="row-arrow">›</span></td>
+        <td class="clickable-cell" data-action="account-detail">
+          ${escapeHtml(s.source)} <span class="row-arrow">›</span>
+        </td>
         <td class="num">${s.tx_count}</td>
         <td class="num">${s.asset_count}</td>
         <td class="num">${fmtMoney(s.total_value, currency)}</td>
+        <td><button class="tx-link-btn">≡ 履歴</button></td>
       `;
-      tr.addEventListener("click", () => showAccountDetail(s.source));
+      tr.querySelector("[data-action='account-detail']").addEventListener("click", () =>
+        showAccountDetail(s.source));
+      tr.querySelector(".tx-link-btn").addEventListener("click", (e) => {
+        e.stopPropagation();
+        navigateToTransactions({ account: s.source });
+      });
       tbody.appendChild(tr);
     });
   } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="4" class="muted">エラー: ${escapeHtml(e.message)}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="5" class="muted">エラー: ${escapeHtml(e.message)}</td></tr>`;
   }
 }
 
@@ -378,7 +418,9 @@ async function loadAccountDetail(name) {
   tbody.innerHTML = "";
   loading.classList.remove("hidden");
   try {
-    const data = await fetchJSON(`/api/account-assets?account=${encodeURIComponent(name)}&currency=${currency}`);
+    const data = await fetchJSON(
+      `/api/account-assets?account=${encodeURIComponent(name)}&currency=${currency}`
+    );
     loading.classList.add("hidden");
     data.assets.forEach((a) => {
       const tr = document.createElement("tr");
@@ -387,15 +429,19 @@ async function loadAccountDetail(name) {
         <td class="num">${fmtAmount(a.balance)}</td>
         <td class="num">${a.price ? fmtMoney(a.price, currency) : '<span class="muted">-</span>'}</td>
         <td class="num">${a.value ? fmtMoney(a.value, currency) : '<span class="muted">-</span>'}</td>
+        <td><button class="tx-link-btn">≡ 履歴</button></td>
       `;
+      // 口座内の資産行 → 口座×資産の取引履歴
+      tr.querySelector(".tx-link-btn").addEventListener("click", () =>
+        navigateToTransactions({ account: name, asset: a.asset }));
       tbody.appendChild(tr);
     });
     if (data.assets.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="4" class="muted">残高なし</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="5" class="muted">残高なし</td></tr>';
     }
   } catch (e) {
     loading.classList.add("hidden");
-    tbody.innerHTML = `<tr><td colspan="4" class="muted">エラー: ${escapeHtml(e.message)}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="5" class="muted">エラー: ${escapeHtml(e.message)}</td></tr>`;
   }
 }
 
@@ -411,13 +457,16 @@ function showAssetDetail(symbol) {
   const detail = document.getElementById("asset-detail-view");
   detail.classList.remove("hidden");
   document.getElementById("asset-detail-name").textContent = symbol;
+  // 取引履歴ボタンに資産名をセット
+  document.getElementById("asset-tx-link").onclick = () =>
+    navigateToTransactions({ asset: symbol });
   loadAssetDetail(symbol);
 }
 
 async function loadAssetsPage() {
   const currency = document.getElementById("currency").value;
   const tbody = document.querySelector("#all-assets-table tbody");
-  tbody.innerHTML = '<tr><td colspan="5" class="loading">読み込み中…</td></tr>';
+  tbody.innerHTML = '<tr><td colspan="6" class="loading">読み込み中…</td></tr>';
   try {
     const data = await fetchJSON(`/api/summary?currency=${currency}`);
     const total = Number(data.total_value) || 0;
@@ -425,22 +474,29 @@ async function loadAssetsPage() {
     data.assets.forEach((a) => {
       const pct = a.value && total > 0 ? (Number(a.value) / total) * 100 : null;
       const tr = document.createElement("tr");
-      tr.className = "clickable";
       tr.innerHTML = `
-        <td>${escapeHtml(a.asset)} <span class="row-arrow">›</span></td>
+        <td class="clickable-cell" data-action="asset-detail">
+          ${escapeHtml(a.asset)} <span class="row-arrow">›</span>
+        </td>
         <td class="num">${fmtAmount(a.balance)}</td>
         <td class="num">${a.price ? fmtMoney(a.price, currency) : '<span class="muted">-</span>'}</td>
         <td class="num">${a.value ? fmtMoney(a.value, currency) : '<span class="muted">-</span>'}</td>
         <td class="num">${pct !== null ? pct.toFixed(1) + "%" : '<span class="muted">-</span>'}</td>
+        <td><button class="tx-link-btn">≡ 履歴</button></td>
       `;
-      tr.addEventListener("click", () => showAssetDetail(a.asset));
+      tr.querySelector("[data-action='asset-detail']").addEventListener("click", () =>
+        showAssetDetail(a.asset));
+      tr.querySelector(".tx-link-btn").addEventListener("click", (e) => {
+        e.stopPropagation();
+        navigateToTransactions({ asset: a.asset });
+      });
       tbody.appendChild(tr);
     });
     if (data.assets.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="5" class="muted">データなし</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="6" class="muted">データなし</td></tr>';
     }
   } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="5" class="muted">エラー: ${escapeHtml(e.message)}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="6" class="muted">エラー: ${escapeHtml(e.message)}</td></tr>`;
   }
 }
 
@@ -451,7 +507,9 @@ async function loadAssetDetail(symbol) {
   tbody.innerHTML = "";
   loading.classList.remove("hidden");
   try {
-    const data = await fetchJSON(`/api/asset-accounts?asset=${encodeURIComponent(symbol)}&currency=${currency}`);
+    const data = await fetchJSON(
+      `/api/asset-accounts?asset=${encodeURIComponent(symbol)}&currency=${currency}`
+    );
     loading.classList.add("hidden");
     data.accounts.forEach((a) => {
       const tr = document.createElement("tr");
@@ -459,17 +517,199 @@ async function loadAssetDetail(symbol) {
         <td>${escapeHtml(a.account)}</td>
         <td class="num">${fmtAmount(a.balance)}</td>
         <td class="num">${a.value ? fmtMoney(a.value, currency) : '<span class="muted">-</span>'}</td>
+        <td><button class="tx-link-btn">≡ 履歴</button></td>
       `;
+      // 資産内の口座行 → 口座×資産の取引履歴
+      tr.querySelector(".tx-link-btn").addEventListener("click", () =>
+        navigateToTransactions({ account: a.account, asset: symbol }));
       tbody.appendChild(tr);
     });
     if (data.accounts.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="3" class="muted">保有口座なし</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="4" class="muted">保有口座なし</td></tr>';
     }
   } catch (e) {
     loading.classList.add("hidden");
-    tbody.innerHTML = `<tr><td colspan="3" class="muted">エラー: ${escapeHtml(e.message)}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="4" class="muted">エラー: ${escapeHtml(e.message)}</td></tr>`;
   }
 }
+
+// ---- 取引履歴ページ ----
+
+let _txAccountOptions = [];  // フィルタ用口座リスト（初回ロード時に取得）
+
+async function ensureTxFilterOptions() {
+  if (_txAccountOptions.length) return;
+  try {
+    const data = await fetchJSON("/api/sources?currency=USD");
+    _txAccountOptions = data.sources.map((s) => s.source);
+    const sel = document.getElementById("tx-filter-account");
+    _txAccountOptions.forEach((name) => {
+      const opt = document.createElement("option");
+      opt.value = name;
+      opt.textContent = name;
+      sel.appendChild(opt);
+    });
+  } catch (_) { /* サイレント */ }
+}
+
+async function loadTransactionsPage(account, asset, page = 1) {
+  await ensureTxFilterOptions();
+
+  // フィルタUIを同期
+  const selAccount = document.getElementById("tx-filter-account");
+  const selAsset = document.getElementById("tx-filter-asset");
+  selAccount.value = account || "";
+  if (asset) {
+    // asset の option が未追加なら追加
+    if (![...selAsset.options].some((o) => o.value === asset)) {
+      const opt = document.createElement("option");
+      opt.value = asset; opt.textContent = asset;
+      selAsset.appendChild(opt);
+    }
+    selAsset.value = asset;
+  } else {
+    selAsset.value = "";
+  }
+
+  // アクティブフィルター表示
+  const banner = document.getElementById("tx-active-filter");
+  const parts = [];
+  if (account) parts.push(`口座: <strong>${escapeHtml(account)}</strong>`);
+  if (asset) parts.push(`資産: <strong>${escapeHtml(asset)}</strong>`);
+  if (parts.length) {
+    banner.innerHTML = "絞り込み中 — " + parts.join(" ／ ");
+    banner.classList.remove("hidden");
+  } else {
+    banner.classList.add("hidden");
+  }
+
+  const tbody = document.querySelector("#tx-table tbody");
+  const loading = document.getElementById("tx-loading");
+  const empty = document.getElementById("tx-empty");
+  tbody.innerHTML = "";
+  loading.classList.remove("hidden");
+  empty.classList.add("hidden");
+
+  try {
+    let url = `/api/transactions?page=${page}`;
+    if (account) url += `&account=${encodeURIComponent(account)}`;
+    if (asset) url += `&asset=${encodeURIComponent(asset)}`;
+
+    const data = await fetchJSON(url);
+    loading.classList.add("hidden");
+
+    if (data.transactions.length === 0) {
+      empty.classList.remove("hidden");
+    } else {
+      data.transactions.forEach((tx) => {
+        const tr = document.createElement("tr");
+        const recv = tx.received_asset
+          ? `${fmtAmount(tx.received_amount)} ${escapeHtml(tx.received_asset)}`
+          : '<span class="muted">-</span>';
+        const sent = tx.sent_asset
+          ? `${fmtAmount(tx.sent_amount)} ${escapeHtml(tx.sent_asset)}`
+          : '<span class="muted">-</span>';
+        const fee = tx.fee_asset
+          ? `${fmtAmount(tx.fee_amount)} ${escapeHtml(tx.fee_asset)}`
+          : '<span class="muted">-</span>';
+        const hash = tx.tx_hash
+          ? `<span class="tx-hash" title="${escapeHtml(tx.tx_hash)}">${escapeHtml(tx.tx_hash)}</span>`
+          : "";
+        tr.innerHTML = `
+          <td style="white-space:nowrap">${fmtDate(tx.timestamp)}</td>
+          <td>${escapeHtml(tx.account)}</td>
+          <td><span class="tx-type tx-type-${escapeHtml(tx.type)}">${escapeHtml(tx.type_ja)}</span></td>
+          <td>${recv}</td>
+          <td>${sent}</td>
+          <td>${fee}</td>
+          <td class="muted">${tx.label ? escapeHtml(tx.label) : ""}${hash}</td>
+        `;
+        tbody.appendChild(tr);
+      });
+    }
+
+    renderTxPagination(data, account, asset);
+  } catch (e) {
+    loading.classList.add("hidden");
+    tbody.innerHTML = `<tr><td colspan="7" class="muted">エラー: ${escapeHtml(e.message)}</td></tr>`;
+    document.getElementById("tx-pagination").innerHTML = "";
+  }
+}
+
+function renderTxPagination(data, account, asset) {
+  const el = document.getElementById("tx-pagination");
+  el.innerHTML = "";
+  if (data.total_pages <= 1) return;
+
+  const cur = data.page;
+  const total = data.total_pages;
+
+  // 前へ
+  if (cur > 1) {
+    const btn = document.createElement("button");
+    btn.textContent = "‹";
+    btn.addEventListener("click", () => navigateToTransactions({ account, asset, page: cur - 1 }));
+    el.appendChild(btn);
+  }
+
+  // ページ番号（最大7個表示）
+  const pages = pageRange(cur, total);
+  pages.forEach((p) => {
+    if (p === "…") {
+      const span = document.createElement("span");
+      span.className = "page-info";
+      span.textContent = "…";
+      el.appendChild(span);
+    } else {
+      const btn = document.createElement("button");
+      btn.textContent = p;
+      if (p === cur) btn.classList.add("active");
+      btn.addEventListener("click", () => navigateToTransactions({ account, asset, page: p }));
+      el.appendChild(btn);
+    }
+  });
+
+  // 次へ
+  if (cur < total) {
+    const btn = document.createElement("button");
+    btn.textContent = "›";
+    btn.addEventListener("click", () => navigateToTransactions({ account, asset, page: cur + 1 }));
+    el.appendChild(btn);
+  }
+
+  const info = document.createElement("span");
+  info.className = "page-info";
+  info.textContent = `${data.total.toLocaleString()} 件`;
+  el.appendChild(info);
+}
+
+function pageRange(cur, total) {
+  if (total <= 7) return Array.from({ length: total }, (_, i) => i + 1);
+  const pages = [1];
+  if (cur > 3) pages.push("…");
+  for (let p = Math.max(2, cur - 1); p <= Math.min(total - 1, cur + 1); p++) pages.push(p);
+  if (cur < total - 2) pages.push("…");
+  pages.push(total);
+  return pages;
+}
+
+// ---- フィルタUI変更 ----
+
+document.getElementById("tx-filter-account").addEventListener("change", (e) => {
+  const account = e.target.value || null;
+  const asset = document.getElementById("tx-filter-asset").value || null;
+  navigateToTransactions({ account, asset, page: 1 });
+});
+
+document.getElementById("tx-filter-asset").addEventListener("change", (e) => {
+  const asset = e.target.value || null;
+  const account = document.getElementById("tx-filter-account").value || null;
+  navigateToTransactions({ account, asset, page: 1 });
+});
+
+document.getElementById("tx-filter-clear").addEventListener("click", () => {
+  navigateToTransactions({});
+});
 
 // ---- メインロード ----
 
@@ -486,6 +726,10 @@ async function load() {
     lastSummary = summary;
     renderSummary(summary);
     renderSources(sources);
+    // 口座フィルタ選択肢も更新
+    _txAccountOptions = [];
+    const sel = document.getElementById("tx-filter-account");
+    [...sel.options].forEach((o) => { if (o.value) o.remove(); });
   } catch (e) {
     document.getElementById("total-sub").textContent = "読み込みエラー: " + e.message;
   } finally {
@@ -493,15 +737,20 @@ async function load() {
   }
 }
 
+function getCurrentPage() {
+  const active = document.querySelector(".nav-link.active[data-page]");
+  return active ? active.dataset.page : "dashboard";
+}
+
 // ---- イベントリスナー ----
 
 document.getElementById("currency").addEventListener("change", () => {
   localStorage.setItem("cs_currency", document.getElementById("currency").value);
-  // 現在表示中のページを再ロード
   const cur = getCurrentPage();
   if (cur === "dashboard") load();
   else if (cur === "accounts") loadAccountsPage();
   else if (cur === "assets") loadAssetsPage();
+  // 取引履歴は通貨フィルタ不要のためそのまま
 });
 
 document.getElementById("refresh").addEventListener("click", () => {
@@ -509,6 +758,11 @@ document.getElementById("refresh").addEventListener("click", () => {
   if (cur === "dashboard") load();
   else if (cur === "accounts") loadAccountsPage();
   else if (cur === "assets") loadAssetsPage();
+  else if (cur === "transactions") {
+    const account = document.getElementById("tx-filter-account").value || null;
+    const asset = document.getElementById("tx-filter-asset").value || null;
+    loadTransactionsPage(account, asset, 1);
+  }
 });
 
 document.getElementById("toggle-small").addEventListener("click", () => {
@@ -519,17 +773,13 @@ document.getElementById("toggle-small").addEventListener("click", () => {
 document.getElementById("account-back").addEventListener("click", showAccountsList);
 document.getElementById("asset-back").addEventListener("click", showAssetsList);
 
-function getCurrentPage() {
-  const active = document.querySelector(".nav-link.active[data-page]");
-  return active ? active.dataset.page : "dashboard";
-}
-
 // ---- 初期化 ----
 
 const saved = localStorage.getItem("cs_currency");
 if (saved) document.getElementById("currency").value = saved;
 
-// ハッシュに基づいて初期ページを決定
-const initPage = location.hash.replace("#", "") || "dashboard";
+const initHash = location.hash.replace("#", "") || "dashboard";
+const initPage = PAGES.includes(initHash) ? initHash : "dashboard";
 showPage(initPage);
 if (initPage === "dashboard") load();
+else if (initPage === "transactions") loadTransactionsPage(null, null, 1);
