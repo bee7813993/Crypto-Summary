@@ -82,6 +82,114 @@ def import_cmd(ctx: click.Context, filepath: Path, exchange: str, source_id: str
 
 
 # ---------------------------------------------------------------------------
+# import-wallet (EVM ウォレット複数CSV取り込み)
+# ---------------------------------------------------------------------------
+
+_WALLET_EXCHANGES = ["arbiscan"]
+
+
+@cli.command("import-wallet")
+@click.option(
+    "--exchange", required=True,
+    type=click.Choice(_WALLET_EXCHANGES),
+    help="ブロックエクスプローラーの種類",
+)
+@click.option(
+    "--wallet", "wallet_address", required=True,
+    help="ウォレットアドレス (0x...)",
+)
+@click.option(
+    "--normal", "normal_file", required=True,
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help="Normal Transactions CSV（通常トランザクション）",
+)
+@click.option(
+    "--erc20", "erc20_file", default=None,
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help="ERC-20 Token Txns CSV（スワップ・トークン転送）",
+)
+@click.option(
+    "--internal", "internal_file", default=None,
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help="Internal Transactions CSV（コントラクト内部 ETH 転送）",
+)
+@click.option("--source-id", default=None,
+              help="ソース識別子（デフォルト: exchange名）")
+@click.option("--record-gas", is_flag=True, default=False,
+              help="ガス代を FEE として ledger に記録する")
+@click.pass_context
+def import_wallet_cmd(
+    ctx: click.Context,
+    exchange: str,
+    wallet_address: str,
+    normal_file: Path,
+    erc20_file: Path | None,
+    internal_file: Path | None,
+    source_id: str | None,
+    record_gas: bool,
+) -> None:
+    """EVM ウォレットの取引履歴（Arbiscan / Etherscan CSV）を ledger に取り込む。
+
+    \b
+    Arbiscan (arbiscan.io) の「アドレスページ」から各タブの CSV をダウンロードして
+    指定する。--normal は必須。--erc20 を追加するとスワップが正確に記録される。
+
+    \b
+    例:
+      crypto-summary import-wallet \\
+        --exchange arbiscan \\
+        --wallet 0xABC...123 \\
+        --normal export_normal.csv \\
+        --erc20 export_erc20.csv \\
+        --internal export_internal.csv \\
+        --source-id my_arbitrum
+    """
+    from .sources.evm.arbiscan import ArbiscanCsvSource
+
+    sid = source_id or exchange
+    adapter = ArbiscanCsvSource(sid, wallet_address)
+
+    files = [normal_file.name]
+    if erc20_file:
+        files.append(erc20_file.name)
+    if internal_file:
+        files.append(internal_file.name)
+    console.print(
+        f"Importing [cyan]{', '.join(files)}[/cyan] as [bold]{sid}[/bold] ..."
+    )
+
+    txs = adapter.load_multi(
+        normal_path=normal_file,
+        erc20_path=erc20_file,
+        internal_path=internal_file,
+        record_gas=record_gas,
+    )
+
+    if not txs:
+        console.print("[yellow]取引が見つかりませんでした。[/yellow]")
+        return
+
+    ledger = Ledger(ctx.obj["db"])
+    before = ledger.count(sid)
+    ledger.upsert_many(txs)
+    after = ledger.count(sid)
+
+    latest_ts = max(t.timestamp for t in txs)
+    cursor = ledger.get_cursor(sid)
+    if cursor is None or latest_ts > cursor:
+        ledger.set_cursor(sid, latest_ts)
+    ledger.close()
+
+    new = after - before
+    console.print(
+        f"[green]✓[/green] {len(txs)} 件処理  |  "
+        f"[green]+{new} new[/green]  |  "
+        f"{len(txs) - new} already existed (skipped)  |  "
+        f"latest: {latest_ts.strftime('%Y-%m-%d %H:%M')} UTC"
+    )
+
+
+# ---------------------------------------------------------------------------
 # add (手動でトランザクションを1件追加)
 # ---------------------------------------------------------------------------
 
