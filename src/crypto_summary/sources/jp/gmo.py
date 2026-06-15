@@ -32,72 +32,109 @@ def _d(value: str) -> Decimal | None:
         return None
 
 
+_ZERO = Decimal("0")
+
+
 class GmoCsvSource(CsvSourceAdapter):
-    """GMOコイン 取引レポートCSV パーサー"""
+    """GMOコイン 取引レポートCSV パーサー
+
+    注意: 1注文が複数の約定（fill）行に分割されて出力されるが、約定IDが空のため
+    (日時, 注文ID, 銘柄名, 売買区分) でグルーピングして合算する。
+    """
 
     def load(self, path: Path) -> list[CanonicalTx]:
-        txs: list[CanonicalTx] = []
+        # 全行を読み込んでから精算区分ごとに処理
         with open(path, encoding="utf-8-sig", newline="") as f:
-            reader = csv.DictReader(f)
-            for i, row in enumerate(reader):
-                tx = self._parse_row(row, i)
+            all_rows = list(csv.DictReader(f))
+
+        txs: list[CanonicalTx] = []
+
+        # 「取引所現物取引」は注文単位に集約してから処理
+        txs.extend(self._load_spot_trades(all_rows))
+
+        # その他の精算区分は1行1トランザクション
+        for i, row in enumerate(all_rows):
+            settlement = row["精算区分"].strip()
+            if settlement == "取引所現物取引":
+                continue  # 上で処理済み
+            try:
+                ts = datetime.strptime(row["日時"].strip(), _DATE_FMT).replace(tzinfo=timezone.utc)
+                tx: CanonicalTx | None = None
+                if settlement == "暗号資産預入・送付":
+                    tx = self._parse_crypto_transfer(row, ts, i)
+                elif settlement == "日本円入出金":
+                    tx = self._parse_jpy_transfer(row, ts, i)
+                elif settlement == "取引所現物 取引手数料返金":
+                    tx = self._parse_fee_rebate(row, ts, i)
+                # else: 未知の精算区分はスキップ
                 if tx is not None:
                     txs.append(tx)
+            except (KeyError, ValueError) as e:
+                raise ValueError(f"Row {i + 1}: {e}\n  {dict(row)}") from e
+
         return txs
 
-    def _parse_row(self, row: dict[str, str], idx: int) -> CanonicalTx | None:
-        try:
-            settlement = row["精算区分"].strip()
-            ts = datetime.strptime(row["日時"].strip(), _DATE_FMT).replace(tzinfo=timezone.utc)
+    def _load_spot_trades(self, all_rows: list[dict]) -> list[CanonicalTx]:
+        """取引所現物取引を注文単位に集約して CanonicalTx を生成する。
 
-            if settlement == "取引所現物取引":
-                return self._parse_spot_trade(row, ts, idx)
-            elif settlement == "暗号資産預入・送付":
-                return self._parse_crypto_transfer(row, ts, idx)
-            elif settlement == "日本円入出金":
-                return self._parse_jpy_transfer(row, ts, idx)
-            elif settlement == "取引所現物 取引手数料返金":
-                return self._parse_fee_rebate(row, ts, idx)
-            else:
-                return None  # 未知の精算区分はスキップ
-        except (KeyError, ValueError) as e:
-            raise ValueError(f"Row {idx + 1}: {e}\n  {dict(row)}") from e
+        GMO は1注文を複数の約定行に分割出力するが約定IDが空のため、
+        (日時, 注文ID, 銘柄名, 売買区分) をキーとして約定数量・金額・手数料を合算する。
+        """
+        from collections import defaultdict, OrderedDict
 
-    def _parse_spot_trade(self, row: dict, ts: datetime, idx: int) -> CanonicalTx:
-        side    = row["売買区分"].strip()   # 買 / 売
-        asset   = row["銘柄名"].strip().upper()
-        qty     = _d(row["約定数量"])       # 暗号資産の数量
-        rate    = _d(row["約定レート"])     # JPY/暗号資産
-        amount  = _d(row["約定金額"])       # JPY金額 (= qty × rate)
-        fee_raw = _d(row["注文手数料"])     # 手数料 JPY (負値=メイカーリベート)
-        # 負値は「リベート（割引）」= 実質手数料0として扱う
-        fee = abs(fee_raw) if fee_raw and fee_raw > 0 else None
+        # 出現順を保持しつつグルーピング
+        groups: dict[tuple, dict] = OrderedDict()
 
-        if side == "買":
-            recv_asset, recv_amount = asset, qty
-            sent_asset, sent_amount = "JPY", amount
-        else:  # 売
-            recv_asset, recv_amount = "JPY", amount
-            sent_asset, sent_amount = asset, qty
+        for row in all_rows:
+            if row["精算区分"].strip() != "取引所現物取引":
+                continue
+            key = (
+                row["日時"].strip(),
+                row["注文ID"].strip(),
+                row["銘柄名"].strip().upper(),
+                row["売買区分"].strip(),
+            )
+            if key not in groups:
+                groups[key] = {"rows": [], "qty": _ZERO, "amount": _ZERO, "fee": _ZERO}
+            g = groups[key]
+            g["rows"].append(row)
+            g["qty"]    += _d(row["約定数量"]) or _ZERO
+            g["amount"] += _d(row["約定金額"]) or _ZERO
+            fee_raw = _d(row["注文手数料"]) or _ZERO
+            if fee_raw > _ZERO:   # 負値（リベート）は除外
+                g["fee"] += fee_raw
 
-        raw_key = "|".join([
-            row["日時"], row["注文ID"], row["銘柄名"],
-            row["売買区分"], row["約定数量"], row["約定金額"],
-        ])
+        txs = []
+        for (ts_str, order_id, asset, side), g in groups.items():
+            ts = datetime.strptime(ts_str, _DATE_FMT).replace(tzinfo=timezone.utc)
+            qty    = g["qty"]
+            amount = g["amount"]
+            fee    = g["fee"] if g["fee"] > _ZERO else None
 
-        return CanonicalTx(
-            id=CanonicalTx.make_id(self.source_id, raw_key),
-            source=self.source_id,
-            timestamp=ts,
-            type=TxType.TRADE,
-            received_asset=recv_asset,
-            received_amount=recv_amount,
-            sent_asset=sent_asset,
-            sent_amount=sent_amount,
-            fee_asset="JPY" if fee else None,
-            fee_amount=fee,
-            raw=dict(row),
-        )
+            if side == "買":
+                recv_asset, recv_amount = asset, qty
+                sent_asset, sent_amount = "JPY", amount
+            else:  # 売
+                recv_asset, recv_amount = "JPY", amount
+                sent_asset, sent_amount = asset, qty
+
+            # 注文IDをキーにすることで同一注文は常に同一IDになる（冪等性）
+            raw_key = f"{ts_str}|{order_id}|{asset}|{side}"
+
+            txs.append(CanonicalTx(
+                id=CanonicalTx.make_id(self.source_id, raw_key),
+                source=self.source_id,
+                timestamp=ts,
+                type=TxType.TRADE,
+                received_asset=recv_asset,
+                received_amount=recv_amount,
+                sent_asset=sent_asset,
+                sent_amount=sent_amount,
+                fee_asset="JPY" if fee else None,
+                fee_amount=fee,
+                raw={"fills": len(g["rows"]), "first_row": g["rows"][0]},
+            ))
+        return txs
 
     def _parse_crypto_transfer(self, row: dict, ts: datetime, idx: int) -> CanonicalTx:
         direction = row["授受区分"].strip()   # 預入 / 送付
