@@ -247,49 +247,31 @@ class HeliusApiSource:
         # nativeTransfers / tokenTransfers はプログラムレベルの実移動なので、
         # スワップの差額（おつり）も自動的に相殺される。
         #
-        # WSOL（Wrapped SOL）の二重計上防止:
-        #   SOL→WSOL ラップ時、Helius は
-        #   (1) nativeTransfer: WALLET → WSOLトークンアカウント
-        #   (2) tokenTransfer: fromUserAccount=WALLET, mint=WSOL
-        #   を両方出力する。(1) の toUserAccount はトークンアカウントのアドレスなので
-        #   WALLET とは一致しないが、WSOL tokenTransfer に登場する
-        #   fromTokenAccount / toTokenAccount と一致する。
-        #   この一致でWSOLアカウントを特定し、(1) をスキップして二重計上を防ぐ。
-        wsol_token_accounts: set[str] = set()
-        for tt in tx.get("tokenTransfers") or []:
-            if tt.get("mint") == _WSOL_MINT:
-                if tt.get("fromTokenAccount"):
-                    wsol_token_accounts.add(tt["fromTokenAccount"])
-                if tt.get("toTokenAccount"):
-                    wsol_token_accounts.add(tt["toTokenAccount"])
-
+        # WSOL（Wrapped SOL）の扱い:
+        #   Solana ではウォレットの実 SOL 残高変動は nativeTransfers がすべて記録する。
+        #   SOL→WSOL ラップは「WALLET → WSOLトークンアカウント」のネイティブ転送として
+        #   現れ（WSOLアカウントは別アドレス）、アンラップ／返却も同様にネイティブ転送になる。
+        #   一方 WSOL の tokenTransfers はトークンアカウント間の移動で、その裏付け SOL は
+        #   既にネイティブ転送で計上済み。両方数えると二重計上になるため、
+        #   WSOL の tokenTransfers は無視し、nativeTransfers だけで SOL を追跡する。
         flows: dict[str, Decimal] = {}
 
         for nt in tx.get("nativeTransfers") or []:
             amt_lam = int(nt.get("amount") or 0)
             if amt_lam == 0:
                 continue
-            to_acct = nt.get("toUserAccount", "")
-            from_acct = nt.get("fromUserAccount", "")
-            # WSOLアカウント宛/からの転送はラップ操作なのでスキップ
-            if to_acct in wsol_token_accounts or from_acct in wsol_token_accounts:
-                continue
             amt = _d(amt_lam) / _LAMPORTS
-            if to_acct == self.wallet:
+            if nt.get("toUserAccount") == self.wallet:
                 flows["SOL"] = flows.get("SOL", _ZERO) + amt
-            if from_acct == self.wallet:
+            if nt.get("fromUserAccount") == self.wallet:
                 flows["SOL"] = flows.get("SOL", _ZERO) - amt
 
         for tt in tx.get("tokenTransfers") or []:
             mint = tt.get("mint", "")
-            amt = _d(tt.get("tokenAmount"))  # 既に小数調整済み
-            # WSOL は SOL に統合する
+            # WSOL は SOL の裏付けが nativeTransfers に既出のため無視（二重計上防止）
             if mint == _WSOL_MINT:
-                if tt.get("toUserAccount") == self.wallet:
-                    flows["SOL"] = flows.get("SOL", _ZERO) + amt
-                if tt.get("fromUserAccount") == self.wallet:
-                    flows["SOL"] = flows.get("SOL", _ZERO) - amt
                 continue
+            amt = _d(tt.get("tokenAmount"))  # 既に小数調整済み
             sym, name = meta.get(mint, ("", ""))
             if _is_spam(sym, name):
                 continue
