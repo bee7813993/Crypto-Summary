@@ -170,26 +170,48 @@ def add_cmd(ctx: click.Context, source: str, tx_type: str, date_str: str,
 
 
 # ---------------------------------------------------------------------------
-# remove (手動で1件削除)
+# remove (手動で1件削除 / CSV単位で削除)
 # ---------------------------------------------------------------------------
 
 @cli.command("remove")
-@click.option("--id", "tx_id", required=True, metavar="TX_ID",
+@click.option("--id", "tx_id", default=None, metavar="TX_ID",
               help="削除するトランザクションのID（show コマンドで確認）")
+@click.option("--file", "filepath", default=None,
+              type=click.Path(exists=True, dir_okay=False, path_type=Path),
+              help="このCSVをインポートした際の取引のみを削除する")
+@click.option("--exchange", default=None,
+              type=click.Choice(list(EXCHANGE_SOURCES.keys())),
+              help="--file 使用時のCSVフォーマット（import時と同じ値）")
+@click.option("--source-id", default=None,
+              help="--file 使用時のソースID（import時に指定したもの。省略時は exchange名）")
 @click.option("--yes", "-y", is_flag=True, default=False,
               help="確認プロンプトをスキップ")
 @click.pass_context
-def remove_cmd(ctx: click.Context, tx_id: str, yes: bool) -> None:
-    """指定したIDのトランザクションを1件削除する。
+def remove_cmd(ctx: click.Context, tx_id: str | None, filepath: Path | None,
+               exchange: str | None, source_id: str | None, yes: bool) -> None:
+    """トランザクションを削除する。
 
     \b
-    例:
-      # まず show で削除対象のIDを確認する
-      crypto-summary show --source pbr_lending
+    1件のみ削除（IDを指定）:
+      crypto-summary show --source pbr_lending   # IDを確認
+      crypto-summary remove --id a1b2c3d4e5f67890
 
-      # IDを指定して削除
-      crypto-summary remove --id a1b2c3d4e5f6g7h8
+    \b
+    特定CSVの内容だけ削除（import時と同じファイル・フォーマットを指定）:
+      crypto-summary remove --file binance_2025.csv --exchange binance
+
+    CSVモードは import と同じアダプタで再パースしてIDを復元し、
+    そのIDに一致する取引だけを削除する（他のCSV由来の取引は残る）。
     """
+    if filepath is not None:
+        _remove_by_file(ctx, filepath, exchange, source_id, yes)
+        return
+    if tx_id is None:
+        raise click.BadParameter("--id か --file のどちらかを指定してください。")
+    _remove_by_id(ctx, tx_id, yes)
+
+
+def _remove_by_id(ctx: click.Context, tx_id: str, yes: bool) -> None:
     ledger = Ledger(ctx.obj["db"])
     tx_list = ledger.all(limit=None)
     target = next((t for t in tx_list if t.id == tx_id), None)
@@ -212,6 +234,49 @@ def remove_cmd(ctx: click.Context, tx_id: str, yes: bool) -> None:
     ledger.delete_by_id(tx_id)
     ledger.close()
     console.print(f"[green]✓[/green] 削除しました: id={tx_id}")
+
+
+def _remove_by_file(ctx: click.Context, filepath: Path, exchange: str | None,
+                    source_id: str | None, yes: bool) -> None:
+    if exchange is None:
+        raise click.BadParameter("--file 使用時は --exchange も指定してください。")
+    sid = source_id or exchange
+    source = EXCHANGE_SOURCES[exchange](sid)
+
+    console.print(
+        f"[cyan]{filepath.name}[/cyan] を [bold]{sid}[/bold] として再パースし、"
+        f"一致する取引を検索します ...")
+    txs = source.load(filepath)
+    if not txs:
+        console.print("[yellow]CSVから取引を読み取れませんでした。[/yellow]")
+        return
+
+    ledger = Ledger(ctx.obj["db"])
+    existing = {t.id for t in ledger.all(source=sid, limit=None)}
+    target_ids = [t.id for t in txs if t.id in existing]
+    missing = len(txs) - len(target_ids)
+
+    if not target_ids:
+        console.print(
+            f"[yellow]このCSV由来の取引は ledger に見つかりませんでした"
+            f"（source={sid}）。[/yellow]")
+        ledger.close()
+        return
+
+    console.print(
+        f"  CSV {len(txs)} 行のうち [bold]{len(target_ids)} 件[/bold] が "
+        f"ledger に存在します"
+        + (f"（{missing} 件は未登録）" if missing else "") + "。")
+    if not yes:
+        if not click.confirm(f"{len(target_ids)} 件削除します。よろしいですか？"):
+            console.print("[dim]キャンセルしました。[/dim]")
+            ledger.close()
+            return
+
+    deleted = sum(1 for tid in target_ids if ledger.delete_by_id(tid))
+    ledger.close()
+    console.print(
+        f"[green]✓[/green] {deleted} 件を削除しました（source={sid}）。")
 
 
 # ---------------------------------------------------------------------------
