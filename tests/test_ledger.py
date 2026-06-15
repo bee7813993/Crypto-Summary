@@ -140,3 +140,33 @@ def test_balances(ledger):
     bals = ledger.balances()
     assert bals["BTC"] == Decimal("0.2")
     assert bals["USDT"] == Decimal("-8400")
+
+
+def test_balances_multiple_sources(ledger):
+    ledger.upsert(_tx("1", source="nexo_spot"))   # +0.1 BTC, -4200 USDT
+    ledger.upsert(_tx("2", source="nexo_dnw"))    # +0.1 BTC, -4200 USDT
+    ledger.upsert(_tx("3", source="binance"))     # +0.1 BTC, -4200 USDT
+
+    # 単一ソース
+    one = ledger.balances(source="nexo_spot")
+    assert one["BTC"] == Decimal("0.1")
+
+    # 複数ソース合算 (nexo_spot + nexo_dnw)
+    combined = ledger.balances(source=["nexo_spot", "nexo_dnw"])
+    assert combined["BTC"] == Decimal("0.2")
+    assert combined["USDT"] == Decimal("-8400")
+
+    # 全ソース
+    all_bal = ledger.balances()
+    assert all_bal["BTC"] == Decimal("0.3")
+
+
+def test_balances_by_source(ledger):
+    ledger.upsert(_tx("1", source="nexo_spot"))
+    ledger.upsert(_tx("2", source="nexo_dnw"))
+    ledger.upsert(_tx("3", source="nexo_dnw"))
+
+    per = ledger.balances_by_source(source=["nexo_spot", "nexo_dnw"])
+    assert set(per) == {"nexo_spot", "nexo_dnw"}
+    assert per["nexo_spot"]["BTC"] == Decimal("0.1")
+    assert per["nexo_dnw"]["BTC"] == Decimal("0.2")

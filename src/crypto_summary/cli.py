@@ -137,35 +137,16 @@ def clear(ctx: click.Context, source: str | None, yes: bool) -> None:
 # balance
 # ---------------------------------------------------------------------------
 
-@cli.command()
-@click.option("--source", default=None, help="ソースで絞り込み（省略で全ソース合算）")
-@click.option("--since", default=None, metavar="YYYY-MM-DD", help="集計開始日（UTC）")
-@click.option("--until", default=None, metavar="YYYY-MM-DD", help="集計終了日（UTC）")
-@click.option("--hide-dust", is_flag=True, default=True, show_default=True,
-              help="残高が±0.00000001未満の資産を非表示")
-@click.pass_context
-def balance(ctx: click.Context, source: str | None, since: str | None,
-            until: str | None, hide_dust: bool) -> None:
-    """資産ごとの純残高（受取 − 送出 − 手数料）を表示する。"""
-    since_dt = _parse_date(since)
-    until_dt = _parse_date(until, end_of_day=True)
+_DUST_THRESHOLD = Decimal("0.00000001")
 
-    ledger = Ledger(ctx.obj["db"])
-    bals = ledger.balances(source=source, since=since_dt, until=until_dt)
-    ledger.close()
 
-    if not bals:
-        console.print("[yellow]残高データがありません。[/yellow]")
-        return
+def _filter_dust(bals: dict[str, Decimal], hide_dust: bool) -> dict[str, Decimal]:
+    return {a: v for a, v in bals.items()
+            if not hide_dust or abs(v) >= _DUST_THRESHOLD}
 
-    dust_threshold = Decimal("0.00000001")
-    filtered = {a: v for a, v in bals.items() if not hide_dust or abs(v) >= dust_threshold}
 
-    title = "残高サマリー"
-    if source: title += f" ({source})"
-    if since_dt: title += f" from {since_dt.date()}"
-    if until_dt: title += f" until {until_dt.date()}"
-
+def _print_balance_table(filtered: dict[str, Decimal], *, title: str,
+                         total_before_filter: int, hide_dust: bool) -> None:
     table = Table(title=title, box=box.ROUNDED)
     table.add_column("資産", style="cyan", min_width=8)
     table.add_column("残高", justify="right", min_width=24)
@@ -177,9 +158,73 @@ def balance(ctx: click.Context, source: str | None, since: str | None,
 
     console.print(table)
     if hide_dust:
-        hidden = len(bals) - len(filtered)
+        hidden = total_before_filter - len(filtered)
         if hidden:
             console.print(f"  [dim]（±0.00000001未満の {hidden} 資産を非表示）[/dim]")
+
+
+@cli.command()
+@click.option("--source", "sources", multiple=True,
+              help="ソースで絞り込み（複数指定可、省略で全ソース）")
+@click.option("--by-source", is_flag=True, default=False,
+              help="ソース（口座）ごとに分けて残高を表示")
+@click.option("--since", default=None, metavar="YYYY-MM-DD", help="集計開始日（UTC）")
+@click.option("--until", default=None, metavar="YYYY-MM-DD", help="集計終了日（UTC）")
+@click.option("--hide-dust", is_flag=True, default=True, show_default=True,
+              help="残高が±0.00000001未満の資産を非表示")
+@click.pass_context
+def balance(ctx: click.Context, sources: tuple[str, ...], by_source: bool,
+            since: str | None, until: str | None, hide_dust: bool) -> None:
+    """資産ごとの純残高（受取 − 送出 − 手数料）を表示する。
+
+    --source は複数指定できる (例: --source nexo_spot --source nexo_dnw)。
+    --by-source を付けると口座ごとに内訳を表示する。
+    """
+    since_dt = _parse_date(since)
+    until_dt = _parse_date(until, end_of_day=True)
+    source_filter: list[str] | None = list(sources) or None
+
+    range_suffix = ""
+    if since_dt: range_suffix += f" from {since_dt.date()}"
+    if until_dt: range_suffix += f" until {until_dt.date()}"
+
+    ledger = Ledger(ctx.obj["db"])
+    if by_source:
+        per_source = ledger.balances_by_source(
+            source=source_filter, since=since_dt, until=until_dt)
+        ledger.close()
+
+        if not per_source:
+            console.print("[yellow]残高データがありません。[/yellow]")
+            return
+
+        for src in sorted(per_source):
+            _print_balance_table(
+                _filter_dust(per_source[src], hide_dust),
+                title=f"残高サマリー ({src}){range_suffix}",
+                total_before_filter=len(per_source[src]),
+                hide_dust=hide_dust,
+            )
+        return
+
+    bals = ledger.balances(source=source_filter, since=since_dt, until=until_dt)
+    ledger.close()
+
+    if not bals:
+        console.print("[yellow]残高データがありません。[/yellow]")
+        return
+
+    label = ", ".join(sources) if sources else None
+    title = "残高サマリー"
+    if label: title += f" ({label})"
+    title += range_suffix
+
+    _print_balance_table(
+        _filter_dust(bals, hide_dust),
+        title=title,
+        total_before_filter=len(bals),
+        hide_dust=hide_dust,
+    )
 
 
 # ---------------------------------------------------------------------------

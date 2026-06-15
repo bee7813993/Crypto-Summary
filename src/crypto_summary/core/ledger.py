@@ -157,17 +157,31 @@ class Ledger:
             result.append((src, cnt, cur.isoformat() if cur else None))
         return result
 
+    @staticmethod
+    def _source_clause(source: str | list[str] | None) -> tuple[str | None, list]:
+        """source を単一/複数どちらでも受け取り WHERE 句の断片を返す。"""
+        if not source:
+            return None, []
+        if isinstance(source, str):
+            return "source=?", [source]
+        placeholders = ",".join("?" for _ in source)
+        return f"source IN ({placeholders})", list(source)
+
     def balances(
         self,
-        source: str | None = None,
+        source: str | list[str] | None = None,
         since: datetime | None = None,
         until: datetime | None = None,
     ) -> dict[str, Decimal]:
-        """資産ごとの純残高を返す (受取 - 送出 - 手数料)。"""
+        """資産ごとの純残高を返す (受取 - 送出 - 手数料)。
+
+        source は単一文字列・複数リスト・None(全ソース合算) のいずれも可。
+        """
         clauses, params = [], []
-        if source:
-            clauses.append("source=?")
-            params.append(source)
+        src_clause, src_params = self._source_clause(source)
+        if src_clause:
+            clauses.append(src_clause)
+            params.extend(src_params)
         if since:
             clauses.append("timestamp >= ?")
             params.append(since.isoformat())
@@ -190,6 +204,42 @@ class Ledger:
             if fa and fv:
                 bal[fa] = bal.get(fa, Decimal(0)) - Decimal(fv)
         return bal
+
+    def balances_by_source(
+        self,
+        source: str | list[str] | None = None,
+        since: datetime | None = None,
+        until: datetime | None = None,
+    ) -> dict[str, dict[str, Decimal]]:
+        """ソースごとの資産別純残高を返す: {source: {asset: balance}}。"""
+        clauses, params = [], []
+        src_clause, src_params = self._source_clause(source)
+        if src_clause:
+            clauses.append(src_clause)
+            params.extend(src_params)
+        if since:
+            clauses.append("timestamp >= ?")
+            params.append(since.isoformat())
+        if until:
+            clauses.append("timestamp <= ?")
+            params.append(until.isoformat())
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        rows = self._conn.execute(
+            f"SELECT source, received_asset, received_amount, sent_asset, sent_amount, fee_asset, fee_amount "
+            f"FROM transactions {where}",
+            params,
+        ).fetchall()
+
+        result: dict[str, dict[str, Decimal]] = {}
+        for src, ra, rv, sa, sv, fa, fv in rows:
+            bal = result.setdefault(src, {})
+            if ra and rv:
+                bal[ra] = bal.get(ra, Decimal(0)) + Decimal(rv)
+            if sa and sv:
+                bal[sa] = bal.get(sa, Decimal(0)) - Decimal(sv)
+            if fa and fv:
+                bal[fa] = bal.get(fa, Decimal(0)) - Decimal(fv)
+        return result
 
     def all(
         self,
