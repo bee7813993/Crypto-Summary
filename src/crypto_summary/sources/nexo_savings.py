@@ -38,6 +38,14 @@ _SKIP_TYPES = {
     "Exchange Credit",                # ローン実行時の xUSD→通貨変換 (Top up Crypto と重複)
 }
 
+# 内部会計単位 (実資産ではない):
+#   xUSD : クレジットライン(ローン)/カードの内部建玉単位
+#   USD  : Nexoカードの法定通貨決済単位
+# これらを Input Currency に持つ行はローン・カードの内部レッグであり、
+# 貯蓄ウォレットの実残高に影響しない (実際のローン入金は Top up Crypto,
+# 担保売却は Transfer Out/In で計上済み)。幻影残高を避けるためスキップする。
+_INTERNAL_ASSETS = {"XUSD", "USD"}
+
 _TYPE_MAP: dict[str, tuple[TxType, str | None]] = {
     # --- 報酬系 ---
     "Interest":                 (TxType.REWARD,   "interest"),
@@ -103,6 +111,11 @@ class NexoSavingsCsvSource(CsvSourceAdapter):
 
         if tx_type_str not in _TYPE_MAP:
             return None  # 未知タイプはスキップ
+
+        # ローン/カードの内部単位 (xUSD/USD) 建ての行はスキップ (幻影残高回避)。
+        # 実際の入金/担保売却は別の行 (Top up Crypto, Transfer Out/In) で計上済み。
+        if row["Input Currency"].strip().upper() in _INTERNAL_ASSETS:
+            return None
 
         canonical_type, label = _TYPE_MAP[tx_type_str]
         ts = datetime.strptime(row["Date / Time (UTC)"].strip(), _DATE_FMT).replace(tzinfo=timezone.utc)

@@ -106,3 +106,33 @@ def test_manual_sell_order_skipped(tmp_path):
     txs = _load(tmp_path,
         'NXT008,Manual Sell Order,USDT,-822.79095800,USDT,0.00000000,822.79,0,,approved / Crypto Repayment,2026-01-02 18:34:22')
     assert txs == []
+
+
+def test_loan_withdrawal_xusd_skipped(tmp_path):
+    """Loan Withdrawal は xUSD 建て (内部債務単位) なのでスキップ。実入金は Top up Crypto。"""
+    txs = _load(tmp_path,
+        'NXT009,Loan Withdrawal,xUSD,-799.16000000,xUSD,799.16000000,799.16,0,,approved / USDT Loan Withdrawal,2026-01-02 14:25:13')
+    assert txs == []
+
+
+def test_nexo_card_purchase_skipped(tmp_path):
+    """Nexo Card Purchase は xUSD/USD 建て (担保への借入) なのでスキップ。"""
+    txs = _load(tmp_path,
+        'NXT010,Nexo Card Purchase,USD,-3.65000000,EUR,3.11000000,3.65,0,,approved / MCDONALDS,2026-01-02 00:53:34')
+    assert txs == []
+
+
+def test_internal_unit_interest_skipped(tmp_path):
+    """xUSD 建てのローン利息は内部単位なのでスキップ (通常の実資産 Interest は計上)。"""
+    txs = _load(tmp_path,
+        'NXT011,Interest,xUSD,-0.01000000,xUSD,0.01000000,0.01,0,,approved / Interest,2026-01-19 00:00:00')
+    assert txs == []
+
+
+def test_real_asset_interest_still_recorded(tmp_path):
+    """実資産 (NEXO等) の Interest は引き続き REWARD として計上される。"""
+    txs = _load(tmp_path,
+        'NXT012,Interest,NEXO,0.80193140,NEXO,0.80193140,0.72,0,,approved / NEXO Interest Earned,2026-01-02 06:00:00')
+    assert len(txs) == 1
+    assert txs[0].type == TxType.REWARD
+    assert txs[0].received_asset == "NEXO"
