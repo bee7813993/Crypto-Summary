@@ -8,85 +8,202 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 </head>
 <body>
-  <header class="topbar">
-    <div class="brand">
-      <span class="logo">◈</span>
-      <h1>Crypto-Summary</h1>
-    </div>
-    <nav class="nav">
-      <a class="nav-link active" href="#">ダッシュボード</a>
-      <span class="nav-link disabled" title="今後追加予定">インポート</span>
-    </nav>
-    <div class="controls">
-      <label for="currency">通貨</label>
-      <select id="currency">
-        <option value="USD">USD</option>
-        <option value="JPY">JPY</option>
-        <option value="EUR">EUR</option>
-        <option value="GBP">GBP</option>
-      </select>
-      <button id="refresh" title="再取得">⟳</button>
-    </div>
-  </header>
-
-  <main class="container">
-    <section class="hero">
-      <div class="hero-label">総資産評価額</div>
-      <div class="hero-value" id="total-value">—</div>
-      <div class="hero-sub" id="total-sub">読み込み中…</div>
-    </section>
-
-    <div id="warnings" class="warnings hidden"></div>
-
-    <div class="grid">
-      <section class="card chart-card">
-        <h2>資産構成</h2>
-        <div class="chart-wrap">
-          <canvas id="alloc-chart"></canvas>
-        </div>
-      </section>
-
-      <section class="card">
-        <h2>口座（ソース）別</h2>
-        <div class="table-wrap">
-          <table id="sources-table">
-            <thead>
-              <tr><th>口座</th><th class="num">取引数</th><th class="num">評価額</th></tr>
-            </thead>
-            <tbody></tbody>
-          </table>
-        </div>
-      </section>
-    </div>
-
-    <section class="card">
-      <h2>資産一覧</h2>
-      <div class="table-wrap">
-        <table id="assets-table">
-          <thead>
-            <tr>
-              <th>資産</th>
-              <th class="num">残高</th>
-              <th class="num">単価</th>
-              <th class="num">評価額</th>
-              <th class="num">構成比</th>
-            </tr>
-          </thead>
-          <tbody></tbody>
-        </table>
+  <div class="layout">
+    <!-- サイドバー -->
+    <aside class="sidebar">
+      <div class="brand">
+        <span class="logo">◈</span>
+        <span class="brand-name">Crypto-Summary</span>
       </div>
-      <div class="toggle-row">
-        <button id="toggle-small" class="link-btn">少額残高のトークンを表示 ▾</button>
-      </div>
-      <div id="unpriced" class="unpriced hidden"></div>
-    </section>
 
-    <footer class="footer">
-      <span id="generated">—</span>
-      <span class="dot">·</span>
-      <span>価格: CoinGecko（5分キャッシュ）</span>
-    </footer>
-  </main>
+      <nav class="nav">
+        <a class="nav-link active" data-page="dashboard" href="#dashboard">
+          <span class="nav-icon">⊞</span><span>ダッシュボード</span>
+        </a>
+        <a class="nav-link" data-page="accounts" href="#accounts">
+          <span class="nav-icon">◫</span><span>口座別</span>
+        </a>
+        <a class="nav-link" data-page="assets" href="#assets">
+          <span class="nav-icon">◎</span><span>資産別</span>
+        </a>
+        <span class="nav-link disabled">
+          <span class="nav-icon">↑</span><span>インポート</span>
+        </span>
+      </nav>
+
+      <div class="sidebar-controls">
+        <label for="currency">通貨</label>
+        <div class="controls-row">
+          <select id="currency">
+            <option value="USD">USD</option>
+            <option value="JPY">JPY</option>
+            <option value="EUR">EUR</option>
+            <option value="GBP">GBP</option>
+          </select>
+          <button id="refresh" title="再取得">⟳</button>
+        </div>
+      </div>
+    </aside>
+
+    <!-- メインコンテンツ -->
+    <main class="main-content">
+
+      <!-- ダッシュボードページ -->
+      <div id="page-dashboard" class="page">
+        <section class="hero">
+          <div class="hero-label">総資産評価額</div>
+          <div class="hero-value" id="total-value">—</div>
+          <div class="hero-sub" id="total-sub">読み込み中…</div>
+        </section>
+
+        <div id="warnings" class="warnings hidden"></div>
+
+        <div class="grid">
+          <section class="card chart-card">
+            <h2>資産構成</h2>
+            <div class="chart-wrap">
+              <canvas id="alloc-chart"></canvas>
+            </div>
+          </section>
+
+          <section class="card">
+            <h2>口座（ソース）別</h2>
+            <div class="table-wrap">
+              <table id="sources-table">
+                <thead>
+                  <tr><th>口座</th><th class="num">取引数</th><th class="num">評価額</th></tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </section>
+        </div>
+
+        <section class="card">
+          <h2>資産一覧</h2>
+          <div class="table-wrap">
+            <table id="assets-table">
+              <thead>
+                <tr>
+                  <th>資産</th>
+                  <th class="num">残高</th>
+                  <th class="num">単価</th>
+                  <th class="num">評価額</th>
+                  <th class="num">構成比</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <div class="toggle-row">
+            <button id="toggle-small" class="link-btn">少額残高のトークンを表示 ▾</button>
+          </div>
+          <div id="unpriced" class="unpriced hidden"></div>
+        </section>
+
+        <footer class="footer">
+          <span id="generated">—</span>
+          <span class="dot">·</span>
+          <span>価格: CoinGecko（5分キャッシュ）</span>
+        </footer>
+      </div>
+
+      <!-- 口座別ページ -->
+      <div id="page-accounts" class="page hidden">
+        <!-- 口座一覧 -->
+        <div id="accounts-list-view">
+          <h1 class="page-title">口座別</h1>
+          <section class="card">
+            <div class="table-wrap">
+              <table id="accounts-table">
+                <thead>
+                  <tr>
+                    <th>口座</th>
+                    <th class="num">取引数</th>
+                    <th class="num">資産数</th>
+                    <th class="num">評価額</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </section>
+        </div>
+
+        <!-- 口座ドリルダウン -->
+        <div id="account-detail-view" class="hidden">
+          <div class="detail-header">
+            <button id="account-back" class="back-btn">← 口座一覧</button>
+            <h1 class="page-title" id="account-detail-name"></h1>
+          </div>
+          <section class="card">
+            <div class="table-wrap">
+              <table id="account-assets-table">
+                <thead>
+                  <tr>
+                    <th>資産</th>
+                    <th class="num">残高</th>
+                    <th class="num">単価</th>
+                    <th class="num">評価額</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </section>
+          <div id="account-detail-loading" class="loading hidden">読み込み中…</div>
+        </div>
+      </div>
+
+      <!-- 資産別ページ -->
+      <div id="page-assets" class="page hidden">
+        <!-- 資産一覧 -->
+        <div id="assets-list-view">
+          <h1 class="page-title">資産別</h1>
+          <section class="card">
+            <div class="table-wrap">
+              <table id="all-assets-table">
+                <thead>
+                  <tr>
+                    <th>資産</th>
+                    <th class="num">残高</th>
+                    <th class="num">単価</th>
+                    <th class="num">評価額</th>
+                    <th class="num">構成比</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </section>
+        </div>
+
+        <!-- 資産ドリルダウン -->
+        <div id="asset-detail-view" class="hidden">
+          <div class="detail-header">
+            <button id="asset-back" class="back-btn">← 資産一覧</button>
+            <h1 class="page-title" id="asset-detail-name"></h1>
+          </div>
+          <section class="card">
+            <div class="table-wrap">
+              <table id="asset-accounts-table">
+                <thead>
+                  <tr>
+                    <th>口座</th>
+                    <th class="num">残高</th>
+                    <th class="num">評価額</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </section>
+          <div id="asset-detail-loading" class="loading hidden">読み込み中…</div>
+        </div>
+      </div>
+
+    </main>
+  </div>
 
   <script src="/static/app.js"></script>
 </body>

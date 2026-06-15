@@ -1,9 +1,7 @@
 "use strict";
 
 const CURRENCY_SYMBOL = { USD: "$", JPY: "¥", EUR: "€", GBP: "£" };
-// 表示通貨ごとの「少額」しきい値（これ以下は初期非表示）
 const SMALL_THRESHOLD = { USD: 0.01, EUR: 0.01, GBP: 0.01, JPY: 1 };
-// チャート用カラーパレット（紫系をベースに）
 const PALETTE = [
   "#8957e5", "#a371f7", "#bc8cff", "#d2b3ff", "#2f81f7",
   "#39c5cf", "#3fb950", "#e3b341", "#f0883e", "#db61a2",
@@ -14,19 +12,16 @@ let allocChart = null;
 let lastSummary = null;
 let showSmall = false;
 
+// ---- ユーティリティ ----
+
 function fmtMoney(value, currency) {
   const sym = CURRENCY_SYMBOL[currency] || "";
   const n = Number(value);
-  const digits = currency === "JPY" ? 2 : 2;
-  return sym + n.toLocaleString(undefined, {
-    minimumFractionDigits: digits,
-    maximumFractionDigits: digits,
-  });
+  return sym + n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
 function fmtAmount(value) {
-  const n = Number(value);
-  return n.toLocaleString(undefined, { maximumFractionDigits: 8 });
+  return Number(value).toLocaleString(undefined, { maximumFractionDigits: 8 });
 }
 
 async function fetchJSON(url) {
@@ -40,6 +35,47 @@ function escapeHtml(s) {
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
+// ---- ページナビゲーション ----
+
+const PAGES = ["dashboard", "accounts", "assets"];
+
+function showPage(name) {
+  if (!PAGES.includes(name)) name = "dashboard";
+
+  PAGES.forEach((p) => {
+    const el = document.getElementById(`page-${p}`);
+    if (el) el.classList.toggle("hidden", p !== name);
+  });
+
+  document.querySelectorAll(".nav-link[data-page]").forEach((a) => {
+    a.classList.toggle("active", a.dataset.page === name);
+  });
+
+  // ページ切り替え時はドリルダウンをリセット
+  if (name === "accounts") {
+    showAccountsList();
+    loadAccountsPage();
+  } else if (name === "assets") {
+    showAssetsList();
+    loadAssetsPage();
+  }
+}
+
+document.querySelectorAll(".nav-link[data-page]").forEach((a) => {
+  a.addEventListener("click", (e) => {
+    e.preventDefault();
+    const page = a.dataset.page;
+    history.pushState({ page }, "", `#${page}`);
+    showPage(page);
+  });
+});
+
+window.addEventListener("popstate", (e) => {
+  showPage((e.state && e.state.page) || "dashboard");
+});
+
+// ---- ダッシュボード ----
+
 function renderWarnings(warnings) {
   const el = document.getElementById("warnings");
   if (!warnings || warnings.length === 0) {
@@ -52,13 +88,11 @@ function renderWarnings(warnings) {
 }
 
 function isSmall(asset, currency) {
-  // 価格なし、または評価額がしきい値以下なら「少額」
   if (!asset.has_price || asset.value === null) return true;
   const th = SMALL_THRESHOLD[currency] ?? 0.01;
   return Math.abs(Number(asset.value)) <= th;
 }
 
-/** チャート用スライスを構築（構成比1%未満は「その他」に集約）し、資産→色のマップも返す。 */
 function buildChartSlices(priced, total) {
   const slices = [];
   let otherValue = 0;
@@ -74,7 +108,6 @@ function buildChartSlices(priced, total) {
     }
   });
 
-  // 大きい順に色を割り当て
   slices.sort((x, y) => y.value - x.value);
   slices.forEach((s, i) => {
     s.color = PALETTE[i % PALETTE.length];
@@ -100,7 +133,6 @@ function renderSummary(data) {
   const priced = data.assets.filter((a) => a.has_price && a.value !== null);
   const { slices, colorByAsset } = buildChartSlices(priced, total);
 
-  // ---- 資産一覧テーブル ----
   const tbody = document.querySelector("#assets-table tbody");
   tbody.innerHTML = "";
   let hiddenCount = 0;
@@ -122,7 +154,6 @@ function renderSummary(data) {
     tbody.appendChild(tr);
   });
 
-  // ---- 少額残高トグル ----
   const toggleBtn = document.getElementById("toggle-small");
   if (hiddenCount > 0 || showSmall) {
     toggleBtn.style.display = "";
@@ -133,22 +164,35 @@ function renderSummary(data) {
     toggleBtn.style.display = "none";
   }
 
-  // ---- 価格未取得の資産 ----
   const unpricedEl = document.getElementById("unpriced");
   if (data.unpriced && data.unpriced.length) {
     unpricedEl.classList.remove("hidden");
-    unpricedEl.textContent =
-      "価格未対応（評価額に未算入）: " + data.unpriced.join(", ");
+    unpricedEl.textContent = "価格未対応（評価額に未算入）: " + data.unpriced.join(", ");
   } else {
     unpricedEl.classList.add("hidden");
   }
 
-  // ---- 構成比チャート ----
   renderChart(slices, cur, total);
   renderWarnings(data.warnings);
 }
 
-/** ドーナツ中央にテキストを描くプラグイン（ホバー時は対象スライスの詳細）。 */
+function renderSources(data) {
+  const cur = data.currency;
+  const tbody = document.querySelector("#sources-table tbody");
+  tbody.innerHTML = "";
+  data.sources.forEach((s) => {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td>${escapeHtml(s.source)}</td>
+      <td class="num">${s.tx_count}</td>
+      <td class="num">${fmtMoney(s.total_value, cur)}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
+// ---- チャート ----
+
 const centerTextPlugin = {
   id: "centerText",
   afterDraw(chart) {
@@ -186,7 +230,6 @@ const centerTextPlugin = {
 
 function renderChart(slices, currency, total) {
   const ctx = document.getElementById("alloc-chart");
-
   if (allocChart) allocChart.destroy();
   if (slices.length === 0) {
     ctx.getContext("2d").clearRect(0, 0, ctx.width, ctx.height);
@@ -210,7 +253,7 @@ function renderChart(slices, currency, total) {
       cutout: "68%",
       plugins: {
         legend: { display: false },
-        tooltip: { enabled: false },  // 中央表示に置き換え
+        tooltip: { enabled: false },
       },
       onHover(evt, elements) {
         const idx = elements.length ? elements[0].index : null;
@@ -227,20 +270,146 @@ function renderChart(slices, currency, total) {
   allocChart.$activeIndex = null;
 }
 
-function renderSources(data) {
-  const cur = data.currency;
-  const tbody = document.querySelector("#sources-table tbody");
-  tbody.innerHTML = "";
-  data.sources.forEach((s) => {
-    const tr = document.createElement("tr");
-    tr.innerHTML = `
-      <td>${escapeHtml(s.source)}</td>
-      <td class="num">${s.tx_count}</td>
-      <td class="num">${fmtMoney(s.total_value, cur)}</td>
-    `;
-    tbody.appendChild(tr);
-  });
+// ---- 口座別ページ ----
+
+function showAccountsList() {
+  document.getElementById("accounts-list-view").classList.remove("hidden");
+  document.getElementById("account-detail-view").classList.add("hidden");
 }
+
+function showAccountDetail(name) {
+  document.getElementById("accounts-list-view").classList.add("hidden");
+  const detail = document.getElementById("account-detail-view");
+  detail.classList.remove("hidden");
+  document.getElementById("account-detail-name").textContent = name;
+  loadAccountDetail(name);
+}
+
+async function loadAccountsPage() {
+  const currency = document.getElementById("currency").value;
+  const tbody = document.querySelector("#accounts-table tbody");
+  tbody.innerHTML = '<tr><td colspan="4" class="loading">読み込み中…</td></tr>';
+  try {
+    const data = await fetchJSON(`/api/sources?currency=${currency}`);
+    tbody.innerHTML = "";
+    data.sources.forEach((s) => {
+      const tr = document.createElement("tr");
+      tr.className = "clickable";
+      tr.innerHTML = `
+        <td>${escapeHtml(s.source)} <span class="row-arrow">›</span></td>
+        <td class="num">${s.tx_count}</td>
+        <td class="num">${s.asset_count}</td>
+        <td class="num">${fmtMoney(s.total_value, currency)}</td>
+      `;
+      tr.addEventListener("click", () => showAccountDetail(s.source));
+      tbody.appendChild(tr);
+    });
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="4" class="muted">エラー: ${escapeHtml(e.message)}</td></tr>`;
+  }
+}
+
+async function loadAccountDetail(name) {
+  const currency = document.getElementById("currency").value;
+  const tbody = document.querySelector("#account-assets-table tbody");
+  const loading = document.getElementById("account-detail-loading");
+  tbody.innerHTML = "";
+  loading.classList.remove("hidden");
+  try {
+    const data = await fetchJSON(`/api/account-assets?account=${encodeURIComponent(name)}&currency=${currency}`);
+    loading.classList.add("hidden");
+    data.assets.forEach((a) => {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td>${escapeHtml(a.asset)}</td>
+        <td class="num">${fmtAmount(a.balance)}</td>
+        <td class="num">${a.price ? fmtMoney(a.price, currency) : '<span class="muted">-</span>'}</td>
+        <td class="num">${a.value ? fmtMoney(a.value, currency) : '<span class="muted">-</span>'}</td>
+      `;
+      tbody.appendChild(tr);
+    });
+    if (data.assets.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="4" class="muted">残高なし</td></tr>';
+    }
+  } catch (e) {
+    loading.classList.add("hidden");
+    tbody.innerHTML = `<tr><td colspan="4" class="muted">エラー: ${escapeHtml(e.message)}</td></tr>`;
+  }
+}
+
+// ---- 資産別ページ ----
+
+function showAssetsList() {
+  document.getElementById("assets-list-view").classList.remove("hidden");
+  document.getElementById("asset-detail-view").classList.add("hidden");
+}
+
+function showAssetDetail(symbol) {
+  document.getElementById("assets-list-view").classList.add("hidden");
+  const detail = document.getElementById("asset-detail-view");
+  detail.classList.remove("hidden");
+  document.getElementById("asset-detail-name").textContent = symbol;
+  loadAssetDetail(symbol);
+}
+
+async function loadAssetsPage() {
+  const currency = document.getElementById("currency").value;
+  const tbody = document.querySelector("#all-assets-table tbody");
+  tbody.innerHTML = '<tr><td colspan="5" class="loading">読み込み中…</td></tr>';
+  try {
+    const data = await fetchJSON(`/api/summary?currency=${currency}`);
+    const total = Number(data.total_value) || 0;
+    tbody.innerHTML = "";
+    data.assets.forEach((a) => {
+      const pct = a.value && total > 0 ? (Number(a.value) / total) * 100 : null;
+      const tr = document.createElement("tr");
+      tr.className = "clickable";
+      tr.innerHTML = `
+        <td>${escapeHtml(a.asset)} <span class="row-arrow">›</span></td>
+        <td class="num">${fmtAmount(a.balance)}</td>
+        <td class="num">${a.price ? fmtMoney(a.price, currency) : '<span class="muted">-</span>'}</td>
+        <td class="num">${a.value ? fmtMoney(a.value, currency) : '<span class="muted">-</span>'}</td>
+        <td class="num">${pct !== null ? pct.toFixed(1) + "%" : '<span class="muted">-</span>'}</td>
+      `;
+      tr.addEventListener("click", () => showAssetDetail(a.asset));
+      tbody.appendChild(tr);
+    });
+    if (data.assets.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="5" class="muted">データなし</td></tr>';
+    }
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="5" class="muted">エラー: ${escapeHtml(e.message)}</td></tr>`;
+  }
+}
+
+async function loadAssetDetail(symbol) {
+  const currency = document.getElementById("currency").value;
+  const tbody = document.querySelector("#asset-accounts-table tbody");
+  const loading = document.getElementById("asset-detail-loading");
+  tbody.innerHTML = "";
+  loading.classList.remove("hidden");
+  try {
+    const data = await fetchJSON(`/api/asset-accounts?asset=${encodeURIComponent(symbol)}&currency=${currency}`);
+    loading.classList.add("hidden");
+    data.accounts.forEach((a) => {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td>${escapeHtml(a.account)}</td>
+        <td class="num">${fmtAmount(a.balance)}</td>
+        <td class="num">${a.value ? fmtMoney(a.value, currency) : '<span class="muted">-</span>'}</td>
+      `;
+      tbody.appendChild(tr);
+    });
+    if (data.accounts.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="3" class="muted">保有口座なし</td></tr>';
+    }
+  } catch (e) {
+    loading.classList.add("hidden");
+    tbody.innerHTML = `<tr><td colspan="3" class="muted">エラー: ${escapeHtml(e.message)}</td></tr>`;
+  }
+}
+
+// ---- メインロード ----
 
 async function load() {
   const currency = document.getElementById("currency").value;
@@ -262,18 +431,43 @@ async function load() {
   }
 }
 
+// ---- イベントリスナー ----
+
 document.getElementById("currency").addEventListener("change", () => {
   localStorage.setItem("cs_currency", document.getElementById("currency").value);
-  load();
-});
-document.getElementById("refresh").addEventListener("click", load);
-document.getElementById("toggle-small").addEventListener("click", () => {
-  showSmall = !showSmall;
-  if (lastSummary) renderSummary(lastSummary);  // 再フェッチ不要で再描画
+  // 現在表示中のページを再ロード
+  const cur = getCurrentPage();
+  if (cur === "dashboard") load();
+  else if (cur === "accounts") loadAccountsPage();
+  else if (cur === "assets") loadAssetsPage();
 });
 
-// 通貨の選択を復元（デフォルト USD）
+document.getElementById("refresh").addEventListener("click", () => {
+  const cur = getCurrentPage();
+  if (cur === "dashboard") load();
+  else if (cur === "accounts") loadAccountsPage();
+  else if (cur === "assets") loadAssetsPage();
+});
+
+document.getElementById("toggle-small").addEventListener("click", () => {
+  showSmall = !showSmall;
+  if (lastSummary) renderSummary(lastSummary);
+});
+
+document.getElementById("account-back").addEventListener("click", showAccountsList);
+document.getElementById("asset-back").addEventListener("click", showAssetsList);
+
+function getCurrentPage() {
+  const active = document.querySelector(".nav-link.active[data-page]");
+  return active ? active.dataset.page : "dashboard";
+}
+
+// ---- 初期化 ----
+
 const saved = localStorage.getItem("cs_currency");
 if (saved) document.getElementById("currency").value = saved;
 
-load();
+// ハッシュに基づいて初期ページを決定
+const initPage = location.hash.replace("#", "") || "dashboard";
+showPage(initPage);
+if (initPage === "dashboard") load();

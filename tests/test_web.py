@@ -83,13 +83,14 @@ def test_sources_breakdown(client):
     r = client.get("/api/sources?currency=USD")
     assert r.status_code == 200
     d = r.json()
+    # source_id は _display_name でタイトルケース変換される: acct_a → "Acct A"
     by_name = {s["source"]: s for s in d["sources"]}
-    # acct_a: BTC 30000 + ETH 6000 = 36000
-    assert Decimal(by_name["acct_a"]["total_value"]) == Decimal("36000")
-    # acct_b: SOL 1500 (MYSTERY は価格なしで未算入)
-    assert Decimal(by_name["acct_b"]["total_value"]) == Decimal("1500")
+    assert Decimal(by_name["Acct A"]["total_value"]) == Decimal("36000")
+    assert Decimal(by_name["Acct B"]["total_value"]) == Decimal("1500")
+    # source_ids フィールドに元のIDが含まれる
+    assert "acct_a" in by_name["Acct A"]["source_ids"]
     # 評価額降順
-    assert d["sources"][0]["source"] == "acct_a"
+    assert d["sources"][0]["source"] == "Acct A"
 
 
 def test_invalid_currency_falls_back_to_usd(client):
@@ -101,6 +102,27 @@ def test_meta(client):
     d = client.get("/api/meta").json()
     assert "USD" in d["currencies"]
     assert "JPY" in d["currencies"]
+
+
+def test_account_assets_drilldown(client):
+    r = client.get("/api/account-assets?account=Acct+A&currency=USD")
+    assert r.status_code == 200
+    d = r.json()
+    assert d["account"] == "Acct A"
+    assets_by_name = {a["asset"]: a for a in d["assets"]}
+    assert "BTC" in assets_by_name
+    assert Decimal(assets_by_name["BTC"]["value"]) == Decimal("30000")
+    assert Decimal(d["total_value"]) == Decimal("36000")
+
+
+def test_asset_accounts_drilldown(client):
+    r = client.get("/api/asset-accounts?asset=BTC&currency=USD")
+    assert r.status_code == 200
+    d = r.json()
+    assert d["asset"] == "BTC"
+    assert len(d["accounts"]) == 1
+    assert d["accounts"][0]["account"] == "Acct A"
+    assert Decimal(d["total_balance"]) == Decimal("0.5")
 
 
 def test_index_served(client):

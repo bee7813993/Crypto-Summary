@@ -19,6 +19,26 @@ from ..core.prices import SUPPORTED_CURRENCIES, fetch_prices
 _STATIC_DIR = Path(__file__).parent / "static"
 _DUST = Decimal("0.00000001")
 
+# 口座表示名とグルーピング設定。
+# キー: 表示名 / 値: ソースIDのリスト（複数なら合算表示）
+# ここにないソースIDは source_id をタイトルケースに変換して表示する。
+ACCOUNT_GROUPS: dict[str, list[str]] = {
+    "bitFlyer": ["bitflyer"],
+    "Nexo Pro": ["nexo_dnw", "nexo_spot"],
+}
+
+
+def _display_name(source_id: str) -> str:
+    for name, ids in ACCOUNT_GROUPS.items():
+        if source_id in ids:
+            return name
+    return source_id.replace("_", " ").title()
+
+
+def _group_to_source_ids() -> dict[str, list[str]]:
+    """表示名 → ソースIDリスト（ACCOUNT_GROUPS + 未登録ソースのフォールバック）を返す。"""
+    return {name: ids for name, ids in ACCOUNT_GROUPS.items()}
+
 
 def _summary(db_path: str, currency: str) -> dict:
     """全ソース合算の資産サマリーを計算して返す。"""
@@ -32,7 +52,6 @@ def _summary(db_path: str, currency: str) -> dict:
     finally:
         ledger.close()
 
-    # ダスト除去（±0.00000001 未満）
     bals = {a: v for a, v in bals.items() if abs(v) >= _DUST}
 
     warnings: list[str] = []
@@ -54,7 +73,6 @@ def _summary(db_path: str, currency: str) -> dict:
             "has_price": price is not None,
         })
 
-    # 評価額の大きい順（価格なしは末尾）に並べ替え
     assets.sort(
         key=lambda a: (a["value"] is None, -(Decimal(a["value"]) if a["value"] else Decimal("0"))),
     )
@@ -75,7 +93,7 @@ def _summary(db_path: str, currency: str) -> dict:
 
 
 def _sources(db_path: str, currency: str) -> dict:
-    """ソース（口座）ごとの評価額内訳を返す。"""
+    """口座（グルーピング済み）ごとの評価額内訳を返す。"""
     currency = currency.upper()
     if currency not in SUPPORTED_CURRENCIES:
         currency = "USD"
@@ -91,17 +109,35 @@ def _sources(db_path: str, currency: str) -> dict:
     warnings: list[str] = []
     prices = fetch_prices(sorted(all_assets), currency, warn=warnings.append)
 
-    sources = []
+    # グループ名 → 合算残高・取引数を集計
+    group_bals: dict[str, dict[str, Decimal]] = {}
+    group_tx: dict[str, int] = {}
+    group_ids: dict[str, list[str]] = {}
+
     for src in sorted(per_source):
-        bals = {a: v for a, v in per_source[src].items() if abs(v) >= _DUST}
+        name = _display_name(src)
+        if name not in group_bals:
+            group_bals[name] = {}
+            group_tx[name] = 0
+            group_ids[name] = []
+        group_ids[name].append(src)
+        group_tx[name] += counts.get(src, 0)
+        for asset, bal in per_source[src].items():
+            prev = group_bals[name].get(asset, Decimal("0"))
+            group_bals[name][asset] = prev + bal
+
+    sources = []
+    for name, bals in group_bals.items():
+        bals = {a: v for a, v in bals.items() if abs(v) >= _DUST}
         total = Decimal("0")
         for asset, balance in bals.items():
             price = prices.get(asset.upper())
             if price is not None:
                 total += balance * price
         sources.append({
-            "source": src,
-            "tx_count": counts.get(src, 0),
+            "source": name,
+            "source_ids": group_ids[name],
+            "tx_count": group_tx[name],
             "asset_count": len(bals),
             "total_value": str(total),
         })
@@ -116,6 +152,116 @@ def _sources(db_path: str, currency: str) -> dict:
     }
 
 
+def _account_assets(account: str, db_path: str, currency: str) -> dict:
+    """指定口座（グループ）の資産内訳を返す。"""
+    currency = currency.upper()
+    if currency not in SUPPORTED_CURRENCIES:
+        currency = "USD"
+
+    ledger = Ledger(db_path)
+    try:
+        per_source = ledger.balances_by_source()
+    finally:
+        ledger.close()
+
+    # 口座名に対応するソースIDを収集
+    target_ids: set[str] = set()
+    for src in per_source:
+        if _display_name(src) == account:
+            target_ids.add(src)
+
+    if not target_ids:
+        return {"currency": currency, "account": account, "assets": [], "total_value": "0"}
+
+    # 合算残高
+    merged: dict[str, Decimal] = {}
+    for src in target_ids:
+        for asset, bal in per_source[src].items():
+            merged[asset] = merged.get(asset, Decimal("0")) + bal
+    merged = {a: v for a, v in merged.items() if abs(v) >= _DUST}
+
+    warnings: list[str] = []
+    prices = fetch_prices(sorted(merged.keys()), currency, warn=warnings.append)
+
+    assets = []
+    total = Decimal("0")
+    for asset in sorted(merged):
+        balance = merged[asset]
+        price = prices.get(asset.upper())
+        value = (balance * price) if price is not None else None
+        if value is not None:
+            total += value
+        assets.append({
+            "asset": asset,
+            "balance": str(balance),
+            "price": (str(price) if price is not None else None),
+            "value": (str(value) if value is not None else None),
+            "has_price": price is not None,
+        })
+
+    assets.sort(
+        key=lambda a: (a["value"] is None, -(Decimal(a["value"]) if a["value"] else Decimal("0"))),
+    )
+
+    return {
+        "currency": currency,
+        "account": account,
+        "assets": assets,
+        "total_value": str(total),
+        "warnings": warnings,
+    }
+
+
+def _asset_accounts(asset: str, db_path: str, currency: str) -> dict:
+    """指定資産の口座別内訳を返す。"""
+    currency = currency.upper()
+    if currency not in SUPPORTED_CURRENCIES:
+        currency = "USD"
+
+    ledger = Ledger(db_path)
+    try:
+        per_source = ledger.balances_by_source()
+    finally:
+        ledger.close()
+
+    warnings: list[str] = []
+    prices = fetch_prices([asset], currency, warn=warnings.append)
+    price = prices.get(asset.upper())
+
+    # グループ名 → 合算残高
+    group_bals: dict[str, Decimal] = {}
+    for src, bals in per_source.items():
+        bal = bals.get(asset, Decimal("0"))
+        if abs(bal) < _DUST:
+            continue
+        name = _display_name(src)
+        group_bals[name] = group_bals.get(name, Decimal("0")) + bal
+
+    accounts = []
+    total_balance = Decimal("0")
+    total_value = Decimal("0")
+    for name, balance in sorted(group_bals.items(), key=lambda x: -abs(x[1])):
+        value = (balance * price) if price is not None else None
+        if value is not None:
+            total_value += value
+        total_balance += balance
+        accounts.append({
+            "account": name,
+            "balance": str(balance),
+            "value": (str(value) if value is not None else None),
+        })
+
+    return {
+        "currency": currency,
+        "asset": asset,
+        "price": (str(price) if price is not None else None),
+        "accounts": accounts,
+        "total_balance": str(total_balance),
+        "total_value": str(total_value),
+        "warnings": warnings,
+    }
+
+
 def create_app(db_path: str = "ledger.db") -> FastAPI:
     """FastAPI アプリを生成する。db_path はクロージャで束縛する。"""
     app = FastAPI(title="Crypto-Summary", docs_url="/api/docs")
@@ -127,6 +273,14 @@ def create_app(db_path: str = "ledger.db") -> FastAPI:
     @app.get("/api/sources")
     def sources(currency: str = Query("USD")) -> dict:
         return _sources(db_path, currency)
+
+    @app.get("/api/account-assets")
+    def account_assets(account: str = Query(...), currency: str = Query("USD")) -> dict:
+        return _account_assets(account, db_path, currency)
+
+    @app.get("/api/asset-accounts")
+    def asset_accounts(asset: str = Query(...), currency: str = Query("USD")) -> dict:
+        return _asset_accounts(asset, db_path, currency)
 
     @app.get("/api/meta")
     def meta() -> dict:
