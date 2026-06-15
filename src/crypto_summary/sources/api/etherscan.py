@@ -46,6 +46,16 @@ CHAIN_IDS: dict[str, int] = {
     "optimism": 10,
 }
 
+# chainid → ネイティブガストークンシンボル
+# Polygon は 2024年9月に MATIC → POL に改名されたが、表示は MATIC のまま維持
+_NATIVE_CURRENCY: dict[int, str] = {
+    1: "ETH",
+    42161: "ETH",
+    137: "MATIC",
+    8453: "ETH",
+    10: "ETH",
+}
+
 _WEI = Decimal(10) ** 18
 # 無料枠レート制限: 5 calls/sec → 安全側に 0.21 秒間隔（約 4.7 req/s）。
 _RATE_LIMIT_SLEEP = 0.21
@@ -84,7 +94,7 @@ class EtherscanApiSource(ArbiscanCsvSource):
         chainid: int,
         timeout: float = 30.0,
     ) -> None:
-        super().__init__(source_id, wallet_address)
+        super().__init__(source_id, wallet_address, _NATIVE_CURRENCY.get(chainid, "ETH"))
         self.api_key = api_key
         self.chainid = chainid
         self.timeout = timeout

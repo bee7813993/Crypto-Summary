@@ -63,11 +63,16 @@ def _is_spam(token_name: str, token_symbol: str = "") -> bool:
     """TokenName または TokenSymbol がスパム/フィッシングパターンに一致するか。
 
     CSV パスでは Arbiscan が TokenName を "ERC-20 TOKEN*" にマスクするため
-    _SPAM_RE で捕捉できる。API パスでは実際の名称が返るため、TokenSymbol にも
-    フィッシング文字列が埋め込まれることがある。
+    _SPAM_RE で捕捉できる。API パスでは実際の名称が返るため、追加で以下を検査:
+      - フィッシング URL・宣伝文句 (_PHISHING_RE)
+      - Unicode ホモグラフ攻撃（Cyrillic 等の非 ASCII 文字で正規トークンを偽装）
     """
     for text in (token_name, token_symbol):
-        if text and (_SPAM_RE.search(text) or _PHISHING_RE.search(text)):
+        if not text:
+            continue
+        if _SPAM_RE.search(text) or _PHISHING_RE.search(text):
+            return True
+        if not text.isascii():
             return True
     return False
 
@@ -104,9 +109,12 @@ class ArbiscanCsvSource:
 
     ZERO_ADDR = _ZERO_ADDR
 
-    def __init__(self, source_id: str, wallet_address: str) -> None:
+    def __init__(
+        self, source_id: str, wallet_address: str, native_asset: str = "ETH"
+    ) -> None:
         self.source_id = source_id
         self.wallet = wallet_address.lower()
+        self.native_asset = native_asset
 
     # ------------------------------------------------------------------
     # Public
@@ -216,7 +224,7 @@ class ArbiscanCsvSource:
         if record_gas and gas > _ZERO and wallet_is_sender:
             results.append(self._tx(
                 tx_hash + "|gas", ts, TxType.FEE,
-                fee_asset="ETH", fee_amount=gas, label="gas", tx_hash=tx_hash,
+                fee_asset=self.native_asset, fee_amount=gas, label="gas", tx_hash=tx_hash,
             ))
 
         has_eth = eth_in > _DUST or eth_out > _DUST or int_eth_in > _DUST
@@ -225,25 +233,27 @@ class ArbiscanCsvSource:
         if not has_eth and not has_tok:
             return results  # Approve 等、資産移動なし
 
-        # ── 1. 純粋 ETH 受取 ──────────────────────────────────────────
+        na = self.native_asset  # 可読性のための短縮変数
+
+        # ── 1. 純粋ネイティブ通貨受取 ────────────────────────────────
         if eth_in > _DUST and not has_tok and int_eth_in <= _DUST:
             results.append(self._tx(
                 tx_hash, ts, TxType.DEPOSIT,
-                received_asset="ETH", received_amount=eth_in,
+                received_asset=na, received_amount=eth_in,
                 label="transfer_in", tx_hash=tx_hash,
             ))
             return results
 
-        # ── 2. 純粋 ETH 送出 ──────────────────────────────────────────
+        # ── 2. 純粋ネイティブ通貨送出 ────────────────────────────────
         if eth_out > _DUST and not has_tok and int_eth_in <= _DUST:
             results.append(self._tx(
                 tx_hash, ts, TxType.WITHDRAW,
-                sent_asset="ETH", sent_amount=eth_out,
+                sent_asset=na, sent_amount=eth_out,
                 label="transfer_out", tx_hash=tx_hash,
             ))
             return results
 
-        # ── 3. ETH Wrap（ETH → WETH）────────────────────────────────
+        # ── 3. ネイティブ通貨 Wrap（ETH → WETH 等）──────────────────
         # WETH が zero address から mint された場合
         weth_minted = any(
             r["From"].lower() == self.ZERO_ADDR
@@ -256,30 +266,30 @@ class ArbiscanCsvSource:
             if weth:
                 results.append(self._tx(
                     tx_hash, ts, TxType.TRADE,
-                    sent_asset="ETH", sent_amount=eth_out,
+                    sent_asset=na, sent_amount=eth_out,
                     received_asset=weth[0], received_amount=weth[1],
                     label="eth_wrap", tx_hash=tx_hash,
                 ))
                 return results
 
-        # ── 4. ETH → Token スワップ ──────────────────────────────────
+        # ── 4. ネイティブ通貨 → Token スワップ ──────────────────────
         if eth_out > _DUST and len(t_recv) == 1 and not t_sent:
             sym, amt = t_recv[0]
             results.append(self._tx(
                 tx_hash, ts, TxType.TRADE,
-                sent_asset="ETH", sent_amount=eth_out,
+                sent_asset=na, sent_amount=eth_out,
                 received_asset=sym, received_amount=amt,
                 label="swap", tx_hash=tx_hash,
             ))
             return results
 
-        # ── 5. Token → ETH スワップ（内部 ETH 経由）─────────────────
+        # ── 5. Token → ネイティブ通貨スワップ（内部転送経由）────────
         if len(t_sent) == 1 and int_eth_in > _DUST and not t_recv and eth_out <= _DUST:
             sym, amt = t_sent[0]
             results.append(self._tx(
                 tx_hash, ts, TxType.TRADE,
                 sent_asset=sym, sent_amount=amt,
-                received_asset="ETH", received_amount=int_eth_in,
+                received_asset=na, received_amount=int_eth_in,
                 label="swap", tx_hash=tx_hash,
             ))
             return results
@@ -303,7 +313,7 @@ class ArbiscanCsvSource:
             if eth_out > _DUST:
                 results.append(self._tx(
                     tx_hash + "|eth", ts, TxType.TRANSFER,
-                    sent_asset="ETH", sent_amount=eth_out,
+                    sent_asset=na, sent_amount=eth_out,
                     label="lp_add", tx_hash=tx_hash,
                 ))
             for i, (sym, amt) in enumerate(t_sent):
@@ -320,7 +330,7 @@ class ArbiscanCsvSource:
             if int_eth_in > _DUST:
                 results.append(self._tx(
                     tx_hash + "|eth", ts, TxType.TRANSFER,
-                    received_asset="ETH", received_amount=int_eth_in,
+                    received_asset=na, received_amount=int_eth_in,
                     label="lp_remove", tx_hash=tx_hash,
                 ))
             for i, (sym, amt) in enumerate(t_recv):
@@ -356,15 +366,15 @@ class ArbiscanCsvSource:
         # ── フォールバック: 個別に記録（未分類の複合取引）──────────
         if eth_in > _DUST:
             results.append(self._tx(tx_hash + "|ei", ts, TxType.DEPOSIT,
-                received_asset="ETH", received_amount=eth_in,
+                received_asset=na, received_amount=eth_in,
                 label="eth_in", tx_hash=tx_hash))
         if eth_out > _DUST:
             results.append(self._tx(tx_hash + "|eo", ts, TxType.WITHDRAW,
-                sent_asset="ETH", sent_amount=eth_out,
+                sent_asset=na, sent_amount=eth_out,
                 label="eth_out", tx_hash=tx_hash))
         if int_eth_in > _DUST:
             results.append(self._tx(tx_hash + "|ie", ts, TxType.DEPOSIT,
-                received_asset="ETH", received_amount=int_eth_in,
+                received_asset=na, received_amount=int_eth_in,
                 label="internal_eth_in", tx_hash=tx_hash))
         for i, (sym, amt) in enumerate(t_recv):
             results.append(self._tx(tx_hash + f"|r{i}", ts, TxType.DEPOSIT,

@@ -371,3 +371,43 @@ def test_weth_from_zero_not_filtered(tmp_path):
     # ETH Wrap は TRADE として記録される
     assert len(txs) == 1
     assert txs[0].type == TxType.TRADE
+
+
+# ── 17. Unicode ホモグラフ攻撃トークンはスキップ ─────────────────────
+
+def test_unicode_homograph_symbol_skipped(tmp_path):
+    """Cyrillic 等の非 ASCII 文字で USDC/USDT を偽装するトークンをスキップ。"""
+    h = _hash(20)
+    n = _normal(tmp_path,
+        f'"{h}","1","1","2025-11-30 07:28:00","{WALLET}","{OTHER}","","0","0","0","0.001","0.01","1","","","Transfer"')
+    # UЅDС: 'Ѕ'(U+0455 Cyrillic) と 'С'(U+0421 Cyrillic) で USDC を偽装
+    e = _erc20(tmp_path,
+        f'"{h}","1","1","2025-11-30 07:28:00","{WALLET}","{OTHER}","3148.87","N/A","0xfake","USD Coin (Polygon)","UЅdС"')
+    txs = _src().load_multi(n, e)
+    assert txs == []
+
+
+# ── 18. native_asset 指定（Polygon = MATIC）────────────────────────────
+
+def test_native_asset_polygon_deposit(tmp_path):
+    """native_asset="MATIC" を指定すると MATIC 受取として分類される。"""
+    h = _hash(21)
+    n = _normal(tmp_path,
+        f'"{h}","1","1","2025-11-30 01:39:00","{OTHER}","{WALLET}","","1.8","0","0","0","0","1","","","Transfer"')
+    txs = ArbiscanCsvSource("poly", WALLET, "MATIC").load_multi(n)
+    assert len(txs) == 1
+    tx = txs[0]
+    assert tx.type == TxType.DEPOSIT
+    assert tx.received_asset == "MATIC"
+
+
+def test_native_asset_polygon_fee(tmp_path):
+    """Polygon の gas fee は MATIC として記録される。"""
+    h = _hash(22)
+    n = _normal(tmp_path,
+        f'"{h}","1","1","2025-11-30 01:40:00","{WALLET}","{OTHER}","","0","1.5","0","0.035","1","1","","","Transfer"')
+    txs = ArbiscanCsvSource("poly", WALLET, "MATIC").load_multi(n, record_gas=True)
+    fee = next(t for t in txs if t.type == TxType.FEE)
+    assert fee.fee_asset == "MATIC"
+    withdraw = next(t for t in txs if t.type == TxType.WITHDRAW)
+    assert withdraw.sent_asset == "MATIC"

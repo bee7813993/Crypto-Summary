@@ -30,6 +30,18 @@ def test_chain_ids():
     assert CHAIN_IDS["polygon"] == 137
 
 
+def test_native_asset_arbitrum():
+    """Arbitrum (chainid=42161) のネイティブ通貨は ETH。"""
+    src = EtherscanApiSource("arb", WALLET, "KEY", 42161)
+    assert src.native_asset == "ETH"
+
+
+def test_native_asset_polygon():
+    """Polygon (chainid=137) のネイティブ通貨は MATIC。"""
+    src = EtherscanApiSource("poly", WALLET, "KEY", 137)
+    assert src.native_asset == "MATIC"
+
+
 def test_eth_deposit_from_api():
     """value (wei) が ETH に変換され DEPOSIT になる。"""
     src = FakeEtherscan({
