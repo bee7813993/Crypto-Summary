@@ -367,19 +367,16 @@
           <div id="import-tab-csv" class="import-tab-content">
             <div class="settings-row">
               <label class="settings-label">取引所・サービス</label>
-              <select id="import-csv-exchange" class="settings-input" style="max-width:240px">
-                <option value="nexo">Nexo</option>
-                <option value="bitflyer">bitFlyer（近日対応）</option>
-                <option value="coincheck">Coincheck（近日対応）</option>
-              </select>
+              <select id="import-csv-exchange" class="settings-input" style="max-width:300px"></select>
             </div>
             <div class="settings-row">
               <label class="settings-label">CSVファイル</label>
-              <input id="import-csv-file" type="file" accept=".csv,.xlsx,.xls" class="file-input" />
+              <input id="import-csv-file" type="file" accept=".csv" class="file-input" />
             </div>
             <div class="settings-row">
-              <label class="settings-label">口座名（任意）</label>
-              <input id="import-csv-account" class="settings-input" type="text" placeholder="未入力の場合は取引所名を使用" style="max-width:240px" />
+              <label class="settings-label">ソースID（任意）</label>
+              <input id="import-csv-account" class="settings-input" type="text" placeholder="未入力の場合は取引所名を使用" style="max-width:300px" />
+              <p class="settings-hint">既存口座に追加する場合はその口座のソースIDを指定してください。</p>
             </div>
             <div class="settings-actions">
               <button id="import-csv-btn" class="settings-save-btn">インポート</button>
@@ -435,7 +432,7 @@
         <!-- 既存口座の操作 -->
         <section class="card import-section">
           <h2>既存の口座</h2>
-          <p class="card-hint">各口座のインポート・同期操作</p>
+          <p class="card-hint">各口座への追加CSVインポート</p>
           <div class="table-wrap">
             <table id="import-accounts-table">
               <thead>
@@ -444,6 +441,27 @@
                   <th>ソースID</th>
                   <th class="num">取引数</th>
                   <th>操作</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </section>
+
+        <!-- インポート履歴（CSV単位の削除） -->
+        <section class="card import-section">
+          <h2>インポート履歴（CSV単位で削除）</h2>
+          <p class="card-hint">過去に取り込んだCSVを、そのCSV由来の取引ごとまとめて削除できます</p>
+          <div class="table-wrap">
+            <table id="import-batches-table">
+              <thead>
+                <tr>
+                  <th>取込日時</th>
+                  <th>口座</th>
+                  <th>取引所</th>
+                  <th>ファイル</th>
+                  <th class="num">取引数</th>
+                  <th></th>
                 </tr>
               </thead>
               <tbody></tbody>

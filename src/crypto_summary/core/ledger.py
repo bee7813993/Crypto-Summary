@@ -35,6 +35,19 @@ CREATE TABLE IF NOT EXISTS exports (
     exported_at TEXT NOT NULL,
     PRIMARY KEY (tx_id, sink)
 );
+CREATE TABLE IF NOT EXISTS import_batches (
+    id          TEXT PRIMARY KEY,
+    source      TEXT NOT NULL,
+    exchange    TEXT NOT NULL,
+    filename    TEXT,
+    imported_at TEXT NOT NULL,
+    tx_count    INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS batch_txs (
+    batch_id TEXT NOT NULL,
+    tx_id    TEXT NOT NULL,
+    PRIMARY KEY (batch_id, tx_id)
+);
 """
 
 _COLS = [
@@ -137,6 +150,82 @@ class Ledger:
             [(tx_id, sink, now) for tx_id in tx_ids],
         )
         self._conn.commit()
+
+    # ------------------------------------------------------------------
+    # Import batches（CSV単位の取り込み記録 / CSV単位削除に使う）
+    # ------------------------------------------------------------------
+
+    def record_import_batch(
+        self, batch_id: str, source: str, exchange: str,
+        filename: str | None, tx_ids: list[str],
+    ) -> None:
+        """1回のCSV取り込みを1バッチとして記録する。
+
+        tx_ids にはそのCSVから生成された全取引IDを渡す（既存・新規問わず）。
+        後で delete_import_batch(batch_id) するとこのバッチ由来の取引を削除できる。
+        """
+        self._conn.execute(
+            "INSERT INTO import_batches VALUES (?,?,?,?,?,?)",
+            (batch_id, source, exchange, filename,
+             datetime.utcnow().isoformat(), len(tx_ids)),
+        )
+        self._conn.executemany(
+            "INSERT OR IGNORE INTO batch_txs VALUES (?,?)",
+            [(batch_id, tid) for tid in tx_ids],
+        )
+        self._conn.commit()
+
+    def list_import_batches(self) -> list[dict]:
+        """取り込みバッチ一覧を新しい順で返す。
+
+        existing_count は ledger に現存する取引数（個別削除後の現状）。
+        """
+        rows = self._conn.execute(
+            "SELECT id, source, exchange, filename, imported_at, tx_count "
+            "FROM import_batches ORDER BY imported_at DESC"
+        ).fetchall()
+        result: list[dict] = []
+        for bid, source, exchange, filename, imported_at, tx_count in rows:
+            existing = self._conn.execute(
+                "SELECT COUNT(*) FROM batch_txs bt "
+                "JOIN transactions t ON bt.tx_id = t.id "
+                "WHERE bt.batch_id = ?",
+                (bid,),
+            ).fetchone()[0]
+            result.append({
+                "id": bid,
+                "source": source,
+                "exchange": exchange,
+                "filename": filename,
+                "imported_at": imported_at,
+                "tx_count": tx_count,
+                "existing_count": existing,
+            })
+        return result
+
+    def delete_import_batch(self, batch_id: str) -> int:
+        """バッチ由来の取引を削除する（他バッチと共有する取引は残す）。削除件数を返す。"""
+        tx_ids = [
+            r[0] for r in self._conn.execute(
+                "SELECT tx_id FROM batch_txs WHERE batch_id=?", (batch_id,)
+            ).fetchall()
+        ]
+        deleted = 0
+        for tid in tx_ids:
+            shared = self._conn.execute(
+                "SELECT COUNT(*) FROM batch_txs WHERE tx_id=? AND batch_id<>?",
+                (tid, batch_id),
+            ).fetchone()[0]
+            if shared == 0:
+                cur = self._conn.execute(
+                    "DELETE FROM transactions WHERE id=?", (tid,)
+                )
+                self._conn.execute("DELETE FROM exports WHERE tx_id=?", (tid,))
+                deleted += cur.rowcount
+        self._conn.execute("DELETE FROM batch_txs WHERE batch_id=?", (batch_id,))
+        self._conn.execute("DELETE FROM import_batches WHERE id=?", (batch_id,))
+        self._conn.commit()
+        return deleted
 
     # ------------------------------------------------------------------
     # Read

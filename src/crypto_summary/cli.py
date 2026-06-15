@@ -78,6 +78,11 @@ def import_cmd(ctx: click.Context, filepath: Path, exchange: str, source_id: str
 
     latest_ts = max(t.timestamp for t in txs)
     ledger.set_cursor(sid, latest_ts)
+
+    # CSV単位での削除に使えるよう、取り込みをバッチ記録する
+    import uuid as _uuid
+    batch_id = f"batch:{_uuid.uuid4().hex[:12]}"
+    ledger.record_import_batch(batch_id, sid, exchange, filepath.name, [t.id for t in txs])
     ledger.close()
 
     new = after - before

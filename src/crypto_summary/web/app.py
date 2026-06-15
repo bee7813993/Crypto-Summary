@@ -5,7 +5,9 @@
 """
 from __future__ import annotations
 
+import base64
 import json
+import tempfile
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -19,6 +21,7 @@ from fastapi.staticfiles import StaticFiles
 from ..core.ledger import Ledger
 from ..core.models import CanonicalTx, TxType
 from ..core.prices import SUPPORTED_CURRENCIES, fetch_prices
+from ..sources.csv_import import EXCHANGE_SOURCES
 
 _STATIC_DIR = Path(__file__).parent / "static"
 _DUST = Decimal("0.00000001")
@@ -480,6 +483,121 @@ def _add_manual_transaction(db_path: str, body: dict[str, Any]) -> dict:
     return {"ok": True, "id": tx_id}
 
 
+# CSV インポートで提示する取引所・サービスの表示名。
+_EXCHANGE_LABELS: dict[str, str] = {
+    "nexo_savings": "Nexo（貯蓄口座）",
+    "nexo_spot": "Nexo Pro（スポット取引）",
+    "nexo_dnw": "Nexo Pro（入出金）",
+    "bitflyer": "bitFlyer（現物 TradeHistory）",
+    "bitflyer_collateral": "bitFlyer（証拠金 CollateralHistory）",
+    "bitflyer_conversion": "bitFlyer（両替 ConversionHistory）",
+    "gmo": "GMOコイン",
+    "bitlend": "BitLending",
+    "pbr_lending": "PBR Lending",
+    "binance": "Binance（スポット）",
+    "universal": "汎用CSV",
+}
+
+# 新規口座追加で提示する取引所の表示順。
+_IMPORT_EXCHANGE_ORDER: list[str] = [
+    "nexo_savings", "nexo_spot", "nexo_dnw",
+    "bitflyer", "bitflyer_collateral", "bitflyer_conversion",
+    "gmo", "bitlend", "pbr_lending", "binance", "universal",
+]
+
+
+def _import_exchanges() -> dict:
+    """CSV インポートで選択できる取引所・サービスの一覧を返す。"""
+    items: list[dict] = []
+    seen: set[str] = set()
+    for key in _IMPORT_EXCHANGE_ORDER:
+        if key in EXCHANGE_SOURCES:
+            items.append({"value": key, "label": _EXCHANGE_LABELS.get(key, key)})
+            seen.add(key)
+    for key in EXCHANGE_SOURCES:
+        if key not in seen:
+            items.append({"value": key, "label": _EXCHANGE_LABELS.get(key, key)})
+    return {"exchanges": items}
+
+
+def _import_csv(db_path: str, body: dict[str, Any]) -> dict:
+    """base64エンコードされたCSVを取り込み、CSV単位削除用にバッチ記録する。"""
+    exchange = (body.get("exchange") or "").strip()
+    if exchange not in EXCHANGE_SOURCES:
+        raise HTTPException(status_code=422, detail=f"未対応の取引所です: {exchange}")
+
+    content_b64 = body.get("content_b64") or ""
+    if not content_b64:
+        raise HTTPException(status_code=422, detail="CSVファイルの内容がありません")
+    try:
+        raw = base64.b64decode(content_b64)
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=422, detail="ファイル内容のデコードに失敗しました")
+
+    filename = (body.get("filename") or f"{exchange}.csv").strip()
+    # source_id はインポート先の識別子（任意。未指定なら取引所名）。
+    source_id = (body.get("account") or "").strip() or exchange
+
+    adapter = EXCHANGE_SOURCES[exchange](source_id)
+    suffix = Path(filename).suffix or ".csv"
+    tmp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+            tmp.write(raw)
+            tmp_path = Path(tmp.name)
+        try:
+            txs = adapter.load(tmp_path)
+        except Exception as e:  # noqa: BLE001 - パースエラーをユーザーに返す
+            raise HTTPException(status_code=422, detail=f"CSV の解析に失敗しました: {e}")
+    finally:
+        if tmp_path is not None:
+            tmp_path.unlink(missing_ok=True)
+
+    if not txs:
+        return {"ok": True, "imported": 0, "parsed": 0, "source": source_id,
+                "message": "取引が見つかりませんでした"}
+
+    ledger = Ledger(db_path)
+    try:
+        before = ledger.count(source_id)
+        ledger.upsert_many(txs)
+        after = ledger.count(source_id)
+
+        latest_ts = max(t.timestamp for t in txs)
+        cursor = ledger.get_cursor(source_id)
+        if cursor is None or latest_ts > cursor:
+            ledger.set_cursor(source_id, latest_ts)
+
+        batch_id = f"batch:{uuid.uuid4().hex[:12]}"
+        ledger.record_import_batch(
+            batch_id, source_id, exchange, filename, [t.id for t in txs]
+        )
+    finally:
+        ledger.close()
+
+    return {
+        "ok": True,
+        "imported": after - before,
+        "parsed": len(txs),
+        "source": source_id,
+        "batch_id": batch_id,
+    }
+
+
+def _list_import_batches(db_path: str) -> dict:
+    """CSV取り込みバッチ一覧（表示名・取引所ラベル付き）を返す。"""
+    groups = _load_groups(db_path)
+    ledger = Ledger(db_path)
+    try:
+        batches = ledger.list_import_batches()
+    finally:
+        ledger.close()
+    for b in batches:
+        b["account"] = _display_name(b["source"], groups)
+        b["exchange_label"] = _EXCHANGE_LABELS.get(b["exchange"], b["exchange"])
+    return {"batches": batches}
+
+
 def _get_account_groups(db_path: str) -> dict:
     """UI設定用: 現在のグループ設定とDBの全ソースIDを返す。"""
     groups = _load_groups(db_path)
@@ -545,6 +663,30 @@ def create_app(db_path: str = "ledger.db") -> FastAPI:
         if not deleted:
             raise HTTPException(status_code=404, detail="Transaction not found")
         return {"ok": True}
+
+    @app.get("/api/import/exchanges")
+    def import_exchanges() -> dict:
+        return _import_exchanges()
+
+    @app.post("/api/import/csv")
+    def import_csv(body: dict[str, Any]) -> dict:
+        return _import_csv(db_path, body)
+
+    @app.get("/api/import/batches")
+    def import_batches() -> dict:
+        return _list_import_batches(db_path)
+
+    @app.delete("/api/import/batches/{batch_id}")
+    def delete_import_batch(batch_id: str) -> dict:
+        ledger = Ledger(db_path)
+        try:
+            existing = {b["id"] for b in ledger.list_import_batches()}
+            if batch_id not in existing:
+                raise HTTPException(status_code=404, detail="バッチが見つかりません")
+            deleted = ledger.delete_import_batch(batch_id)
+        finally:
+            ledger.close()
+        return {"ok": True, "deleted": deleted}
 
     @app.get("/api/account-groups")
     def get_account_groups() -> dict:

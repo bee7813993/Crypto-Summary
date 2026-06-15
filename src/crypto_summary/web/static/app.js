@@ -1053,10 +1053,33 @@ function showDeleteDialog(txId, desc, onSuccess) {
 }
 
 document.getElementById("delete-confirm").addEventListener("click", async () => {
+  document.getElementById("delete-dialog").classList.add("hidden");
+
+  // CSVバッチ削除
+  if (_batchDeleteId) {
+    const batchId = _batchDeleteId;
+    _batchDeleteId = null;
+    try {
+      const resp = await fetch(`/api/import/batches/${encodeURIComponent(batchId)}`, { method: "DELETE" });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const d = await resp.json();
+      loadImportBatches();
+      loadImportAccountsTable();
+      _txAccountsLoaded = false;
+      const result = document.getElementById("import-csv-result");
+      result.className = "settings-result ok";
+      result.textContent = `${d.deleted} 件を削除しました`;
+      result.classList.remove("hidden");
+    } catch (e) {
+      alert("削除に失敗しました: " + e.message);
+    }
+    return;
+  }
+
+  // 単一取引削除
   if (!_deleteCallback) return;
   const { txId, onSuccess } = _deleteCallback;
   _deleteCallback = null;
-  document.getElementById("delete-dialog").classList.add("hidden");
 
   try {
     const resp = await fetch(`/api/transactions/${encodeURIComponent(txId)}`, { method: "DELETE" });
@@ -1069,6 +1092,7 @@ document.getElementById("delete-confirm").addEventListener("click", async () => 
 
 document.getElementById("delete-cancel").addEventListener("click", () => {
   _deleteCallback = null;
+  _batchDeleteId = null;
   document.getElementById("delete-dialog").classList.add("hidden");
 });
 
@@ -1076,18 +1100,26 @@ document.getElementById("delete-cancel").addEventListener("click", () => {
 document.getElementById("delete-dialog").addEventListener("click", (e) => {
   if (e.target === e.currentTarget) {
     _deleteCallback = null;
+    _batchDeleteId = null;
     e.currentTarget.classList.add("hidden");
   }
 });
 
 // ---- インポートページ ----
 
+let _importTabsReady = false;
+let _importExchangesLoaded = false;
+
 async function loadImportPage() {
   setupImportTabs();
+  ensureImportExchanges();
   loadImportAccountsTable();
+  loadImportBatches();
 }
 
 function setupImportTabs() {
+  if (_importTabsReady) return;
+  _importTabsReady = true;
   document.querySelectorAll(".import-tab").forEach((btn) => {
     btn.addEventListener("click", () => {
       const tab = btn.dataset.tab;
@@ -1098,6 +1130,22 @@ function setupImportTabs() {
       if (content) content.classList.remove("hidden");
     });
   });
+}
+
+async function ensureImportExchanges() {
+  if (_importExchangesLoaded) return;
+  const sel = document.getElementById("import-csv-exchange");
+  try {
+    const data = await fetchJSON("/api/import/exchanges");
+    sel.innerHTML = "";
+    data.exchanges.forEach((ex) => {
+      const opt = document.createElement("option");
+      opt.value = ex.value;
+      opt.textContent = ex.label;
+      sel.appendChild(opt);
+    });
+    _importExchangesLoaded = true;
+  } catch (_) { /* サイレント */ }
 }
 
 async function loadImportAccountsTable() {
@@ -1113,18 +1161,19 @@ async function loadImportAccountsTable() {
     }
     data.sources.forEach((s) => {
       const tr = document.createElement("tr");
+      const firstId = (s.source_ids && s.source_ids.length) ? s.source_ids[0] : s.source;
       tr.innerHTML = `
         <td>${escapeHtml(s.source)}</td>
         <td><span class="muted" style="font-size:12px;font-family:monospace">${escapeHtml(s.source_ids.join(", "))}</span></td>
         <td class="num">${s.tx_count}</td>
         <td>
-          <button class="tx-link-btn" data-acc="${escapeHtml(s.source)}">CSV 追加インポート</button>
+          <button class="tx-link-btn">CSV 追加インポート</button>
         </td>
       `;
       tr.querySelector(".tx-link-btn").addEventListener("click", () => {
-        // CSVタブへ切り替えて口座名をプリセット
+        // CSVタブへ切り替えてソースIDをプリセット
         document.querySelector(".import-tab[data-tab='csv']").click();
-        document.getElementById("import-csv-account").value = s.source;
+        document.getElementById("import-csv-account").value = firstId;
         document.getElementById("import-csv-account").scrollIntoView({ behavior: "smooth" });
       });
       tbody.appendChild(tr);
@@ -1134,6 +1183,56 @@ async function loadImportAccountsTable() {
   }
 }
 
+async function loadImportBatches() {
+  const tbody = document.querySelector("#import-batches-table tbody");
+  if (!tbody) return;
+  tbody.innerHTML = '<tr><td colspan="6" class="loading">読み込み中…</td></tr>';
+  try {
+    const data = await fetchJSON("/api/import/batches");
+    tbody.innerHTML = "";
+    if (!data.batches || data.batches.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="6" class="muted">CSVインポート履歴はまだありません</td></tr>';
+      return;
+    }
+    data.batches.forEach((b) => {
+      const tr = document.createElement("tr");
+      // existing_count が tx_count と異なる場合は残存件数を併記
+      const countLabel = b.existing_count === b.tx_count
+        ? `${b.tx_count}`
+        : `${b.existing_count} / ${b.tx_count}`;
+      tr.innerHTML = `
+        <td style="white-space:nowrap">${fmtDate(b.imported_at + "Z")}</td>
+        <td>${escapeHtml(b.account)}</td>
+        <td>${escapeHtml(b.exchange_label)}</td>
+        <td><span class="muted" style="font-size:12px">${escapeHtml(b.filename || "-")}</span></td>
+        <td class="num">${countLabel}</td>
+        <td><button class="tx-link-btn" style="border-color:#5a2a2a">CSVごと削除</button></td>
+      `;
+      tr.querySelector(".tx-link-btn").addEventListener("click", () => {
+        const desc = `${b.exchange_label} / ${b.filename || "-"}（${b.existing_count} 件）`;
+        showBatchDeleteDialog(b.id, desc);
+      });
+      tbody.appendChild(tr);
+    });
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="6" class="muted">エラー: ${escapeHtml(e.message)}</td></tr>`;
+  }
+}
+
+function readFileAsBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      // result: "data:...;base64,XXXX" → カンマ以降を取り出す
+      const res = reader.result;
+      const comma = res.indexOf(",");
+      resolve(comma >= 0 ? res.slice(comma + 1) : res);
+    };
+    reader.onerror = () => reject(new Error("ファイルの読み込みに失敗しました"));
+    reader.readAsDataURL(file);
+  });
+}
+
 // CSV インポートボタン
 document.getElementById("import-csv-btn").addEventListener("click", async () => {
   const result = document.getElementById("import-csv-result");
@@ -1141,7 +1240,7 @@ document.getElementById("import-csv-btn").addEventListener("click", async () => 
 
   const exchange = document.getElementById("import-csv-exchange").value;
   const fileInput = document.getElementById("import-csv-file");
-  const accountName = document.getElementById("import-csv-account").value.trim();
+  const sourceId = document.getElementById("import-csv-account").value.trim();
 
   if (!fileInput.files || fileInput.files.length === 0) {
     result.className = "settings-result err";
@@ -1150,35 +1249,40 @@ document.getElementById("import-csv-btn").addEventListener("click", async () => 
     return;
   }
 
-  if (exchange !== "nexo") {
-    result.className = "settings-result err";
-    result.textContent = `${exchange} は近日対応予定です。現在は Nexo のみサポートしています。`;
-    result.classList.remove("hidden");
-    return;
-  }
-
-  const formData = new FormData();
-  formData.append("file", fileInput.files[0]);
-  formData.append("exchange", exchange);
-  if (accountName) formData.append("account", accountName);
+  const file = fileInput.files[0];
 
   result.className = "settings-result ok";
   result.textContent = "インポート中…";
   result.classList.remove("hidden");
 
   try {
-    const resp = await fetch("/api/import/csv", { method: "POST", body: formData });
+    const contentB64 = await readFileAsBase64(file);
+    const resp = await fetch("/api/import/csv", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        exchange,
+        filename: file.name,
+        account: sourceId || null,
+        content_b64: contentB64,
+      }),
+    });
     if (!resp.ok) {
       const err = await resp.json().catch(() => ({}));
       throw new Error(err.detail || `HTTP ${resp.status}`);
     }
     const d = await resp.json();
     result.className = "settings-result ok";
-    result.textContent = `インポート完了: ${d.imported ?? "?"} 件追加`;
+    if (d.parsed === 0) {
+      result.textContent = d.message || "取引が見つかりませんでした";
+    } else {
+      result.textContent = `インポート完了: ${d.parsed} 件解析 / ${d.imported} 件新規追加（ソース: ${d.source}）`;
+    }
     result.classList.remove("hidden");
     fileInput.value = "";
     loadImportAccountsTable();
-    // ダッシュボードの選択肢リセット
+    loadImportBatches();
+    // 取引履歴・ダッシュボードの選択肢をリセット
     _txAccountsLoaded = false;
   } catch (e) {
     result.className = "settings-result err";
@@ -1194,6 +1298,17 @@ document.getElementById("import-wallet-btn").addEventListener("click", () => {
   result.textContent = "ウォレットスキャンは近日対応予定です。";
   result.classList.remove("hidden");
 });
+
+// ---- CSVバッチ削除ダイアログ ----
+
+let _batchDeleteId = null;
+
+function showBatchDeleteDialog(batchId, desc) {
+  _batchDeleteId = batchId;
+  document.getElementById("delete-dialog-msg").textContent =
+    `「${desc}」を削除します。このCSV由来の取引がすべて削除されます。この操作は取り消せません。`;
+  document.getElementById("delete-dialog").classList.remove("hidden");
+}
 
 // ---- メインロード ----
 

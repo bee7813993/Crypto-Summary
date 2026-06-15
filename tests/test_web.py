@@ -233,6 +233,80 @@ def test_account_groups_put_and_effect(client, db_path):
     assert "Acct A" not in by_name
 
 
+def test_import_exchanges(client):
+    d = client.get("/api/import/exchanges").json()
+    values = {e["value"] for e in d["exchanges"]}
+    # 主要な取引所・サービスが提示される
+    assert {"nexo_savings", "nexo_spot", "nexo_dnw", "bitflyer",
+            "gmo", "bitlend", "pbr_lending"} <= values
+    # ラベルが付いている
+    by_value = {e["value"]: e["label"] for e in d["exchanges"]}
+    assert by_value["gmo"] == "GMOコイン"
+
+
+def _universal_csv_b64() -> str:
+    import base64
+    csv = (
+        "timestamp,type,received_asset,received_amount,sent_asset,sent_amount,fee_asset,fee_amount,note\n"
+        "2024-05-01T00:00:00Z,deposit,DOGE,100,,,,,test1\n"
+        "2024-05-02T00:00:00Z,deposit,DOGE,50,,,,,test2\n"
+    )
+    return base64.b64encode(csv.encode("utf-8")).decode("ascii")
+
+
+def test_import_csv_and_batch_delete(client):
+    # CSVを取り込む
+    r = client.post("/api/import/csv", json={
+        "exchange": "universal",
+        "filename": "my_doge.csv",
+        "account": "my_wallet",
+        "content_b64": _universal_csv_b64(),
+    })
+    assert r.status_code == 200
+    d = r.json()
+    assert d["parsed"] == 2
+    assert d["imported"] == 2
+    assert d["source"] == "my_wallet"
+    batch_id = d["batch_id"]
+
+    # 取引履歴に反映される（source_id my_wallet → 表示名 "My Wallet"）
+    txs = client.get("/api/transactions?account=My+Wallet").json()
+    assert txs["total"] == 2
+
+    # バッチ一覧に出る
+    batches = client.get("/api/import/batches").json()["batches"]
+    target = next(b for b in batches if b["id"] == batch_id)
+    assert target["tx_count"] == 2
+    assert target["existing_count"] == 2
+    assert target["filename"] == "my_doge.csv"
+    assert target["exchange_label"] == "汎用CSV"
+
+    # CSV単位で削除
+    dr = client.delete(f"/api/import/batches/{batch_id}")
+    assert dr.status_code == 200
+    assert dr.json()["deleted"] == 2
+
+    # 取引が消える
+    txs2 = client.get("/api/transactions?account=My+Wallet").json()
+    assert txs2["total"] == 0
+    # バッチも消える
+    batches2 = client.get("/api/import/batches").json()["batches"]
+    assert all(b["id"] != batch_id for b in batches2)
+
+
+def test_import_csv_unknown_exchange(client):
+    r = client.post("/api/import/csv", json={
+        "exchange": "does_not_exist",
+        "content_b64": _universal_csv_b64(),
+    })
+    assert r.status_code == 422
+
+
+def test_delete_unknown_batch(client):
+    r = client.delete("/api/import/batches/batch:nonexistent")
+    assert r.status_code == 404
+
+
 def test_index_served(client):
     r = client.get("/")
     assert r.status_code == 200
