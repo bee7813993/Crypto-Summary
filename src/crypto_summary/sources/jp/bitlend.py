@@ -3,8 +3,11 @@
 Columns: タイムスタンプ, 貸出ID, 銘柄名, 種別, 数量, レート, 申請日
 
 種別:
-  貸出開始   → TRANSFER (暗号資産を貸し出し)
-  貸借料付与 → REWARD   (貸借料の受取)
+  貸出開始   → DEPOSIT (BitLending に資産を預け入れ)
+  貸借料付与 → REWARD  (貸借料の受取)
+
+bitlend ソースの残高は「BitLending に預けている資産」を表す。
+貸出開始は預け入れ(入金)、貸借料付与は利息収入として残高に積み上がる。
 """
 from __future__ import annotations
 
@@ -72,9 +75,9 @@ class BitLendCsvSource(CsvSourceAdapter):
                 id=CanonicalTx.make_id(self.source_id, raw_key),
                 source=self.source_id,
                 timestamp=ts,
-                type=TxType.TRANSFER,
-                sent_asset=asset,
-                sent_amount=qty,
+                type=TxType.DEPOSIT,
+                received_asset=asset,
+                received_amount=qty,
                 label="lending_start",
                 raw=dict(row),
             )
