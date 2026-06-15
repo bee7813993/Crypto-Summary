@@ -15,10 +15,14 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=7.0", "pytest-cov"]
+dev = ["pytest>=7.0", "pytest-cov", "fastapi>=0.110", "uvicorn>=0.27"]
+web = ["fastapi>=0.110", "uvicorn>=0.27"]
 
 [project.scripts]
 crypto-summary = "crypto_summary.cli:cli"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+crypto_summary = ["web/static/*"]

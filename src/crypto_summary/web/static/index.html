@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Crypto-Summary ダッシュボード</title>
+  <link rel="stylesheet" href="/static/style.css" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">◈</span>
+      <h1>Crypto-Summary</h1>
+    </div>
+    <nav class="nav">
+      <a class="nav-link active" href="#">ダッシュボード</a>
+      <span class="nav-link disabled" title="今後追加予定">インポート</span>
+    </nav>
+    <div class="controls">
+      <label for="currency">通貨</label>
+      <select id="currency">
+        <option value="USD">USD</option>
+        <option value="JPY">JPY</option>
+        <option value="EUR">EUR</option>
+        <option value="GBP">GBP</option>
+      </select>
+      <button id="refresh" title="再取得">⟳</button>
+    </div>
+  </header>
+
+  <main class="container">
+    <section class="hero">
+      <div class="hero-label">総資産評価額</div>
+      <div class="hero-value" id="total-value">—</div>
+      <div class="hero-sub" id="total-sub">読み込み中…</div>
+    </section>
+
+    <div id="warnings" class="warnings hidden"></div>
+
+    <div class="grid">
+      <section class="card chart-card">
+        <h2>資産構成</h2>
+        <div class="chart-wrap">
+          <canvas id="alloc-chart"></canvas>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>口座（ソース）別</h2>
+        <div class="table-wrap">
+          <table id="sources-table">
+            <thead>
+              <tr><th>口座</th><th class="num">取引数</th><th class="num">評価額</th></tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+
+    <section class="card">
+      <h2>資産一覧</h2>
+      <div class="table-wrap">
+        <table id="assets-table">
+          <thead>
+            <tr>
+              <th>資産</th>
+              <th class="num">残高</th>
+              <th class="num">単価</th>
+              <th class="num">評価額</th>
+              <th class="num">構成比</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div id="unpriced" class="unpriced hidden"></div>
+    </section>
+
+    <footer class="footer">
+      <span id="generated">—</span>
+      <span class="dot">·</span>
+      <span>価格: CoinGecko（5分キャッシュ）</span>
+    </footer>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

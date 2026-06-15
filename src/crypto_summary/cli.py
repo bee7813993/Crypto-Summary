@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-import json
-import os
-import time
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -14,141 +11,16 @@ from rich.table import Table
 
 from .core.ledger import Ledger
 from .core.models import CanonicalTx, TxType
+from .core.prices import fetch_prices as _fetch_prices_core
 from .sources.csv_import import EXCHANGE_SOURCES
-
-_COINGECKO_IDS: dict[str, str] = {
-    "BTC": "bitcoin", "ETH": "ethereum", "WETH": "weth", "SOL": "solana",
-    "MATIC": "matic-network", "POL": "matic-network",
-    "USDC": "usd-coin", "USDT": "tether", "DAI": "dai", "BNB": "binancecoin",
-    "ARB": "arbitrum", "OP": "optimism", "AVAX": "avalanche-2",
-    "XRP": "ripple", "ADA": "cardano", "DOT": "polkadot",
-    "LINK": "chainlink", "UNI": "uniswap", "AAVE": "aave",
-    "NEXO": "nexo", "TRX": "tron", "LPT": "livepeer", "MONA": "monacoin",
-}
-
-# 法定通貨は CoinGecko の暗号資産IDではなく為替として扱う。
-# 同一通貨建てなら 1.0。CoinGecko simple/price は法定通貨同士の換算を
-# サポートしないため、ここでは対象通貨と一致する場合のみ 1.0 を返す。
-_FIAT_ASSETS = frozenset({"USD", "JPY", "EUR", "GBP"})
-
-_PRICE_CACHE_TTL = 300  # 秒。連続実行時の 429 を避けるためのキャッシュ有効期間。
-
-
-def _price_cache_path() -> Path:
-    return Path.home() / ".crypto_summary_prices.json"
-
-
-def _load_price_cache(currency: str) -> dict[str, Decimal] | None:
-    """TTL 内のキャッシュ価格を返す（なければ None）。"""
-    path = _price_cache_path()
-    try:
-        data = json.loads(path.read_text())
-    except (OSError, json.JSONDecodeError):
-        return None
-    entry = data.get(currency.upper())
-    if not entry:
-        return None
-    if time.time() - entry.get("ts", 0) > _PRICE_CACHE_TTL:
-        return None
-    return {k: Decimal(v) for k, v in entry.get("prices", {}).items()}
-
-
-def _save_price_cache(currency: str, prices: dict[str, Decimal]) -> None:
-    path = _price_cache_path()
-    try:
-        data = json.loads(path.read_text())
-    except (OSError, json.JSONDecodeError):
-        data = {}
-    data[currency.upper()] = {
-        "ts": time.time(),
-        "prices": {k: str(v) for k, v in prices.items()},
-    }
-    try:
-        path.write_text(json.dumps(data))
-    except OSError:
-        pass
 
 
 def _fetch_prices(assets: list[str], currency: str) -> dict[str, Decimal]:
-    """指定資産の現在価格を currency 建てで返す（CoinGecko）。
-
-    - 法定通貨資産は対象通貨と一致すれば 1.0 を返す。
-    - 連続実行による 429 を避けるため TTL 付きファイルキャッシュを使う。
-    - 429 が出た場合は指数バックオフで最大 3 回リトライする。
-    - CoinGecko ID 未登録 / 取得失敗の資産は結果から欠落する（表示は "-"）。
-    """
-    import httpx
-
-    result: dict[str, Decimal] = {}
-
-    # 法定通貨は為替として処理（対象通貨と同じなら等価）
-    for asset in assets:
-        if asset.upper() in _FIAT_ASSETS and asset.upper() == currency.upper():
-            result[asset.upper()] = Decimal("1")
-
-    # CoinGecko ID にマップできる暗号資産だけ収集
-    id_to_asset: dict[str, str] = {}
-    for asset in assets:
-        cg_id = _COINGECKO_IDS.get(asset.upper())
-        if cg_id and cg_id not in id_to_asset:
-            id_to_asset[cg_id] = asset.upper()
-
-    if not id_to_asset:
-        return result
-
-    # キャッシュ確認（必要な資産がすべて揃っていれば API を呼ばない）
-    cached = _load_price_cache(currency)
-    if cached is not None:
-        needed = set(id_to_asset.values())
-        if needed.issubset(cached.keys()):
-            for a in needed:
-                result[a] = cached[a]
-            return result
-
-    ids_str = ",".join(id_to_asset.keys())
-    currency_lower = currency.lower()
-    url = (
-        f"https://api.coingecko.com/api/v3/simple/price"
-        f"?ids={ids_str}&vs_currencies={currency_lower}"
+    """core.prices.fetch_prices のCLI用ラッパー（警告を rich で表示）。"""
+    return _fetch_prices_core(
+        assets, currency,
+        warn=lambda m: console.print(f"[yellow]警告: {m}[/yellow]"),
     )
-
-    data = None
-    for attempt in range(3):
-        try:
-            response = httpx.get(url, timeout=10)
-            if response.status_code == 429:
-                if attempt < 2:
-                    time.sleep(2 ** attempt)  # 1s, 2s
-                    continue
-                console.print(
-                    "[yellow]警告: CoinGecko のレート制限 (429) です。"
-                    "しばらく待って再実行してください。[/yellow]"
-                )
-                return result
-            response.raise_for_status()
-            data = response.json()
-            break
-        except Exception as e:
-            console.print(f"[yellow]警告: CoinGecko価格の取得に失敗しました: {e}[/yellow]")
-            return result
-
-    if data is None:
-        return result
-
-    fetched: dict[str, Decimal] = {}
-    for cg_id, asset in id_to_asset.items():
-        price = (data.get(cg_id) or {}).get(currency_lower)
-        if price is not None:
-            fetched[asset] = Decimal(str(price))
-
-    if fetched:
-        # キャッシュは既存とマージして保存（他資産の価格を消さない）
-        merged = _load_price_cache(currency) or {}
-        merged.update(fetched)
-        _save_price_cache(currency, merged)
-        result.update(fetched)
-
-    return result
 
 # .env をカレントディレクトリ起点で検索してロード
 try:
@@ -1200,3 +1072,45 @@ def _fetch_bitflyer(
         f"{len(txs) - new} already existed (skipped)  |  "
         f"latest: {latest_ts.strftime('%Y-%m-%d %H:%M')} UTC"
     )
+
+
+# ---------------------------------------------------------------------------
+# web (ダッシュボード WebUI)
+# ---------------------------------------------------------------------------
+
+@cli.command("web")
+@click.option("--host", default="127.0.0.1", show_default=True, help="バインドするホスト")
+@click.option("--port", default=8000, show_default=True, type=int, help="ポート番号")
+@click.option("--reload", is_flag=True, default=False, help="開発用オートリロード")
+@click.pass_context
+def web_cmd(ctx: click.Context, host: str, port: int, reload: bool) -> None:
+    """ダッシュボード WebUI を起動する。
+
+    ブラウザで http://HOST:PORT を開くと資産サマリーを表示できる。
+    価格は CoinGecko（read-only）から取得する。
+
+    \b
+    例:
+      crypto-summary web
+      crypto-summary --db my.db web --port 8080
+    """
+    try:
+        import uvicorn  # noqa: F401
+        from .web import create_app
+    except ImportError:
+        console.print(
+            "[red]エラー:[/red] Web UI には追加の依存が必要です。\n"
+            "  [cyan]pip install 'crypto-summary[web]'[/cyan] "
+            "または [cyan]pip install fastapi uvicorn[/cyan] を実行してください。"
+        )
+        raise click.Abort()
+
+    db = ctx.obj["db"]
+    app = create_app(db)
+    console.print(
+        f"[green]Crypto-Summary Web UI[/green] → "
+        f"[cyan]http://{host}:{port}[/cyan]  (db: [dim]{db}[/dim])\n"
+        f"[dim]停止: Ctrl+C[/dim]"
+    )
+    import uvicorn
+    uvicorn.run(app, host=host, port=port, reload=reload, log_level="warning")
