@@ -158,3 +158,70 @@ def test_reverted_tx_with_token_recorded():
 def test_empty_result():
     src = FakeEtherscan({})
     assert src.fetch_all() == []
+
+
+# ── ページング（無料枠 1,000 件/リクエスト上限への対応）────────────────
+
+from crypto_summary.sources.api import etherscan as _es
+
+
+class PagingEtherscan(EtherscanApiSource):
+    """_request をモックし、ブロック窓ページングの挙動を検証する。"""
+
+    def __init__(self, pages):
+        super().__init__("arb", WALLET, "FAKEKEY", 42161)
+        # pages: action -> list[list[record]]（呼び出し順に返すページ群）
+        self._pages = {a: list(p) for a, p in pages.items()}
+        self.requests: list[tuple[str, int]] = []
+
+    def _request(self, action, startblock):
+        self.requests.append((action, startblock))
+        queue = self._pages.get(action, [])
+        return queue.pop(0) if queue else []
+
+
+def _rec(block, h):
+    return {
+        "hash": h, "blockNumber": str(block), "timeStamp": "1759062315",
+        "from": OTHER, "to": WALLET, "value": "1000000000000000000",
+        "gasUsed": "21000", "gasPrice": "100000000",
+        "isError": "0", "functionName": "", "methodId": "0x",
+    }
+
+
+def test_pagination_advances_startblock(monkeypatch):
+    """1 ページ満杯が返る限り startblock を進めて次ページを取得する。"""
+    monkeypatch.setattr(_es, "_PAGE_SIZE", 2)  # テスト簡略化のためページサイズ 2
+    monkeypatch.setattr(_es.time, "sleep", lambda *_: None)
+    full = [_rec(10, "0x01"), _rec(20, "0x02")]  # 2 件 = ページ満杯
+    tail = [_rec(30, "0x03")]                    # 1 件 = 最終ページ
+    src = PagingEtherscan({"txlist": [full, tail]})
+    records = src._get("txlist")
+    assert [r["hash"] for r in records] == ["0x01", "0x02", "0x03"]
+    # 2 回目のリクエストは直前ページ最終ブロック(20)から開始
+    assert src.requests == [("txlist", 0), ("txlist", 20)]
+
+
+def test_pagination_dedupes_boundary_block(monkeypatch):
+    """境界ブロックのレコードが次ページと重複しても排除される。"""
+    monkeypatch.setattr(_es, "_PAGE_SIZE", 2)
+    monkeypatch.setattr(_es.time, "sleep", lambda *_: None)
+    page1 = [_rec(10, "0x01"), _rec(20, "0x02")]
+    # 次ページは startblock=20 から。ブロック20の 0x02 が再掲される。
+    page2 = [_rec(20, "0x02"), _rec(30, "0x03")]
+    src = PagingEtherscan({"txlist": [page1, page2]})
+    records = src._get("txlist")
+    assert [r["hash"] for r in records] == ["0x01", "0x02", "0x03"]
+
+
+def test_pagination_stops_when_block_not_advancing(monkeypatch):
+    """同一ブロックがページを満たし続けても無限ループしない。"""
+    monkeypatch.setattr(_es, "_PAGE_SIZE", 2)
+    monkeypatch.setattr(_es.time, "sleep", lambda *_: None)
+    # 全件同じブロック10。startblock が進まないため打ち切られる。
+    page = [_rec(10, "0x01"), _rec(10, "0x02")]
+    src = PagingEtherscan({"txlist": [page, page, page]})
+    records = src._get("txlist")
+    assert len(records) == 2  # 重複排除で 2 件のみ
+    # 1 回進めた後 startblock が同じブロックに留まるため 2 回で打ち切り（無限ループしない）
+    assert len(src.requests) == 2
