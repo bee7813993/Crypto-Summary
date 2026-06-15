@@ -107,24 +107,36 @@ class BitflyerTradeCsvSource(CsvSourceAdapter):
                     fee_asset=cur1 if fee_amount else None, fee_amount=fee_amount,
                 )
 
-        elif kind in _DEPOSIT_KINDS:
-            return CanonicalTx(
-                **base, type=TxType.DEPOSIT,
-                received_asset=cur1, received_amount=abs(amt1),
-            )
-
-        elif kind in _WITHDRAW_KINDS:
-            return CanonicalTx(
-                **base, type=TxType.WITHDRAW,
-                sent_asset=cur1, sent_amount=abs(amt1),
-            )
+        elif kind in _DEPOSIT_KINDS or kind in _WITHDRAW_KINDS:
+            # 通貨1数量は符号付き（正=増, 負=減）。種別だけで方向を決めず符号で判定する。
+            # 例: 「外部送付」でも正値はキャンセル/返金のため残高が増える。
+            if amt1 >= _ZERO:
+                return CanonicalTx(
+                    **base, type=TxType.DEPOSIT,
+                    received_asset=cur1, received_amount=abs(amt1),
+                    label=kind,
+                )
+            else:
+                return CanonicalTx(
+                    **base, type=TxType.WITHDRAW,
+                    sent_asset=cur1, sent_amount=abs(amt1),
+                    label=kind,
+                )
 
         elif kind in _FEE_KINDS:
-            return CanonicalTx(
-                **base, type=TxType.FEE,
-                fee_asset=cur1, fee_amount=abs(amt1),
-                label=kind,
-            )
+            # 通常は負値（手数料）。正値の場合は手数料返金なので増加扱い。
+            if amt1 <= _ZERO:
+                return CanonicalTx(
+                    **base, type=TxType.FEE,
+                    fee_asset=cur1, fee_amount=abs(amt1),
+                    label=kind,
+                )
+            else:
+                return CanonicalTx(
+                    **base, type=TxType.DEPOSIT,
+                    received_asset=cur1, received_amount=abs(amt1),
+                    label=f"{kind}_返金",
+                )
 
         elif kind in _COLLATERAL_KINDS:
             # spot ↔ 証拠金口座 の内部振替
