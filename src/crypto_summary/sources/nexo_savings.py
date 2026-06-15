@@ -27,12 +27,15 @@ _DATE_FMT = "%Y-%m-%d %H:%M:%S"
 # --- タイプ別マッピング (tx_type → (canonical_type, label)) -----------------
 # SKIP: 税務上不要 or 他トランザクションと重複するもの
 _SKIP_TYPES = {
-    "Manual Sell Order",              # Exchange Liquidation と重複
+    "Manual Sell Order",              # Exchange Liquidation と重複 (Transfer Out/In で計上済み)
     "Manual Repayment",               # ローン返済の内部処理
     "Assimilation",                   # 残高調整
     "Interest Additional",            # 利息調整 (複雑なので個別対応)
     "Credit Card Withdrawal Credit",  # カード与信
     "Nexo Card Transaction Fee",      # カード手数料 (xUSD建て内部)
+    # ローン関連: Transfer Out/In が貯蓄ウォレットへの影響を正確に捉えるためスキップ
+    "Exchange Liquidation",           # Manual Sell Order の対になる行 (クレジットライン内部)
+    "Exchange Credit",                # ローン実行時の xUSD→通貨変換 (Top up Crypto と重複)
 }
 
 _TYPE_MAP: dict[str, tuple[TxType, str | None]] = {
@@ -58,9 +61,7 @@ _TYPE_MAP: dict[str, tuple[TxType, str | None]] = {
     # --- 取引系 ---
     "Exchange":                              (TxType.TRADE, None),
     "Dual Investment Exchange":              (TxType.TRADE, "dual_investment"),
-    "Exchange Liquidation":                  (TxType.TRADE, "loan_liquidation"),
     "Nexo Card Purchase":                    (TxType.TRADE, "card_purchase"),
-    "Exchange Credit":                       (TxType.TRADE, "loan_credit"),
     "Credit Card Fiatx Exchange To Withdraw":(TxType.TRADE, "card_fx"),
 
     # --- 内部振替系 (ロック/アンロック) ---
@@ -162,13 +163,14 @@ class NexoSavingsCsvSource(CsvSourceAdapter):
             )
 
         elif canonical_type == TxType.TRADE:
-            # Input: 送出した通貨 (金額は負)
+            # Input: 送出した通貨 (金額は負 or 正)
             # Output: 受取った通貨 (金額は正)
+            # 注意: Nexo CSV の Fee は Input Amount に内包されているため別途減算しない
             sent_amount = abs(in_amt) if in_amt else None
             recv_amount = out_amt
             recv_asset  = out_asset or in_asset
 
-            # Output Amount が 0 の場合(Exchange Liquidation等)はスキップ
+            # Output Amount が 0 の場合はスキップ
             if not recv_amount or recv_amount == 0:
                 return None
 
@@ -181,8 +183,6 @@ class NexoSavingsCsvSource(CsvSourceAdapter):
                 received_amount=recv_amount,
                 sent_asset=in_asset,
                 sent_amount=sent_amount,
-                fee_asset=fee_asset if fee_amt else None,
-                fee_amount=fee_amt,
                 label=label,
                 raw=dict(row),
             )
