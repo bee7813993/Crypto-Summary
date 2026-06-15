@@ -136,6 +136,40 @@ class Ledger:
             result.append((src, cnt, cur.isoformat() if cur else None))
         return result
 
+    def balances(
+        self,
+        source: str | None = None,
+        since: datetime | None = None,
+        until: datetime | None = None,
+    ) -> dict[str, Decimal]:
+        """資産ごとの純残高を返す (受取 - 送出 - 手数料)。"""
+        clauses, params = [], []
+        if source:
+            clauses.append("source=?")
+            params.append(source)
+        if since:
+            clauses.append("timestamp >= ?")
+            params.append(since.isoformat())
+        if until:
+            clauses.append("timestamp <= ?")
+            params.append(until.isoformat())
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        rows = self._conn.execute(
+            f"SELECT received_asset, received_amount, sent_asset, sent_amount, fee_asset, fee_amount "
+            f"FROM transactions {where}",
+            params,
+        ).fetchall()
+
+        bal: dict[str, Decimal] = {}
+        for ra, rv, sa, sv, fa, fv in rows:
+            if ra and rv:
+                bal[ra] = bal.get(ra, Decimal(0)) + Decimal(rv)
+            if sa and sv:
+                bal[sa] = bal.get(sa, Decimal(0)) - Decimal(sv)
+            if fa and fv:
+                bal[fa] = bal.get(fa, Decimal(0)) - Decimal(fv)
+        return bal
+
     def all(
         self,
         source: str | None = None,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from decimal import Decimal
 from pathlib import Path
 
 import click
@@ -98,6 +99,55 @@ def status(ctx: click.Context) -> None:
 
     console.print(table)
     console.print(f"\nTotal: [bold]{total}[/bold] transactions  |  DB: [dim]{ctx.obj['db']}[/dim]")
+
+
+# ---------------------------------------------------------------------------
+# balance
+# ---------------------------------------------------------------------------
+
+@cli.command()
+@click.option("--source", default=None, help="ソースで絞り込み（省略で全ソース合算）")
+@click.option("--since", default=None, metavar="YYYY-MM-DD", help="集計開始日（UTC）")
+@click.option("--until", default=None, metavar="YYYY-MM-DD", help="集計終了日（UTC）")
+@click.option("--hide-dust", is_flag=True, default=True, show_default=True,
+              help="残高が±0.00000001未満の資産を非表示")
+@click.pass_context
+def balance(ctx: click.Context, source: str | None, since: str | None,
+            until: str | None, hide_dust: bool) -> None:
+    """資産ごとの純残高（受取 − 送出 − 手数料）を表示する。"""
+    since_dt = _parse_date(since)
+    until_dt = _parse_date(until, end_of_day=True)
+
+    ledger = Ledger(ctx.obj["db"])
+    bals = ledger.balances(source=source, since=since_dt, until=until_dt)
+    ledger.close()
+
+    if not bals:
+        console.print("[yellow]残高データがありません。[/yellow]")
+        return
+
+    dust_threshold = Decimal("0.00000001")
+    filtered = {a: v for a, v in bals.items() if not hide_dust or abs(v) >= dust_threshold}
+
+    title = "残高サマリー"
+    if source: title += f" ({source})"
+    if since_dt: title += f" from {since_dt.date()}"
+    if until_dt: title += f" until {until_dt.date()}"
+
+    table = Table(title=title, box=box.ROUNDED)
+    table.add_column("資産", style="cyan", min_width=8)
+    table.add_column("残高", justify="right", min_width=24)
+
+    for asset in sorted(filtered):
+        v = filtered[asset]
+        style = "red" if v < 0 else "green" if v > 0 else "dim"
+        table.add_row(asset, f"[{style}]{v:.8f}[/{style}]")
+
+    console.print(table)
+    if hide_dust:
+        hidden = len(bals) - len(filtered)
+        if hidden:
+            console.print(f"  [dim]（±0.00000001未満の {hidden} 資産を非表示）[/dim]")
 
 
 # ---------------------------------------------------------------------------
