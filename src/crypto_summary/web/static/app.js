@@ -57,7 +57,8 @@ function showPage(name) {
     a.classList.toggle("active", a.dataset.page === name);
   });
 
-  if (name === "accounts") { showAccountsList(); loadAccountsPage(); }
+  if (name === "dashboard") { load(); }
+  else if (name === "accounts") { showAccountsList(); loadAccountsPage(); }
   else if (name === "assets") { showAssetsList(); loadAssetsPage(); }
   else if (name === "transactions") { /* filters set by caller */ }
 }
@@ -473,10 +474,18 @@ async function openAccountSettings(accountName) {
 
   document.getElementById("settings-display-name").value = accountName;
 
-  // 現在のグループ設定を取得
+  // この口座の実際のソースID（自動命名含む）と全ソースIDを取得
   try {
-    const data = await fetchJSON("/api/account-groups");
-    renderSettingsSourceIds(accountName, data);
+    const [groupData, sourcesData] = await Promise.all([
+      fetchJSON("/api/account-groups"),
+      fetchJSON("/api/sources?currency=USD"),
+    ]);
+    // この口座が現在束ねているソースID
+    const thisAccount = sourcesData.sources.find((s) => s.source === accountName);
+    const assignedIds = thisAccount ? thisAccount.source_ids : [];
+    // 他のソースID（他口座のもの。チェックすればこの口座へ移動）
+    const otherIds = groupData.all_source_ids.filter((s) => !assignedIds.includes(s));
+    renderSettingsSourceIds(assignedIds, otherIds);
   } catch (e) {
     result.className = "settings-result err";
     result.textContent = "設定の読み込みに失敗しました: " + e.message;
@@ -484,27 +493,22 @@ async function openAccountSettings(accountName) {
   }
 }
 
-function renderSettingsSourceIds(accountName, data) {
+function renderSettingsSourceIds(assignedIds, otherIds) {
   // この口座に属するソースID（チェック済み）
-  const currentIds = data.groups[accountName] || [];
   const assignedWrap = document.getElementById("settings-source-ids");
   assignedWrap.innerHTML = "";
-  currentIds.forEach((sid) => {
-    assignedWrap.appendChild(makeSourceChip(sid, true));
-  });
-  if (currentIds.length === 0) {
+  assignedIds.forEach((sid) => assignedWrap.appendChild(makeSourceChip(sid, true)));
+  if (assignedIds.length === 0) {
     assignedWrap.innerHTML = '<span class="muted" style="font-size:12px">なし</span>';
   }
 
-  // 未割り当てのソースID
+  // 他口座のソースID（チェックするとこの口座へ移動）
   const unassignedWrap = document.getElementById("settings-unassigned-ids");
   unassignedWrap.innerHTML = "";
-  if (data.unassigned_source_ids.length === 0) {
+  if (otherIds.length === 0) {
     unassignedWrap.innerHTML = '<span class="muted" style="font-size:12px">なし</span>';
   } else {
-    data.unassigned_source_ids.forEach((sid) => {
-      unassignedWrap.appendChild(makeSourceChip(sid, false, true));
-    });
+    otherIds.forEach((sid) => unassignedWrap.appendChild(makeSourceChip(sid, false, true)));
   }
 }
 
@@ -540,16 +544,17 @@ document.getElementById("settings-save").addEventListener("click", async () => {
   ].map((cb) => cb.dataset.sid);
 
   try {
-    // 現在のグループを取得して更新
+    // 現在の明示的グループを取得
     const data = await fetchJSON("/api/account-groups");
-    const groups = { ...data.groups };
-
-    // 古い名前のエントリを削除
-    if (_currentAccountName && _currentAccountName in groups) {
-      delete groups[_currentAccountName];
+    const groups = {};
+    // 既存グループから、今回チェックしたIDと旧名エントリを取り除いてコピー
+    for (const [name, ids] of Object.entries(data.groups)) {
+      if (name === _currentAccountName) continue;  // 旧名は作り直す
+      const remaining = ids.filter((id) => !checkedIds.includes(id));
+      if (remaining.length > 0) groups[name] = remaining;
     }
-    // 新しい名前で保存（IDが空でも保存する）
-    if (checkedIds.length > 0 || newName !== _currentAccountName) {
+    // この口座を新しい名前 + 選択したソースIDで登録
+    if (checkedIds.length > 0) {
       groups[newName] = checkedIds;
     }
 
@@ -672,20 +677,38 @@ async function loadAssetDetail(symbol) {
 
 // ---- 取引履歴ページ ----
 
-let _txAccountOptions = [];  // フィルタ用口座リスト（初回ロード時に取得）
+let _txFiltersLoaded = false;  // フィルタ用の口座・資産リスト取得済みフラグ
 
 async function ensureTxFilterOptions() {
-  if (_txAccountOptions.length) return;
+  if (_txFiltersLoaded) return;
   try {
-    const data = await fetchJSON("/api/sources?currency=USD");
-    _txAccountOptions = data.sources.map((s) => s.source);
-    const sel = document.getElementById("tx-filter-account");
-    _txAccountOptions.forEach((name) => {
+    // 口座リストと資産リストを並行取得
+    const [sources, summary] = await Promise.all([
+      fetchJSON("/api/sources?currency=USD"),
+      fetchJSON("/api/summary?currency=USD"),
+    ]);
+
+    const accSel = document.getElementById("tx-filter-account");
+    sources.sources.forEach((s) => {
       const opt = document.createElement("option");
-      opt.value = name;
-      opt.textContent = name;
-      sel.appendChild(opt);
+      opt.value = s.source;
+      opt.textContent = s.source;
+      accSel.appendChild(opt);
     });
+
+    const assetSel = document.getElementById("tx-filter-asset");
+    // 資産名（アルファベット順）
+    summary.assets
+      .map((a) => a.asset)
+      .sort((x, y) => x.localeCompare(y))
+      .forEach((sym) => {
+        const opt = document.createElement("option");
+        opt.value = sym;
+        opt.textContent = sym;
+        assetSel.appendChild(opt);
+      });
+
+    _txFiltersLoaded = true;
   } catch (_) { /* サイレント */ }
 }
 
@@ -735,6 +758,11 @@ async function loadTransactionsPage(account, asset, page = 1) {
     const data = await fetchJSON(url);
     loading.classList.add("hidden");
 
+    // 取引後残高の列は資産が選ばれているときだけ表示
+    const showBal = !!data.show_running_balance;
+    document.querySelectorAll("#tx-table .bal-col").forEach((th) =>
+      th.classList.toggle("hidden", !showBal));
+
     if (data.transactions.length === 0) {
       empty.classList.remove("hidden");
     } else {
@@ -752,6 +780,16 @@ async function loadTransactionsPage(account, asset, page = 1) {
         const hash = tx.tx_hash
           ? `<span class="tx-hash" title="${escapeHtml(tx.tx_hash)}">${escapeHtml(tx.tx_hash)}</span>`
           : "";
+        let balCells = "";
+        if (showBal) {
+          const g = tx.balance_after != null
+            ? `${fmtAmount(tx.balance_after)} ${escapeHtml(asset)}`
+            : '<span class="muted">-</span>';
+          const a = tx.account_balance_after != null
+            ? `${fmtAmount(tx.account_balance_after)} ${escapeHtml(asset)}`
+            : '<span class="muted">-</span>';
+          balCells = `<td class="num bal-col">${g}</td><td class="num bal-col">${a}</td>`;
+        }
         tr.innerHTML = `
           <td style="white-space:nowrap">${fmtDate(tx.timestamp)}</td>
           <td>${escapeHtml(tx.account)}</td>
@@ -759,6 +797,7 @@ async function loadTransactionsPage(account, asset, page = 1) {
           <td>${recv}</td>
           <td>${sent}</td>
           <td>${fee}</td>
+          ${balCells}
           <td class="muted">${tx.label ? escapeHtml(tx.label) : ""}${hash}</td>
         `;
         tbody.appendChild(tr);
@@ -768,7 +807,7 @@ async function loadTransactionsPage(account, asset, page = 1) {
     renderTxPagination(data, account, asset);
   } catch (e) {
     loading.classList.add("hidden");
-    tbody.innerHTML = `<tr><td colspan="7" class="muted">エラー: ${escapeHtml(e.message)}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="9" class="muted">エラー: ${escapeHtml(e.message)}</td></tr>`;
     document.getElementById("tx-pagination").innerHTML = "";
   }
 }
@@ -863,10 +902,12 @@ async function load() {
     lastSummary = summary;
     renderSummary(summary);
     renderSources(sources);
-    // 口座フィルタ選択肢も更新
-    _txAccountOptions = [];
-    const sel = document.getElementById("tx-filter-account");
-    [...sel.options].forEach((o) => { if (o.value) o.remove(); });
+    // 取引履歴のフィルタ選択肢を再構築させる（口座名変更などを反映）
+    _txFiltersLoaded = false;
+    const accSel = document.getElementById("tx-filter-account");
+    const assetSel = document.getElementById("tx-filter-asset");
+    [...accSel.options].forEach((o) => { if (o.value) o.remove(); });
+    [...assetSel.options].forEach((o) => { if (o.value) o.remove(); });
   } catch (e) {
     document.getElementById("total-sub").textContent = "読み込みエラー: " + e.message;
   } finally {
@@ -917,6 +958,5 @@ if (saved) document.getElementById("currency").value = saved;
 
 const initHash = location.hash.replace("#", "") || "dashboard";
 const initPage = PAGES.includes(initHash) ? initHash : "dashboard";
-showPage(initPage);
-if (initPage === "dashboard") load();
-else if (initPage === "transactions") loadTransactionsPage(null, null, 1);
+showPage(initPage);  // dashboard/accounts/assets は内部で自動ロードされる
+if (initPage === "transactions") loadTransactionsPage(null, null, 1);

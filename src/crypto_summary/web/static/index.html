@@ -156,14 +156,14 @@
               <input id="settings-display-name" class="settings-input" type="text" />
             </div>
             <div class="settings-row">
-              <label class="settings-label">ソースID</label>
+              <label class="settings-label">この口座のソースID</label>
               <div id="settings-source-ids" class="source-ids-wrap"></div>
-              <p class="settings-hint">チェックを外すと「未割り当て」になります</p>
+              <p class="settings-hint">チェックを外すとこの口座から外れます（単独の口座になります）</p>
             </div>
             <div class="settings-row">
-              <label class="settings-label">未割り当てのソースID</label>
+              <label class="settings-label">他のソースID</label>
               <div id="settings-unassigned-ids" class="source-ids-wrap"></div>
-              <p class="settings-hint">チェックするとこの口座に追加します</p>
+              <p class="settings-hint">チェックするとこの口座に統合します（複数をまとめられます）</p>
             </div>
             <div class="settings-actions">
               <button id="settings-save" class="settings-save-btn">保存</button>
@@ -273,6 +273,8 @@
                   <th>受取</th>
                   <th>送付</th>
                   <th>手数料</th>
+                  <th class="num bal-col hidden">取引後残高<br><span class="th-sub">全体</span></th>
+                  <th class="num bal-col hidden">取引後残高<br><span class="th-sub">口座内</span></th>
                   <th>メモ</th>
                 </tr>
               </thead>

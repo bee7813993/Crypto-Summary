@@ -302,6 +302,47 @@ _TX_TYPE_JA: dict[str, str] = {
 _TX_PAGE_SIZE = 50
 
 
+def _asset_delta(tx, asset: str) -> Decimal:
+    """1取引における asset の純増減（受取 - 送付 - 手数料）を返す。"""
+    delta = Decimal("0")
+    if tx.received_asset == asset and tx.received_amount is not None:
+        delta += tx.received_amount
+    if tx.sent_asset == asset and tx.sent_amount is not None:
+        delta -= tx.sent_amount
+    if tx.fee_asset == asset and tx.fee_amount is not None:
+        delta -= tx.fee_amount
+    return delta
+
+
+def _running_balances(
+    db_path: str, asset: str, groups: dict[str, list[str]]
+) -> dict[str, tuple[Decimal, Decimal]]:
+    """asset の全取引を時系列に走査し、各取引IDごとの
+    (取引後の全体残高, 取引後の口座内残高) を返す。
+
+    口座内残高はその取引が属するグループ（口座）内での累計。
+    """
+    ledger = Ledger(db_path)
+    try:
+        all_txs, _ = ledger.transactions(asset=asset, limit=10_000_000, offset=0)
+    finally:
+        ledger.close()
+
+    # 時系列昇順（同時刻は id で安定化）に並べ替え
+    all_txs.sort(key=lambda t: (t.timestamp, t.id))
+
+    result: dict[str, tuple[Decimal, Decimal]] = {}
+    global_run = Decimal("0")
+    group_run: dict[str, Decimal] = {}
+    for tx in all_txs:
+        delta = _asset_delta(tx, asset)
+        global_run += delta
+        gname = _display_name(tx.source, groups)
+        group_run[gname] = group_run.get(gname, Decimal("0")) + delta
+        result[tx.id] = (global_run, group_run[gname])
+    return result
+
+
 def _transactions(
     db_path: str,
     account: str | None,
@@ -321,6 +362,9 @@ def _transactions(
         mapped = [s for s in all_source_ids if _display_name(s, groups) == account]
         source_ids = mapped if mapped else [account]
 
+    # 資産が指定されていれば、取引後残高（全体・口座内）を事前計算する
+    running = _running_balances(db_path, asset, groups) if asset else {}
+
     offset = (max(page, 1) - 1) * _TX_PAGE_SIZE
     ledger = Ledger(db_path)
     try:
@@ -335,6 +379,10 @@ def _transactions(
 
     rows = []
     for tx in txs:
+        bal_global, bal_account = (None, None)
+        if asset and tx.id in running:
+            g, a = running[tx.id]
+            bal_global, bal_account = str(g), str(a)
         rows.append({
             "id": tx.id,
             "timestamp": tx.timestamp.isoformat(),
@@ -350,6 +398,8 @@ def _transactions(
             "fee_amount": str(tx.fee_amount) if tx.fee_amount is not None else None,
             "label": tx.label,
             "tx_hash": tx.tx_hash,
+            "balance_after": bal_global,
+            "account_balance_after": bal_account,
         })
 
     total_pages = max(1, (total + _TX_PAGE_SIZE - 1) // _TX_PAGE_SIZE)
@@ -361,6 +411,7 @@ def _transactions(
         "page_size": _TX_PAGE_SIZE,
         "filter_account": account,
         "filter_asset": asset,
+        "show_running_balance": bool(asset),
     }
 
 

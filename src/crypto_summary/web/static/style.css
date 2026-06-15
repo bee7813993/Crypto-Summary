@@ -271,6 +271,8 @@ tbody tr:hover { background: var(--bg-elev); }
 
 #tx-table th, #tx-table td { font-size: 13px; padding: 9px 10px; }
 #tx-table th { background: var(--bg-card); position: sticky; top: 0; z-index: 2; }
+#tx-table .th-sub { font-size: 10px; font-weight: 400; color: var(--text-dim); text-transform: none; letter-spacing: 0; }
+#tx-table td.bal-col { font-variant-numeric: tabular-nums; white-space: nowrap; }
 
 /* 取引種別バッジ */
 .tx-type {
