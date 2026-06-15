@@ -69,7 +69,9 @@ class GmoCsvSource(CsvSourceAdapter):
         qty     = _d(row["約定数量"])       # 暗号資産の数量
         rate    = _d(row["約定レート"])     # JPY/暗号資産
         amount  = _d(row["約定金額"])       # JPY金額 (= qty × rate)
-        fee     = _d(row["注文手数料"])     # 手数料 JPY
+        fee_raw = _d(row["注文手数料"])     # 手数料 JPY (負値=メイカーリベート)
+        # 負値は「リベート（割引）」= 実質手数料0として扱う
+        fee = abs(fee_raw) if fee_raw and fee_raw > 0 else None
 
         if side == "買":
             recv_asset, recv_amount = asset, qty
