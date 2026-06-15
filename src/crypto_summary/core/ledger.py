@@ -119,6 +119,17 @@ class Ledger:
         self._conn.commit()
         return n
 
+    def delete_by_id(self, tx_id: str) -> bool:
+        """指定したIDのトランザクションを1件削除する。削除できた場合 True を返す。"""
+        cur = self._conn.execute(
+            "DELETE FROM transactions WHERE id=?", (tx_id,)
+        )
+        self._conn.execute(
+            "DELETE FROM exports WHERE tx_id=?", (tx_id,)
+        )
+        self._conn.commit()
+        return cur.rowcount > 0
+
     def mark_exported(self, tx_ids: list[str], sink: str) -> None:
         now = datetime.utcnow().isoformat()
         self._conn.executemany(

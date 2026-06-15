@@ -170,6 +170,51 @@ def add_cmd(ctx: click.Context, source: str, tx_type: str, date_str: str,
 
 
 # ---------------------------------------------------------------------------
+# remove (手動で1件削除)
+# ---------------------------------------------------------------------------
+
+@cli.command("remove")
+@click.option("--id", "tx_id", required=True, metavar="TX_ID",
+              help="削除するトランザクションのID（show コマンドで確認）")
+@click.option("--yes", "-y", is_flag=True, default=False,
+              help="確認プロンプトをスキップ")
+@click.pass_context
+def remove_cmd(ctx: click.Context, tx_id: str, yes: bool) -> None:
+    """指定したIDのトランザクションを1件削除する。
+
+    \b
+    例:
+      # まず show で削除対象のIDを確認する
+      crypto-summary show --source pbr_lending
+
+      # IDを指定して削除
+      crypto-summary remove --id a1b2c3d4e5f6g7h8
+    """
+    ledger = Ledger(ctx.obj["db"])
+    tx_list = ledger.all(limit=None)
+    target = next((t for t in tx_list if t.id == tx_id), None)
+
+    if target is None:
+        console.print(f"[yellow]ID '{tx_id}' は見つかりません。[/yellow]")
+        ledger.close()
+        return
+
+    console.print(
+        f"  {target.timestamp.strftime('%Y-%m-%d %H:%M')} UTC  "
+        f"[cyan]{target.type.value}[/cyan]  source={target.source}  id={target.id}"
+    )
+    if not yes:
+        if not click.confirm("このトランザクションを削除しますか？"):
+            console.print("[dim]キャンセルしました。[/dim]")
+            ledger.close()
+            return
+
+    ledger.delete_by_id(tx_id)
+    ledger.close()
+    console.print(f"[green]✓[/green] 削除しました: id={tx_id}")
+
+
+# ---------------------------------------------------------------------------
 # status
 # ---------------------------------------------------------------------------
 
@@ -385,6 +430,7 @@ def show(ctx: click.Context, source: str | None, tx_type: str | None, limit: int
     title += ")"
 
     table = Table(title=title, box=box.ROUNDED)
+    table.add_column("ID",       style="dim",    min_width=16)
     table.add_column("Timestamp (UTC)", style="dim", min_width=16)
     table.add_column("Type",     style="cyan",   min_width=8)
     table.add_column("Source",   style="dim",    min_width=8)
@@ -409,6 +455,7 @@ def show(ctx: click.Context, source: str | None, tx_type: str | None, limit: int
             else "-"
         )
         table.add_row(
+            tx.id,
             tx.timestamp.strftime("%Y-%m-%d %H:%M"),
             tx.type.value.upper(),
             tx.source,
@@ -418,6 +465,7 @@ def show(ctx: click.Context, source: str | None, tx_type: str | None, limit: int
         )
 
     console.print(table)
+    console.print("[dim]  削除: crypto-summary remove --id <ID>[/dim]")
 
 
 # ---------------------------------------------------------------------------
