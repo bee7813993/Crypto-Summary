@@ -11,7 +11,12 @@
 税務上の取り扱い:
   - 「予定利息」列は日次発生額（未受取）→ スキップ
   - 「利確数量」列が >0 の行のみ REWARD として記録（実際の受取）
-  - 貸出開始（貸出数量 >0）→ TRANSFER
+  - 貸出開始（貸出数量 >0）→ DEPOSIT（PBR Lending への預け入れ）
+  - 返還（返還数量 >0）→ WITHDRAW（PBR Lending からの引き出し）
+
+pbr_lending ソースの残高は「PBR Lending に預けている資産」を表す。
+貸出開始=入金、利確=利息収入、返還=出金 で積み上がり、
+最終的に CSV の「総貸出元本残高」と一致する。
 """
 from __future__ import annotations
 
@@ -55,7 +60,7 @@ class PbrLendingCsvSource(CsvSourceAdapter):
         ts    = datetime.strptime(row["日付"].strip(), _DATE_FMT).replace(tzinfo=timezone.utc)
         asset = row["通貨種別"].strip().upper()
 
-        # --- 貸出開始（入金） → TRANSFER ---
+        # --- 貸出開始（預け入れ） → DEPOSIT ---
         lend_qty = _d(row.get("貸出数量", ""))
         if lend_qty > _ZERO:
             raw_key = f"{row['日付']}|貸出数量|{asset}|{row['貸出数量']}"
@@ -63,9 +68,9 @@ class PbrLendingCsvSource(CsvSourceAdapter):
                 id=CanonicalTx.make_id(self.source_id, raw_key),
                 source=self.source_id,
                 timestamp=ts,
-                type=TxType.TRANSFER,
-                sent_asset=asset,
-                sent_amount=lend_qty,
+                type=TxType.DEPOSIT,
+                received_asset=asset,
+                received_amount=lend_qty,
                 label="lending_start",
                 raw=dict(row),
             ))
@@ -92,7 +97,7 @@ class PbrLendingCsvSource(CsvSourceAdapter):
                     raw=dict(row),
                 ))
 
-        # --- 返還（出金）→ TRANSFER ---
+        # --- 返還（引き出し）→ WITHDRAW ---
         return_qty = _d(row.get("返還数量", ""))
         if return_qty > _ZERO:
             raw_key = f"{row['日付']}|返還数量|{asset}|{row['返還数量']}"
@@ -100,9 +105,9 @@ class PbrLendingCsvSource(CsvSourceAdapter):
                 id=CanonicalTx.make_id(self.source_id, raw_key),
                 source=self.source_id,
                 timestamp=ts,
-                type=TxType.TRANSFER,
-                received_asset=asset,
-                received_amount=return_qty,
+                type=TxType.WITHDRAW,
+                sent_asset=asset,
+                sent_amount=return_qty,
                 label="lending_return",
                 raw=dict(row),
             ))
