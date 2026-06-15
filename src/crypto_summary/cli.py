@@ -110,6 +110,38 @@ def status(ctx: click.Context) -> None:
 
 
 # ---------------------------------------------------------------------------
+# sources
+# ---------------------------------------------------------------------------
+
+@cli.command()
+def sources() -> None:
+    """import --exchange で指定できるソース一覧を表示する。"""
+    table = Table(title="利用可能なソース", box=box.ROUNDED)
+    table.add_column("--exchange / --source", style="cyan", min_width=28)
+    table.add_column("説明", style="dim")
+
+    _DESC = {
+        "binance":              "Binance スポット取引履歴",
+        "bitlend":              "BitLending 貸出履歴",
+        "pbr_lending":          "PBR Lending 貸出履歴",
+        "bitflyer":             "bitFlyer TradeHistory.csv（現物総合台帳）",
+        "bitflyer_collateral":  "bitFlyer CollateralHistory.csv（FX/CFD 証拠金）",
+        "bitflyer_conversion":  "bitFlyer ConversionHistory.csv（両替）",
+        "gmo":                  "GMO コイン取引履歴",
+        "nexo_spot":            "Nexo Pro スポット取引",
+        "nexo_dnw":             "Nexo Pro 入出金",
+        "nexo_savings":         "Nexo 貯蓄口座（nexo_transactions_*.csv）",
+        "universal":            "汎用CSV（テスト・未対応取引所用）",
+    }
+
+    for key in EXCHANGE_SOURCES:
+        table.add_row(key, _DESC.get(key, ""))
+
+    console.print(table)
+    console.print(f"\n[dim]使い方: crypto-summary import --file <csv> --exchange <name>[/dim]")
+
+
+# ---------------------------------------------------------------------------
 # clear
 # ---------------------------------------------------------------------------
 
