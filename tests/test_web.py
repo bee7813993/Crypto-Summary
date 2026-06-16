@@ -307,6 +307,27 @@ def test_delete_unknown_batch(client):
     assert r.status_code == 404
 
 
+def test_clear_account(client):
+    # acct_b には SOL と MYSTERY が入っている（fixture より）
+    r = client.delete("/api/sources/Acct%20B")
+    assert r.status_code == 200
+    d = r.json()
+    assert d["deleted"] == 2  # SOL 1件 + MYSTERY 1件
+    assert "acct_b" in d["source_ids"]
+    # 残高から消える
+    summary = client.get("/api/summary?currency=USD").json()
+    remaining_assets = {a["asset"] for a in summary["assets"]}
+    assert "SOL" not in remaining_assets
+    assert "MYSTERY" not in remaining_assets
+    # BTC/ETH（acct_a）は残る
+    assert "BTC" in remaining_assets
+
+
+def test_clear_account_not_found(client):
+    r = client.delete("/api/sources/NoSuchAccount")
+    assert r.status_code == 404
+
+
 def test_index_served(client):
     r = client.get("/")
     assert r.status_code == 200

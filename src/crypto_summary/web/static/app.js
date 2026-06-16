@@ -1041,24 +1041,62 @@ document.getElementById("manual-save").addEventListener("click", async () => {
   }
 });
 
-// ---- 削除ダイアログ ----
+// ---- 削除ダイアログ（取引1件 / CSVバッチ / 口座全消去 で共用） ----
 
-let _deleteCallback = null;
+let _deleteCallback = null;    // { txId, onSuccess }  — 単一取引削除
+let _batchDeleteId = null;     // string               — CSVバッチ削除
+let _accountClearTarget = null; // string (表示名)      — 口座全消去
+
+function _clearDialogState() {
+  _deleteCallback = null;
+  _batchDeleteId = null;
+  _accountClearTarget = null;
+}
 
 function showDeleteDialog(txId, desc, onSuccess) {
+  _clearDialogState();
   _deleteCallback = { txId, onSuccess };
   document.getElementById("delete-dialog-msg").textContent =
     `「${desc}」を削除します。この操作は取り消せません。`;
   document.getElementById("delete-dialog").classList.remove("hidden");
 }
 
+function showBatchDeleteDialog(batchId, desc) {
+  _clearDialogState();
+  _batchDeleteId = batchId;
+  document.getElementById("delete-dialog-msg").textContent =
+    `「${desc}」を削除します。このCSV由来の取引がすべて削除されます。この操作は取り消せません。`;
+  document.getElementById("delete-dialog").classList.remove("hidden");
+}
+
 document.getElementById("delete-confirm").addEventListener("click", async () => {
   document.getElementById("delete-dialog").classList.add("hidden");
+
+  // 口座全消去
+  if (_accountClearTarget) {
+    const account = _accountClearTarget;
+    _clearDialogState();
+    try {
+      const resp = await fetch(`/api/sources/${encodeURIComponent(account)}`, { method: "DELETE" });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const d = await resp.json();
+      loadImportAccountsTable();
+      loadImportBatches();
+      _txAccountsLoaded = false;
+      const result = document.getElementById("import-csv-result");
+      result.className = "settings-result ok";
+      result.textContent = `「${account}」の取引 ${d.deleted} 件を削除しました`;
+      result.classList.remove("hidden");
+    } catch (e) {
+      alert("削除に失敗しました: " + e.message);
+    }
+    return;
+  }
 
   // CSVバッチ削除
   if (_batchDeleteId) {
     const batchId = _batchDeleteId;
-    _batchDeleteId = null;
+    _clearDialogState();
     try {
       const resp = await fetch(`/api/import/batches/${encodeURIComponent(batchId)}`, { method: "DELETE" });
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
@@ -1079,8 +1117,7 @@ document.getElementById("delete-confirm").addEventListener("click", async () => 
   // 単一取引削除
   if (!_deleteCallback) return;
   const { txId, onSuccess } = _deleteCallback;
-  _deleteCallback = null;
-
+  _clearDialogState();
   try {
     const resp = await fetch(`/api/transactions/${encodeURIComponent(txId)}`, { method: "DELETE" });
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
@@ -1091,16 +1128,14 @@ document.getElementById("delete-confirm").addEventListener("click", async () => 
 });
 
 document.getElementById("delete-cancel").addEventListener("click", () => {
-  _deleteCallback = null;
-  _batchDeleteId = null;
+  _clearDialogState();
   document.getElementById("delete-dialog").classList.add("hidden");
 });
 
 // ダイアログ外クリックで閉じる
 document.getElementById("delete-dialog").addEventListener("click", (e) => {
   if (e.target === e.currentTarget) {
-    _deleteCallback = null;
-    _batchDeleteId = null;
+    _clearDialogState();
     e.currentTarget.classList.add("hidden");
   }
 });
@@ -1166,15 +1201,21 @@ async function loadImportAccountsTable() {
         <td>${escapeHtml(s.source)}</td>
         <td><span class="muted" style="font-size:12px;font-family:monospace">${escapeHtml(s.source_ids.join(", "))}</span></td>
         <td class="num">${s.tx_count}</td>
-        <td>
-          <button class="tx-link-btn">CSV 追加インポート</button>
+        <td style="white-space:nowrap;display:flex;gap:6px;align-items:center">
+          <button class="tx-link-btn btn-csv-import">CSV 追加インポート</button>
+          <button class="tx-link-btn btn-clear-account" style="border-color:#5a2a2a">全消去</button>
         </td>
       `;
-      tr.querySelector(".tx-link-btn").addEventListener("click", () => {
-        // CSVタブへ切り替えてソースIDをプリセット
+      tr.querySelector(".btn-csv-import").addEventListener("click", () => {
         document.querySelector(".import-tab[data-tab='csv']").click();
         document.getElementById("import-csv-account").value = firstId;
         document.getElementById("import-csv-account").scrollIntoView({ behavior: "smooth" });
+      });
+      tr.querySelector(".btn-clear-account").addEventListener("click", () => {
+        const msg = `口座「${s.source}」（${s.source_ids.join(", ")}）の全取引 ${s.tx_count} 件を削除します。この操作は取り消せません。`;
+        _accountClearTarget = s.source;
+        document.getElementById("delete-dialog-msg").textContent = msg;
+        document.getElementById("delete-dialog").classList.remove("hidden");
       });
       tbody.appendChild(tr);
     });
@@ -1298,17 +1339,6 @@ document.getElementById("import-wallet-btn").addEventListener("click", () => {
   result.textContent = "ウォレットスキャンは近日対応予定です。";
   result.classList.remove("hidden");
 });
-
-// ---- CSVバッチ削除ダイアログ ----
-
-let _batchDeleteId = null;
-
-function showBatchDeleteDialog(batchId, desc) {
-  _batchDeleteId = batchId;
-  document.getElementById("delete-dialog-msg").textContent =
-    `「${desc}」を削除します。このCSV由来の取引がすべて削除されます。この操作は取り消せません。`;
-  document.getElementById("delete-dialog").classList.remove("hidden");
-}
 
 // ---- メインロード ----
 

@@ -688,6 +688,26 @@ def create_app(db_path: str = "ledger.db") -> FastAPI:
             ledger.close()
         return {"ok": True, "deleted": deleted}
 
+    @app.delete("/api/sources/{account}")
+    def clear_account(account: str) -> dict:
+        """口座（表示名）配下の全ソースIDの取引をまとめて削除する。"""
+        groups = _load_groups(db_path)
+        ledger = Ledger(db_path)
+        try:
+            all_ids = [src for src, *_ in ledger.sources()]
+        finally:
+            ledger.close()
+        # account に一致するソースIDを厳密に検索（存在しなければ404）
+        source_ids = [s for s in all_ids if _display_name(s, groups) == account]
+        if not source_ids:
+            raise HTTPException(status_code=404, detail="口座が見つかりません")
+        ledger = Ledger(db_path)
+        try:
+            total = sum(ledger.clear(sid) for sid in source_ids)
+        finally:
+            ledger.close()
+        return {"ok": True, "deleted": total, "source_ids": source_ids}
+
     @app.get("/api/account-groups")
     def get_account_groups() -> dict:
         return _get_account_groups(db_path)
