@@ -391,17 +391,61 @@
 
           <!-- API タブ -->
           <div id="import-tab-api" class="import-tab-content hidden">
-            <div class="coming-soon-box">
-              <span class="coming-soon-icon">🔑</span>
-              <div>
-                <strong>取引所 API 連携（近日対応）</strong>
-                <p>bitFlyer、Coincheck 等の APIキーを登録して自動同期します。</p>
-                <ul>
-                  <li>読み取り専用 API キーのみ使用</li>
-                  <li>取引履歴・残高を自動取得</li>
-                  <li>定期同期スケジュール設定</li>
-                </ul>
-              </div>
+            <div class="import-note" style="margin-bottom:12px">
+              <strong>⚠ 読み取り専用 API キーのみ登録してください</strong><br>
+              出金・送付・注文の権限は絶対に付与しないこと。<br>
+              キーはサーバー側で即座に暗号化されます（平文では保存されません）。<br>
+              サーバー起動前に <code>CS_SECRET_KEY</code> 環境変数を設定してください（<code>crypto-summary account gen-key</code> で生成）。
+            </div>
+
+            <div class="settings-row">
+              <label class="settings-label">取引所</label>
+              <select id="import-api-exchange" class="settings-input" style="max-width:240px">
+                <option value="bybit">Bybit</option>
+              </select>
+            </div>
+            <div class="settings-row">
+              <label class="settings-label">ソースID *</label>
+              <input id="import-api-source-id" class="settings-input" type="text"
+                placeholder="例: mybybit" style="max-width:240px" />
+              <p class="settings-hint">口座を識別する任意の名前（既存ソースIDを指定すると追加インポートになります）</p>
+            </div>
+            <div class="settings-row">
+              <label class="settings-label">API Key *</label>
+              <input id="import-api-key" class="settings-input" type="password"
+                placeholder="APIキーを入力" style="max-width:380px;font-family:monospace" autocomplete="off" />
+            </div>
+            <div class="settings-row">
+              <label class="settings-label">API Secret *</label>
+              <input id="import-api-secret" class="settings-input" type="password"
+                placeholder="APIシークレットを入力" style="max-width:380px;font-family:monospace" autocomplete="off" />
+            </div>
+            <div class="settings-row" id="import-api-category-row">
+              <label class="settings-label">カテゴリ</label>
+              <select id="import-api-category" class="settings-input" style="max-width:200px">
+                <option value="spot">Spot（現物）</option>
+                <option value="linear">Linear（無期限先物）</option>
+              </select>
+            </div>
+            <div class="settings-actions">
+              <button id="import-api-register-btn" class="settings-save-btn">登録して暗号化保存</button>
+            </div>
+            <div id="import-api-result" class="settings-result hidden"></div>
+
+            <h3 style="margin:24px 0 8px;font-size:14px;color:#8b949e;border-top:1px solid #30363d;padding-top:16px">登録済み API 口座</h3>
+            <div class="table-wrap">
+              <table id="import-api-accounts-table">
+                <thead>
+                  <tr>
+                    <th>ソースID</th>
+                    <th>取引所</th>
+                    <th>カテゴリ</th>
+                    <th>登録日時</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
             </div>
           </div>
 

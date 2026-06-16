@@ -21,9 +21,11 @@ from fastapi.staticfiles import StaticFiles
 from ..core.ledger import Ledger
 from ..core.models import CanonicalTx, TxType
 from ..core.prices import SUPPORTED_CURRENCIES, fetch_prices
+from ..core.secrets import SecretStore, SecretStoreError
 from ..sinks.cryptact_csv import to_cryptact_csv_string
 from ..sinks.koinly_csv import to_koinly_csv_string
 from ..sinks.summ_csv import to_summ_csv_string
+from ..sources.api.bybit import BybitApiSource
 from ..sources.csv_import import EXCHANGE_SOURCES
 
 _STATIC_DIR = Path(__file__).parent / "static"
@@ -668,6 +670,109 @@ def _export_csv(
     )
 
 
+# API連携対応取引所。
+_API_EXCHANGE_LABELS: dict[str, str] = {
+    "bybit": "Bybit",
+}
+
+
+def _list_account_apis(db_path: str) -> dict:
+    store = SecretStore(db_path)
+    accounts = store.list_accounts()
+    for a in accounts:
+        a["exchange_label"] = _API_EXCHANGE_LABELS.get(a["exchange"], a["exchange"])
+    return {"accounts": accounts}
+
+
+def _register_account_api(db_path: str, body: dict[str, Any]) -> dict:
+    exchange = (body.get("exchange") or "").strip().lower()
+    source_id = (body.get("source_id") or "").strip()
+    api_key = (body.get("api_key") or "").strip()
+    api_secret = (body.get("api_secret") or "").strip()
+    category = (body.get("category") or "spot").strip()
+
+    if not exchange or exchange not in _API_EXCHANGE_LABELS:
+        raise HTTPException(status_code=422, detail=f"未対応の取引所です: {exchange}")
+    if not source_id:
+        raise HTTPException(status_code=422, detail="ソースIDを指定してください")
+    if not api_key or not api_secret:
+        raise HTTPException(status_code=422, detail="APIキーとシークレットは必須です")
+
+    store = SecretStore(db_path)
+    try:
+        store.set_account_api(source_id, exchange, api_key, api_secret, category=category)
+    except SecretStoreError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    return {"ok": True, "source_id": source_id, "exchange": exchange}
+
+
+def _delete_account_api(db_path: str, source_id: str) -> dict:
+    store = SecretStore(db_path)
+    deleted = store.delete_account(source_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="登録が見つかりません")
+    return {"ok": True}
+
+
+def _sync_account_api(db_path: str, source_id: str) -> dict:
+    store = SecretStore(db_path)
+    try:
+        creds = store.get_account_api(source_id)
+    except SecretStoreError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    if creds is None:
+        raise HTTPException(status_code=404, detail="登録が見つかりません")
+
+    exchange = creds["exchange"]
+
+    ledger = Ledger(db_path)
+    try:
+        cursor = ledger.get_cursor(source_id)
+    finally:
+        ledger.close()
+
+    start_time_ms: int | None = None
+    if cursor:
+        start_time_ms = int(cursor.timestamp() * 1000)
+
+    if exchange == "bybit":
+        adapter = BybitApiSource(
+            source_id,
+            creds["api_key"],
+            creds["api_secret"],
+            category=creds.get("category", "spot"),
+        )
+        try:
+            txs = adapter.fetch_all(start_time_ms)
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"Bybit API エラー: {e}")
+    else:
+        raise HTTPException(status_code=422, detail=f"API連携未対応の取引所です: {exchange}")
+
+    if not txs:
+        return {"ok": True, "fetched": 0, "imported": 0, "source_id": source_id}
+
+    ledger = Ledger(db_path)
+    try:
+        before = ledger.count(source_id)
+        ledger.upsert_many(txs)
+        after = ledger.count(source_id)
+        latest_ts = max(t.timestamp for t in txs)
+        cur = ledger.get_cursor(source_id)
+        if cur is None or latest_ts > cur:
+            ledger.set_cursor(source_id, latest_ts)
+    finally:
+        ledger.close()
+
+    return {
+        "ok": True,
+        "fetched": len(txs),
+        "imported": after - before,
+        "source_id": source_id,
+    }
+
+
 def _get_account_groups(db_path: str) -> dict:
     """UI設定用: 現在のグループ設定とDBの全ソースIDを返す。"""
     groups = _load_groups(db_path)
@@ -790,6 +895,22 @@ def create_app(db_path: str = "ledger.db") -> FastAPI:
         finally:
             ledger.close()
         return {"ok": True, "deleted": total, "source_ids": source_ids}
+
+    @app.get("/api/account-apis")
+    def list_account_apis() -> dict:
+        return _list_account_apis(db_path)
+
+    @app.post("/api/account-apis")
+    def register_account_api(body: dict[str, Any]) -> dict:
+        return _register_account_api(db_path, body)
+
+    @app.delete("/api/account-apis/{source_id}")
+    def delete_account_api(source_id: str) -> dict:
+        return _delete_account_api(db_path, source_id)
+
+    @app.post("/api/account-apis/{source_id}/sync")
+    def sync_account_api(source_id: str) -> dict:
+        return _sync_account_api(db_path, source_id)
 
     @app.get("/api/account-groups")
     def get_account_groups() -> dict:

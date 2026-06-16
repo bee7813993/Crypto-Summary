@@ -1117,11 +1117,13 @@ document.getElementById("manual-save").addEventListener("click", async () => {
 let _deleteCallback = null;    // { txId, onSuccess }  — 単一取引削除
 let _batchDeleteId = null;     // string               — CSVバッチ削除
 let _accountClearTarget = null; // string (表示名)      — 口座全消去
+let _apiDeleteSourceId = null; // string               — API口座登録削除
 
 function _clearDialogState() {
   _deleteCallback = null;
   _batchDeleteId = null;
   _accountClearTarget = null;
+  _apiDeleteSourceId = null;
 }
 
 function showDeleteDialog(txId, desc, onSuccess) {
@@ -1142,6 +1144,27 @@ function showBatchDeleteDialog(batchId, desc) {
 
 document.getElementById("delete-confirm").addEventListener("click", async () => {
   document.getElementById("delete-dialog").classList.add("hidden");
+
+  // API口座登録削除
+  if (_apiDeleteSourceId) {
+    const sourceId = _apiDeleteSourceId;
+    _clearDialogState();
+    try {
+      const resp = await fetch(`/api/account-apis/${encodeURIComponent(sourceId)}`, { method: "DELETE" });
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}));
+        throw new Error(err.detail || `HTTP ${resp.status}`);
+      }
+      loadApiAccountsTable();
+      const result = document.getElementById("import-api-result");
+      result.className = "settings-result ok";
+      result.textContent = `「${sourceId}」のAPI登録を削除しました（取引データは残ります）`;
+      result.classList.remove("hidden");
+    } catch (e) {
+      alert("削除に失敗しました: " + e.message);
+    }
+    return;
+  }
 
   // 口座全消去
   if (_accountClearTarget) {
@@ -1221,6 +1244,7 @@ async function loadImportPage() {
   ensureImportExchanges();
   loadImportAccountsTable();
   loadImportBatches();
+  loadApiAccountsTable();
 }
 
 function setupImportTabs() {
@@ -1331,6 +1355,70 @@ async function loadImportBatches() {
   }
 }
 
+async function loadApiAccountsTable() {
+  const tbody = document.querySelector("#import-api-accounts-table tbody");
+  if (!tbody) return;
+  tbody.innerHTML = '<tr><td colspan="5" class="loading">読み込み中…</td></tr>';
+  try {
+    const data = await fetchJSON("/api/account-apis");
+    tbody.innerHTML = "";
+    if (!data.accounts || data.accounts.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="5" class="muted">登録済みのAPI口座はありません</td></tr>';
+      return;
+    }
+    data.accounts.forEach((a) => {
+      const tr = document.createElement("tr");
+      const registeredAt = a.created_at ? fmtDate(a.created_at) : "-";
+      tr.innerHTML = `
+        <td><code style="font-family:monospace">${escapeHtml(a.source_id)}</code></td>
+        <td>${escapeHtml(a.exchange_label || a.exchange)}</td>
+        <td>${escapeHtml(a.category)}</td>
+        <td style="white-space:nowrap">${escapeHtml(registeredAt)}</td>
+        <td style="white-space:nowrap;display:flex;gap:6px;align-items:center">
+          <button class="tx-link-btn btn-api-sync">同期</button>
+          <button class="tx-link-btn btn-api-delete" style="border-color:#5a2a2a">削除</button>
+        </td>
+      `;
+      tr.querySelector(".btn-api-sync").addEventListener("click", async (e) => {
+        const btn = e.currentTarget;
+        btn.disabled = true;
+        btn.textContent = "同期中…";
+        const result = document.getElementById("import-api-result");
+        result.className = "settings-result ok";
+        result.textContent = `「${a.source_id}」を同期中…`;
+        result.classList.remove("hidden");
+        try {
+          const resp = await fetch(`/api/account-apis/${encodeURIComponent(a.source_id)}/sync`, {
+            method: "POST",
+          });
+          const d = await resp.json();
+          if (!resp.ok) throw new Error(d.detail || `HTTP ${resp.status}`);
+          result.className = "settings-result ok";
+          result.textContent = `同期完了: ${d.fetched} 件取得 / ${d.imported} 件新規追加（${a.source_id}）`;
+          loadImportAccountsTable();
+          _txAccountsLoaded = false;
+        } catch (err) {
+          result.className = "settings-result err";
+          result.textContent = `同期に失敗しました: ${err.message}`;
+        } finally {
+          btn.disabled = false;
+          btn.textContent = "同期";
+        }
+      });
+      tr.querySelector(".btn-api-delete").addEventListener("click", () => {
+        _clearDialogState();
+        _apiDeleteSourceId = a.source_id;
+        document.getElementById("delete-dialog-msg").textContent =
+          `API口座「${a.source_id}」（${a.exchange_label || a.exchange}）の登録を削除します。取引データは残ります。この操作は取り消せません。`;
+        document.getElementById("delete-dialog").classList.remove("hidden");
+      });
+      tbody.appendChild(tr);
+    });
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="5" class="muted">エラー: ${escapeHtml(e.message)}</td></tr>`;
+  }
+}
+
 function readFileAsBase64(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -1399,6 +1487,50 @@ document.getElementById("import-csv-btn").addEventListener("click", async () => 
   } catch (e) {
     result.className = "settings-result err";
     result.textContent = "インポートに失敗しました: " + e.message;
+    result.classList.remove("hidden");
+  }
+});
+
+// API口座登録ボタン
+document.getElementById("import-api-register-btn").addEventListener("click", async () => {
+  const result = document.getElementById("import-api-result");
+  result.classList.add("hidden");
+
+  const exchange = document.getElementById("import-api-exchange").value;
+  const sourceId = document.getElementById("import-api-source-id").value.trim();
+  const apiKey = document.getElementById("import-api-key").value.trim();
+  const apiSecret = document.getElementById("import-api-secret").value.trim();
+  const category = document.getElementById("import-api-category").value;
+
+  if (!sourceId || !apiKey || !apiSecret) {
+    result.className = "settings-result err";
+    result.textContent = "ソースID・APIキー・APIシークレットは必須です";
+    result.classList.remove("hidden");
+    return;
+  }
+
+  try {
+    const resp = await fetch("/api/account-apis", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ exchange, source_id: sourceId, api_key: apiKey, api_secret: apiSecret, category }),
+    });
+    const d = await resp.json();
+    if (!resp.ok) throw new Error(d.detail || `HTTP ${resp.status}`);
+
+    result.className = "settings-result ok";
+    result.textContent = `「${sourceId}」のAPIキーを暗号化して登録しました`;
+    result.classList.remove("hidden");
+
+    // フォームをクリア（セキュリティのため即座に消去）
+    document.getElementById("import-api-source-id").value = "";
+    document.getElementById("import-api-key").value = "";
+    document.getElementById("import-api-secret").value = "";
+
+    loadApiAccountsTable();
+  } catch (e) {
+    result.className = "settings-result err";
+    result.textContent = "登録に失敗しました: " + e.message;
     result.classList.remove("hidden");
   }
 });
