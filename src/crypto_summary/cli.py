@@ -1007,18 +1007,18 @@ _API_ENV: dict[str, tuple[str, str]] = {
 
 @cli.command("fetch")
 @click.option(
-    "--exchange", required=True,
+    "--exchange", default=None,
     type=click.Choice(_API_EXCHANGES),
-    help="API連携する取引所",
+    help="API連携する取引所（登録済み口座を --source-id で使う場合は省略可）",
 )
-@click.option("--source-id", default=None, help="カスタムソースID（デフォルト: exchange名）")
-@click.option("--api-key", default=None, help="APIキー（未指定時は取引所別の環境変数を使用）")
+@click.option("--source-id", default=None, help="ソースID（登録済み口座のキーを使用）")
+@click.option("--api-key", default=None, help="APIキー（未指定時は登録済み口座/環境変数を使用）")
 @click.option("--api-secret", default=None,
-              help="APIシークレット（未指定時は取引所別の環境変数を使用）")
+              help="APIシークレット（未指定時は登録済み口座/環境変数を使用）")
 @click.pass_context
 def fetch_cmd(
     ctx: click.Context,
-    exchange: str,
+    exchange: str | None,
     source_id: str | None,
     api_key: str | None,
     api_secret: str | None,
@@ -1026,29 +1026,73 @@ def fetch_cmd(
     """取引所 API から最新データを取得してledgerに保存する。
 
     APIキーは読み取り専用権限のみ付与してください（出金/送付権限は不要）。
-    .env または OS 環境変数にキーを設定してください（リポジトリには含めない）:
-      bitFlyer : BITFLYER_API_KEY / BITFLYER_API_SECRET
-      Bybit    : BYBIT_API_KEY / BYBIT_API_SECRET
+    \b
+    使い方:
+      事前に口座を登録（推奨。キーは暗号化保存）:
+        crypto-summary account add-api --exchange bybit --source-id mybybit \\
+            --api-key ... --api-secret ...
+        crypto-summary fetch --source-id mybybit
+      その場で指定 / 環境変数:
+        crypto-summary fetch --exchange bybit --api-key ... --api-secret ...
+        （または .env: BYBIT_API_KEY/SECRET, BITFLYER_API_KEY/SECRET）
     """
+    if not exchange and not source_id:
+        console.print("[red]エラー:[/red] --exchange か --source-id のいずれかを指定してください。")
+        raise click.Abort()
     import os
 
+    from .core.secrets import SecretStore, SecretStoreError
+
     sid = source_id or exchange
-    key_env, secret_env = _API_ENV[exchange]
-    api_key = api_key or os.environ.get(key_env)
-    api_secret = api_secret or os.environ.get(secret_env)
+    category = "spot"
+
+    # 資格情報の解決順:
+    #   1) --api-key/--api-secret が明示された → それを使う（--exchange 必須）
+    #   2) 暗号化ストアに口座登録がある → 復号して使う（exchange も保存値）
+    #   3) 取引所別の環境変数 → それを使う（--exchange 必須）
+    if api_key and api_secret:
+        if not exchange:
+            console.print("[red]エラー:[/red] --api-key 使用時は --exchange も指定してください。")
+            raise click.Abort()
+    else:
+        store = SecretStore(ctx.obj["db"])
+        creds = None
+        if source_id:
+            try:
+                creds = store.get_account_api(source_id)
+            except SecretStoreError as e:
+                console.print(f"[red]エラー:[/red] {e}")
+                raise click.Abort()
+        if creds:
+            exchange = creds["exchange"]
+            api_key = creds["api_key"]
+            api_secret = creds["api_secret"]
+            category = creds.get("category", "spot")
+        elif exchange:
+            key_env, secret_env = _API_ENV[exchange]
+            api_key = os.environ.get(key_env)
+            api_secret = os.environ.get(secret_env)
 
     if not api_key or not api_secret:
+        hint = ""
+        if exchange:
+            key_env, secret_env = _API_ENV[exchange]
+            hint = f"  .env に {key_env} / {secret_env} を設定、または\n"
         console.print(
-            "[red]エラー:[/red] APIキーとシークレットが必要です。\n"
-            f"  .env に {key_env} / {secret_env} を設定するか、\n"
-            "  --api-key / --api-secret オプションで指定してください。"
+            "[red]エラー:[/red] APIキーとシークレットが見つかりません。\n"
+            f"{hint}"
+            "  事前に登録: crypto-summary account add-api ...、または\n"
+            "  --api-key / --api-secret で直接指定してください。"
         )
         raise click.Abort()
 
     if exchange == "bitflyer":
         _fetch_bitflyer(ctx, sid, api_key, api_secret)
     elif exchange == "bybit":
-        _fetch_bybit(ctx, sid, api_key, api_secret)
+        _fetch_bybit(ctx, sid, api_key, api_secret, category)
+    else:
+        console.print(f"[red]エラー:[/red] 未対応の取引所です: {exchange}")
+        raise click.Abort()
 
 
 def _save_fetched(
@@ -1097,19 +1141,118 @@ def _fetch_bitflyer(
 
 
 def _fetch_bybit(
-    ctx: click.Context, source_id: str, api_key: str, api_secret: str
+    ctx: click.Context, source_id: str, api_key: str, api_secret: str,
+    category: str = "spot",
 ) -> None:
     from .sources.api.bybit import BybitApiSource
 
     console.print(f"Fetching [cyan]Bybit[/cyan] as [bold]{source_id}[/bold] ...")
     try:
-        src = BybitApiSource(source_id, api_key, api_secret)
+        src = BybitApiSource(source_id, api_key, api_secret, category=category)
         txs = src.fetch_all()
     except Exception as e:
         console.print(f"[red]API エラー:[/red] {e}")
         raise click.Abort()
 
     _save_fetched(ctx, source_id, "Bybit", txs)
+
+
+# ---------------------------------------------------------------------------
+# account（口座ごとの API キー登録 / 暗号化保存）
+# ---------------------------------------------------------------------------
+
+@cli.group("account")
+def account_group() -> None:
+    """口座ごとの API キー登録（暗号化保存）。
+
+    APIキーは取引所アカウント（個人）に紐づくため、口座ごとに登録する。
+    キーはマスター鍵 CS_SECRET_KEY で暗号化し <dbname>.secrets.json に保存する
+    （平文はどの追跡ファイルにも残さない）。読み取り専用キーのみ登録すること。
+    """
+
+
+@account_group.command("gen-key")
+def account_gen_key() -> None:
+    """マスター鍵を生成して表示する（.env の CS_SECRET_KEY に設定する）。"""
+    from .core.secrets import generate_master_key
+
+    key = generate_master_key()
+    console.print("生成したマスター鍵（.env に保存してください。紛失すると復号不可）:")
+    console.print(f"\n  [bold]CS_SECRET_KEY={key}[/bold]\n")
+    console.print("[dim]リポジトリには絶対にコミットしないこと（.env は .gitignore 済み）。[/dim]")
+
+
+@account_group.command("add-api")
+@click.option("--exchange", required=True, type=click.Choice(_API_EXCHANGES),
+              help="取引所")
+@click.option("--source-id", required=True, help="この口座のソースID（fetch で指定する名前）")
+@click.option("--api-key", required=True, help="読み取り専用 APIキー")
+@click.option("--api-secret", required=True, help="APIシークレット")
+@click.option("--category", default="spot", show_default=True,
+              help="Bybit のカテゴリ（spot 等）")
+@click.option("--user", "user_id", default="local", show_default=True,
+              help="ユーザーID（将来のマルチユーザー用）")
+@click.pass_context
+def account_add_api(ctx: click.Context, exchange: str, source_id: str,
+                    api_key: str, api_secret: str, category: str, user_id: str) -> None:
+    """口座の API キーを暗号化して登録する。"""
+    from .core.secrets import SecretStore, SecretStoreError
+
+    store = SecretStore(ctx.obj["db"])
+    try:
+        store.set_account_api(
+            source_id, exchange, api_key, api_secret,
+            category=category, user_id=user_id,
+        )
+    except SecretStoreError as e:
+        console.print(f"[red]エラー:[/red] {e}")
+        raise click.Abort()
+    console.print(
+        f"[green]✓[/green] 登録しました: [bold]{source_id}[/bold] "
+        f"({exchange}, user={user_id})\n"
+        f"[dim]取得: crypto-summary fetch --source-id {source_id}[/dim]"
+    )
+
+
+@account_group.command("list-api")
+@click.option("--user", "user_id", default="local", show_default=True,
+              help="ユーザーID（all で全ユーザー）")
+@click.pass_context
+def account_list_api(ctx: click.Context, user_id: str) -> None:
+    """登録済み口座（API連携）を一覧表示する。秘密情報は表示しない。"""
+    from .core.secrets import SecretStore
+
+    store = SecretStore(ctx.obj["db"])
+    rows = store.list_accounts(user_id=None if user_id == "all" else user_id)
+    if not rows:
+        console.print("[yellow]登録済みの口座がありません。[/yellow]")
+        return
+
+    table = Table(title="登録済み口座（API連携）", box=box.ROUNDED)
+    table.add_column("ユーザー", style="dim")
+    table.add_column("ソースID", style="cyan")
+    table.add_column("取引所", style="green")
+    table.add_column("カテゴリ", style="dim")
+    table.add_column("登録日時", style="dim")
+    for r in rows:
+        table.add_row(r["user_id"], r["source_id"], r["exchange"],
+                      r["category"], r["created_at"][:19])
+    console.print(table)
+
+
+@account_group.command("remove-api")
+@click.option("--source-id", required=True, help="削除する口座のソースID")
+@click.option("--user", "user_id", default="local", show_default=True, help="ユーザーID")
+@click.pass_context
+def account_remove_api(ctx: click.Context, source_id: str, user_id: str) -> None:
+    """口座の API 資格情報を削除する。"""
+    from .core.secrets import SecretStore
+
+    store = SecretStore(ctx.obj["db"])
+    if store.delete_account(source_id, user_id=user_id):
+        console.print(f"[green]✓[/green] 削除しました: {source_id} (user={user_id})")
+    else:
+        console.print(f"[yellow]登録が見つかりません: {source_id} (user={user_id})[/yellow]")
 
 
 # ---------------------------------------------------------------------------
