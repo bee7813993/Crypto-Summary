@@ -23,6 +23,7 @@ from ..core.models import CanonicalTx, TxType
 from ..core.prices import SUPPORTED_CURRENCIES, fetch_prices
 from ..sinks.cryptact_csv import to_cryptact_csv_string
 from ..sinks.koinly_csv import to_koinly_csv_string
+from ..sinks.summ_csv import to_summ_csv_string
 from ..sources.csv_import import EXCHANGE_SOURCES
 
 _STATIC_DIR = Path(__file__).parent / "static"
@@ -604,7 +605,7 @@ def _list_import_batches(db_path: str) -> dict:
 _EXPORT_FORMATS: list[dict] = [
     {"value": "koinly", "label": "Koinly（Universal CSV）", "ready": True},
     {"value": "cryptact", "label": "Cryptact（カスタムファイル）", "ready": True},
-    {"value": "summ", "label": "SUMM（仕様確定後に対応）", "ready": False},
+    {"value": "summ", "label": "SUMM（カスタムCSV）", "ready": True},
 ]
 
 
@@ -648,10 +649,7 @@ def _export_csv(
     elif fmt == "cryptact":
         text, _skipped = to_cryptact_csv_string(txs)
     else:  # summ
-        raise HTTPException(
-            status_code=422,
-            detail="SUMM形式は正式仕様の確定後に対応します。列見本をお知らせください。",
-        )
+        text = to_summ_csv_string(txs)
 
     # ファイル名: <format>_<account>_<today>.csv（ASCIIのみ）
     acc_part = ""

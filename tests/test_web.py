@@ -334,7 +334,7 @@ def test_export_formats(client):
     assert {"koinly", "cryptact", "summ"} <= values
     by_value = {f["value"]: f for f in d["formats"]}
     assert by_value["koinly"]["ready"] is True
-    assert by_value["summ"]["ready"] is False
+    assert by_value["summ"]["ready"] is True
 
 
 def test_export_koinly(client):
@@ -363,9 +363,13 @@ def test_export_cryptact_account_filter(client):
     assert "Acct_A" in r.headers["content-disposition"]
 
 
-def test_export_summ_not_ready(client):
+def test_export_summ(client):
     r = client.get("/api/export?format=summ")
-    assert r.status_code == 422
+    assert r.status_code == 200
+    body = r.content.decode("utf-8").lstrip("﻿")
+    first = body.splitlines()[0]
+    assert first.startswith("Timestamp (UTC),Type,Base Currency,Base Amount")
+    assert "summ" in r.headers["content-disposition"]
 
 
 def test_export_unknown_format(client):
