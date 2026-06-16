@@ -996,7 +996,13 @@ def export_cmd(
 # fetch (API)
 # ---------------------------------------------------------------------------
 
-_API_EXCHANGES = ["bitflyer"]
+_API_EXCHANGES = ["bitflyer", "bybit"]
+
+# 取引所ごとの APIキー/シークレットを読む環境変数名
+_API_ENV: dict[str, tuple[str, str]] = {
+    "bitflyer": ("BITFLYER_API_KEY", "BITFLYER_API_SECRET"),
+    "bybit": ("BYBIT_API_KEY", "BYBIT_API_SECRET"),
+}
 
 
 @cli.command("fetch")
@@ -1006,14 +1012,9 @@ _API_EXCHANGES = ["bitflyer"]
     help="API連携する取引所",
 )
 @click.option("--source-id", default=None, help="カスタムソースID（デフォルト: exchange名）")
-@click.option(
-    "--api-key", default=None, envvar="BITFLYER_API_KEY",
-    help="APIキー（環境変数 BITFLYER_API_KEY でも可）",
-)
-@click.option(
-    "--api-secret", default=None, envvar="BITFLYER_API_SECRET",
-    help="APIシークレット（環境変数 BITFLYER_API_SECRET でも可）",
-)
+@click.option("--api-key", default=None, help="APIキー（未指定時は取引所別の環境変数を使用）")
+@click.option("--api-secret", default=None,
+              help="APIシークレット（未指定時は取引所別の環境変数を使用）")
 @click.pass_context
 def fetch_cmd(
     ctx: click.Context,
@@ -1024,40 +1025,38 @@ def fetch_cmd(
 ) -> None:
     """取引所 API から最新データを取得してledgerに保存する。
 
-    APIキーは読み取り専用権限のみ付与してください（出金権限は不要）。
-    .env ファイルに BITFLYER_API_KEY / BITFLYER_API_SECRET を書くか、
-    OS 環境変数として設定してください。リポジトリには絶対に含めないこと。
+    APIキーは読み取り専用権限のみ付与してください（出金/送付権限は不要）。
+    .env または OS 環境変数にキーを設定してください（リポジトリには含めない）:
+      bitFlyer : BITFLYER_API_KEY / BITFLYER_API_SECRET
+      Bybit    : BYBIT_API_KEY / BYBIT_API_SECRET
     """
+    import os
+
     sid = source_id or exchange
+    key_env, secret_env = _API_ENV[exchange]
+    api_key = api_key or os.environ.get(key_env)
+    api_secret = api_secret or os.environ.get(secret_env)
 
     if not api_key or not api_secret:
         console.print(
             "[red]エラー:[/red] APIキーとシークレットが必要です。\n"
-            "  .env に BITFLYER_API_KEY / BITFLYER_API_SECRET を設定するか、\n"
+            f"  .env に {key_env} / {secret_env} を設定するか、\n"
             "  --api-key / --api-secret オプションで指定してください。"
         )
         raise click.Abort()
 
     if exchange == "bitflyer":
         _fetch_bitflyer(ctx, sid, api_key, api_secret)
+    elif exchange == "bybit":
+        _fetch_bybit(ctx, sid, api_key, api_secret)
 
 
-def _fetch_bitflyer(
-    ctx: click.Context, source_id: str, api_key: str, api_secret: str
+def _save_fetched(
+    ctx: click.Context, source_id: str, label: str, txs: list[CanonicalTx]
 ) -> None:
-    from .sources.api.bitflyer import BitflyerApiSource
-
+    """取得済み CanonicalTx を ledger に保存して結果を表示する（共通処理）。"""
     ledger = Ledger(ctx.obj["db"])
     before = ledger.count(source_id)
-    console.print(f"Fetching [cyan]bitFlyer[/cyan] as [bold]{source_id}[/bold] ...")
-
-    try:
-        src = BitflyerApiSource(source_id, api_key, api_secret)
-        txs = src.fetch_all()
-    except Exception as e:
-        ledger.close()
-        console.print(f"[red]API エラー:[/red] {e}")
-        raise click.Abort()
 
     if not txs:
         console.print("[yellow]新しいトランザクションがありません。[/yellow]")
@@ -1066,7 +1065,9 @@ def _fetch_bitflyer(
 
     ledger.upsert_many(txs)
     latest_ts = max(t.timestamp for t in txs)
-    ledger.set_cursor(source_id, latest_ts)
+    cursor = ledger.get_cursor(source_id)
+    if cursor is None or latest_ts > cursor:
+        ledger.set_cursor(source_id, latest_ts)
     after = ledger.count(source_id)
     ledger.close()
 
@@ -1077,6 +1078,38 @@ def _fetch_bitflyer(
         f"{len(txs) - new} already existed (skipped)  |  "
         f"latest: {latest_ts.strftime('%Y-%m-%d %H:%M')} UTC"
     )
+
+
+def _fetch_bitflyer(
+    ctx: click.Context, source_id: str, api_key: str, api_secret: str
+) -> None:
+    from .sources.api.bitflyer import BitflyerApiSource
+
+    console.print(f"Fetching [cyan]bitFlyer[/cyan] as [bold]{source_id}[/bold] ...")
+    try:
+        src = BitflyerApiSource(source_id, api_key, api_secret)
+        txs = src.fetch_all()
+    except Exception as e:
+        console.print(f"[red]API エラー:[/red] {e}")
+        raise click.Abort()
+
+    _save_fetched(ctx, source_id, "bitFlyer", txs)
+
+
+def _fetch_bybit(
+    ctx: click.Context, source_id: str, api_key: str, api_secret: str
+) -> None:
+    from .sources.api.bybit import BybitApiSource
+
+    console.print(f"Fetching [cyan]Bybit[/cyan] as [bold]{source_id}[/bold] ...")
+    try:
+        src = BybitApiSource(source_id, api_key, api_secret)
+        txs = src.fetch_all()
+    except Exception as e:
+        console.print(f"[red]API エラー:[/red] {e}")
+        raise click.Abort()
+
+    _save_fetched(ctx, source_id, "Bybit", txs)
 
 
 # ---------------------------------------------------------------------------
