@@ -721,6 +721,7 @@ async function _updateAssetDropdown(account) {
 
 async function loadTransactionsPage(account, asset, since, until, page = 1) {
   await _ensureAccountOptions();
+  ensureExportFormats();
 
   // フィルタUIを同期
   const selAccount = document.getElementById("tx-filter-account");
@@ -944,6 +945,76 @@ document.getElementById("tx-filter-clear").addEventListener("click", () => {
   document.getElementById("tx-filter-since").value = "";
   document.getElementById("tx-filter-until").value = "";
   navigateToTransactions({});
+});
+
+// ---- CSVエクスポート ----
+
+let _exportFormatsLoaded = false;
+
+async function ensureExportFormats() {
+  if (_exportFormatsLoaded) return;
+  const sel = document.getElementById("tx-export-format");
+  try {
+    const data = await fetchJSON("/api/export/formats");
+    sel.innerHTML = "";
+    data.formats.forEach((f) => {
+      const opt = document.createElement("option");
+      opt.value = f.value;
+      opt.textContent = f.label;
+      sel.appendChild(opt);
+    });
+    _exportFormatsLoaded = true;
+  } catch (_) { /* サイレント */ }
+}
+
+document.getElementById("tx-export-btn").addEventListener("click", async () => {
+  const result = document.getElementById("tx-export-result");
+  result.classList.add("hidden");
+
+  const format = document.getElementById("tx-export-format").value;
+  const account = document.getElementById("tx-filter-account").value || null;
+  const since = document.getElementById("tx-filter-since").value || null;
+  const until = document.getElementById("tx-filter-until").value || null;
+
+  let url = `/api/export?format=${encodeURIComponent(format)}`;
+  if (account) url += `&account=${encodeURIComponent(account)}`;
+  if (since) url += `&since=${encodeURIComponent(since)}`;
+  if (until) url += `&until=${encodeURIComponent(until)}`;
+
+  result.className = "settings-result ok";
+  result.textContent = "エクスポート中…";
+  result.classList.remove("hidden");
+
+  try {
+    const resp = await fetch(url);
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      throw new Error(err.detail || `HTTP ${resp.status}`);
+    }
+    // ファイル名を Content-Disposition から取得
+    const cd = resp.headers.get("Content-Disposition") || "";
+    const m = cd.match(/filename="?([^"]+)"?/);
+    const filename = m ? m[1] : `${format}.csv`;
+
+    const blob = await resp.blob();
+    const blobUrl = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = blobUrl;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(blobUrl);
+
+    result.className = "settings-result ok";
+    const scope = account ? `口座: ${account}` : "全口座";
+    result.textContent = `エクスポート完了: ${filename}（${scope}）`;
+    result.classList.remove("hidden");
+  } catch (e) {
+    result.className = "settings-result err";
+    result.textContent = "エクスポートに失敗しました: " + e.message;
+    result.classList.remove("hidden");
+  }
 });
 
 // ---- 手動追加フォーム ----

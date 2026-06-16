@@ -245,7 +245,12 @@
         <div class="tx-header">
           <h1 class="page-title">取引履歴</h1>
           <button id="tx-add-btn" class="action-btn">＋ 手動追加</button>
+          <div class="tx-export">
+            <select id="tx-export-format" class="filter-date" title="エクスポート形式"></select>
+            <button id="tx-export-btn" class="action-btn">⬇ CSVエクスポート</button>
+          </div>
         </div>
+        <div id="tx-export-result" class="settings-result hidden"></div>
 
         <div class="tx-filters">
           <div class="filter-group">

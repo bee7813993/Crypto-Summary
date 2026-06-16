@@ -252,6 +252,8 @@ tbody tr:hover { background: var(--bg-elev); }
   margin-bottom: 16px;
 }
 .tx-header .page-title { margin-bottom: 0; flex: 1; }
+.tx-export { display: flex; align-items: center; gap: 6px; }
+.tx-export select { min-width: 200px; }
 .tx-filters { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .tx-filters select { min-width: 130px; font-size: 13px; }
 

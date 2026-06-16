@@ -12,6 +12,7 @@ Label values (Koinly reserved): reward, staking, income, ignored,
 from __future__ import annotations
 
 import csv
+import io
 from decimal import Decimal
 from pathlib import Path
 from typing import Sequence
@@ -92,14 +93,19 @@ def to_koinly_rows(txs: Sequence[CanonicalTx]) -> list[dict[str, str]]:
     return rows
 
 
+def to_koinly_csv_string(txs: Sequence[CanonicalTx]) -> str:
+    """Koinly Universal CSV 文字列を返す。"""
+    rows = to_koinly_rows(txs)
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=_KOINLY_HEADERS)
+    writer.writeheader()
+    writer.writerows(rows)
+    return buf.getvalue()
+
+
 def write_koinly_csv(txs: Sequence[CanonicalTx], out_path: Path) -> int:
     """Koinly Universal CSV を書き出す。書き出した行数を返す。"""
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    rows = to_koinly_rows(txs)
-
-    with open(out_path, "w", encoding="utf-8", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=_KOINLY_HEADERS)
-        writer.writeheader()
-        writer.writerows(rows)
-
-    return len(rows)
+    text = to_koinly_csv_string(txs)
+    out_path.write_text(text, encoding="utf-8", newline="")
+    return len(to_koinly_rows(txs))

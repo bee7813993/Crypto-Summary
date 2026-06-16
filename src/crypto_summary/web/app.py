@@ -15,12 +15,14 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from ..core.ledger import Ledger
 from ..core.models import CanonicalTx, TxType
 from ..core.prices import SUPPORTED_CURRENCIES, fetch_prices
+from ..sinks.cryptact_csv import to_cryptact_csv_string
+from ..sinks.koinly_csv import to_koinly_csv_string
 from ..sources.csv_import import EXCHANGE_SOURCES
 
 _STATIC_DIR = Path(__file__).parent / "static"
@@ -598,6 +600,76 @@ def _list_import_batches(db_path: str) -> dict:
     return {"batches": batches}
 
 
+# エクスポート形式の定義。value はクエリ用、label はUI表示用。
+_EXPORT_FORMATS: list[dict] = [
+    {"value": "koinly", "label": "Koinly（Universal CSV）", "ready": True},
+    {"value": "cryptact", "label": "Cryptact（カスタムファイル）", "ready": True},
+    {"value": "summ", "label": "SUMM（仕様確定後に対応）", "ready": False},
+]
+
+
+def _export_formats() -> dict:
+    return {"formats": _EXPORT_FORMATS}
+
+
+def _collect_export_txs(
+    db_path: str, account: str | None, since: str | None, until: str | None
+) -> list:
+    """エクスポート対象の取引を時系列昇順で取得する。"""
+    groups = _load_groups(db_path)
+    source_ids = _resolve_source_ids(account, db_path, groups)
+    since_dt = _parse_date(since)
+    until_dt = _parse_date(until)
+
+    ledger = Ledger(db_path)
+    try:
+        txs, _ = ledger.transactions(
+            source=source_ids, since=since_dt, until=until_dt, limit=10_000_000
+        )
+    finally:
+        ledger.close()
+    txs.sort(key=lambda t: (t.timestamp, t.id))
+    return txs
+
+
+def _export_csv(
+    db_path: str, fmt: str, account: str | None, since: str | None, until: str | None
+) -> Response:
+    """指定形式のCSVを生成して添付ファイルとして返す。"""
+    fmt = (fmt or "").lower()
+    known = {f["value"] for f in _EXPORT_FORMATS}
+    if fmt not in known:
+        raise HTTPException(status_code=422, detail=f"未対応の形式です: {fmt}")
+
+    txs = _collect_export_txs(db_path, account, since, until)
+
+    if fmt == "koinly":
+        text = to_koinly_csv_string(txs)
+    elif fmt == "cryptact":
+        text, _skipped = to_cryptact_csv_string(txs)
+    else:  # summ
+        raise HTTPException(
+            status_code=422,
+            detail="SUMM形式は正式仕様の確定後に対応します。列見本をお知らせください。",
+        )
+
+    # ファイル名: <format>_<account>_<today>.csv（ASCIIのみ）
+    acc_part = ""
+    if account:
+        safe = "".join(c if c.isalnum() else "_" for c in account)
+        acc_part = f"_{safe}"
+    today = datetime.now(timezone.utc).strftime("%Y%m%d")
+    filename = f"{fmt}{acc_part}_{today}.csv"
+
+    # UTF-8 BOM 付きで返す（Excel での文字化け回避）
+    body = "﻿" + text
+    return Response(
+        content=body.encode("utf-8"),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 def _get_account_groups(db_path: str) -> dict:
     """UI設定用: 現在のグループ設定とDBの全ソースIDを返す。"""
     groups = _load_groups(db_path)
@@ -687,6 +759,19 @@ def create_app(db_path: str = "ledger.db") -> FastAPI:
         finally:
             ledger.close()
         return {"ok": True, "deleted": deleted}
+
+    @app.get("/api/export/formats")
+    def export_formats() -> dict:
+        return _export_formats()
+
+    @app.get("/api/export")
+    def export_csv(
+        format: str = Query("koinly"),
+        account: str | None = Query(None),
+        since: str | None = Query(None),
+        until: str | None = Query(None),
+    ) -> Response:
+        return _export_csv(db_path, format, account, since, until)
 
     @app.delete("/api/sources/{account}")
     def clear_account(account: str) -> dict:

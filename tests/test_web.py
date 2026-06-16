@@ -328,6 +328,51 @@ def test_clear_account_not_found(client):
     assert r.status_code == 404
 
 
+def test_export_formats(client):
+    d = client.get("/api/export/formats").json()
+    values = {f["value"] for f in d["formats"]}
+    assert {"koinly", "cryptact", "summ"} <= values
+    by_value = {f["value"]: f for f in d["formats"]}
+    assert by_value["koinly"]["ready"] is True
+    assert by_value["summ"]["ready"] is False
+
+
+def test_export_koinly(client):
+    r = client.get("/api/export?format=koinly")
+    assert r.status_code == 200
+    assert "text/csv" in r.headers["content-type"]
+    assert "attachment" in r.headers["content-disposition"]
+    assert "koinly" in r.headers["content-disposition"]
+    body = r.content.decode("utf-8")
+    # ヘッダー行（BOM を除去して確認）
+    first = body.lstrip("﻿").splitlines()[0]
+    assert first.startswith("Date,Sent Amount")
+    # fixture の4件（deposit）が出力される
+    assert "BTC" in body
+
+
+def test_export_cryptact_account_filter(client):
+    # Acct A（BTC 入金, ETH 入金）— どちらも DEPOSIT なので Cryptact ではスキップ
+    r = client.get("/api/export?format=cryptact&account=Acct+A")
+    assert r.status_code == 200
+    body = r.content.decode("utf-8").lstrip("﻿")
+    lines = [ln for ln in body.splitlines() if ln.strip()]
+    # ヘッダーのみ（入金はスキップされる）
+    assert lines[0].startswith("Timestamp,Action")
+    assert len(lines) == 1
+    assert "Acct_A" in r.headers["content-disposition"]
+
+
+def test_export_summ_not_ready(client):
+    r = client.get("/api/export?format=summ")
+    assert r.status_code == 422
+
+
+def test_export_unknown_format(client):
+    r = client.get("/api/export?format=bogus")
+    assert r.status_code == 422
+
+
 def test_index_served(client):
     r = client.get("/")
     assert r.status_code == 200
