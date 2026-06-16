@@ -8,8 +8,10 @@ const PALETTE = [
 ];
 const OTHER_COLOR = "#6e7681";
 
+const DASH_TOP = 5; // ダッシュボードのプレビュー件数（全件は専用ページ）
+
 let allocChart = null;
-let lastSummary = null;
+let lastAssetsData = null; // /api/summary の最新結果（資産別ページの再描画用）
 let showSmall = false;
 
 // ---- ユーティリティ ----
@@ -213,14 +215,10 @@ function renderSummary(data) {
   const priced = data.assets.filter((a) => a.has_price && a.value !== null);
   const { slices, colorByAsset } = buildChartSlices(priced, total);
 
+  // ダッシュボードは上位のみのプレビュー（全件・少額トグルは「資産別」ページ）
   const tbody = document.querySelector("#assets-table tbody");
   tbody.innerHTML = "";
-  let hiddenCount = 0;
-  data.assets.forEach((a) => {
-    const small = isSmall(a, cur);
-    if (small) hiddenCount++;
-    if (small && !showSmall) return;
-
+  data.assets.slice(0, DASH_TOP).forEach((a) => {
     const pct = a.value && total > 0 ? (Number(a.value) / total) * 100 : null;
     const color = colorByAsset[a.asset] || (a.has_price ? OTHER_COLOR : "transparent");
     const tr = document.createElement("tr");
@@ -245,22 +243,10 @@ function renderSummary(data) {
     tbody.appendChild(tr);
   });
 
-  const toggleBtn = document.getElementById("toggle-small");
-  if (hiddenCount > 0 || showSmall) {
-    toggleBtn.style.display = "";
-    toggleBtn.textContent = showSmall
-      ? "少額残高のトークンを隠す ▴"
-      : `少額残高のトークンを表示（${hiddenCount}） ▾`;
-  } else {
-    toggleBtn.style.display = "none";
-  }
-
-  const unpricedEl = document.getElementById("unpriced");
-  if (data.unpriced && data.unpriced.length) {
-    unpricedEl.classList.remove("hidden");
-    unpricedEl.textContent = "価格未対応（評価額に未算入）: " + data.unpriced.join(", ");
-  } else {
-    unpricedEl.classList.add("hidden");
+  const moreAssets = document.getElementById("assets-more");
+  if (moreAssets) {
+    moreAssets.textContent = `すべての資産を表示（${data.assets.length}）→`;
+    moreAssets.style.display = data.assets.length > DASH_TOP ? "" : "none";
   }
 
   renderChart(slices, cur, total);
@@ -272,7 +258,7 @@ function renderSources(data) {
   const cur = data.currency;
   const tbody = document.querySelector("#sources-table tbody");
   tbody.innerHTML = "";
-  data.sources.forEach((s) => {
+  data.sources.slice(0, DASH_TOP).forEach((s) => {
     const tr = document.createElement("tr");
     tr.innerHTML = `
       <td class="clickable-cell" data-action="account-detail">
@@ -290,6 +276,12 @@ function renderSources(data) {
     });
     tbody.appendChild(tr);
   });
+
+  const moreSources = document.getElementById("sources-more");
+  if (moreSources) {
+    moreSources.textContent = `すべての口座を表示（${data.sources.length}）→`;
+    moreSources.style.display = data.sources.length > DASH_TOP ? "" : "none";
+  }
 }
 
 // ---- チャート ----
@@ -437,7 +429,7 @@ async function loadAccountsPage() {
         <td><button class="tx-link-btn">≡ 履歴</button></td>
       `;
       tr.querySelector("[data-action='account-detail']").addEventListener("click", () =>
-        showAccountDetail(s.source));
+        navigateToAccountDetail(s.source));
       tr.querySelector(".tx-link-btn").addEventListener("click", (e) => {
         e.stopPropagation();
         navigateToTransactions({ account: s.source });
@@ -635,34 +627,68 @@ async function loadAssetsPage() {
   tbody.innerHTML = '<tr><td colspan="6" class="loading">読み込み中…</td></tr>';
   try {
     const data = await fetchJSON(`/api/summary?currency=${currency}`);
-    const total = Number(data.total_value) || 0;
-    tbody.innerHTML = "";
-    data.assets.forEach((a) => {
-      const pct = a.value && total > 0 ? (Number(a.value) / total) * 100 : null;
-      const tr = document.createElement("tr");
-      tr.innerHTML = `
-        <td class="clickable-cell" data-action="asset-detail">
-          ${escapeHtml(a.asset)} <span class="row-arrow">›</span>
-        </td>
-        <td class="num">${fmtAmount(a.balance)}</td>
-        <td class="num">${a.price ? fmtMoney(a.price, currency) : '<span class="muted">-</span>'}</td>
-        <td class="num">${a.value ? fmtMoney(a.value, currency) : '<span class="muted">-</span>'}</td>
-        <td class="num">${pct !== null ? pct.toFixed(1) + "%" : '<span class="muted">-</span>'}</td>
-        <td><button class="tx-link-btn">≡ 履歴</button></td>
-      `;
-      tr.querySelector("[data-action='asset-detail']").addEventListener("click", () =>
-        showAssetDetail(a.asset));
-      tr.querySelector(".tx-link-btn").addEventListener("click", (e) => {
-        e.stopPropagation();
-        navigateToTransactions({ asset: a.asset });
-      });
-      tbody.appendChild(tr);
-    });
-    if (data.assets.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="6" class="muted">データなし</td></tr>';
-    }
+    lastAssetsData = data;
+    renderAllAssets(data, currency);
   } catch (e) {
     tbody.innerHTML = `<tr><td colspan="6" class="muted">エラー: ${escapeHtml(e.message)}</td></tr>`;
+  }
+}
+
+// 資産別ページの全件リスト（少額トグル・価格未対応の注記つき）を描画する。
+function renderAllAssets(data, currency) {
+  const total = Number(data.total_value) || 0;
+  const tbody = document.querySelector("#all-assets-table tbody");
+  tbody.innerHTML = "";
+  let hiddenCount = 0;
+  data.assets.forEach((a) => {
+    const small = isSmall(a, currency);
+    if (small) hiddenCount++;
+    if (small && !showSmall) return;
+
+    const pct = a.value && total > 0 ? (Number(a.value) / total) * 100 : null;
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td class="clickable-cell" data-action="asset-detail">
+        ${escapeHtml(a.asset)} <span class="row-arrow">›</span>
+      </td>
+      <td class="num">${fmtAmount(a.balance)}</td>
+      <td class="num">${a.price ? fmtMoney(a.price, currency) : '<span class="muted">-</span>'}</td>
+      <td class="num">${a.value ? fmtMoney(a.value, currency) : '<span class="muted">-</span>'}</td>
+      <td class="num">${pct !== null ? pct.toFixed(1) + "%" : '<span class="muted">-</span>'}</td>
+      <td><button class="tx-link-btn">≡ 履歴</button></td>
+    `;
+    tr.querySelector("[data-action='asset-detail']").addEventListener("click", () =>
+      navigateToAssetDetail(a.asset));
+    tr.querySelector(".tx-link-btn").addEventListener("click", (e) => {
+      e.stopPropagation();
+      navigateToTransactions({ asset: a.asset });
+    });
+    tbody.appendChild(tr);
+  });
+  if (data.assets.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="6" class="muted">データなし</td></tr>';
+  }
+
+  const toggleBtn = document.getElementById("toggle-small");
+  if (toggleBtn) {
+    if (hiddenCount > 0 || showSmall) {
+      toggleBtn.style.display = "";
+      toggleBtn.textContent = showSmall
+        ? "少額残高のトークンを隠す ▴"
+        : `少額残高のトークンを表示（${hiddenCount}） ▾`;
+    } else {
+      toggleBtn.style.display = "none";
+    }
+  }
+
+  const unpricedEl = document.getElementById("unpriced");
+  if (unpricedEl) {
+    if (data.unpriced && data.unpriced.length) {
+      unpricedEl.classList.remove("hidden");
+      unpricedEl.textContent = "価格未対応（評価額に未算入）: " + data.unpriced.join(", ");
+    } else {
+      unpricedEl.classList.add("hidden");
+    }
   }
 }
 
@@ -723,7 +749,7 @@ async function _ensureAccountOptions() {
       accSel.appendChild(opt);
     });
     _txAccountsLoaded = true;
-  } catch (_) { /* サイレント */ }
+  } catch (e) { console.warn("[crypto-summary] dropdown/options load failed:", e); }
 }
 
 async function _updateAssetDropdown(account) {
@@ -751,7 +777,7 @@ async function _updateAssetDropdown(account) {
     if ([...assetSel.options].some((o) => o.value === prevValue)) {
       assetSel.value = prevValue;
     }
-  } catch (_) { /* サイレント */ }
+  } catch (e) { console.warn("[crypto-summary] dropdown/options load failed:", e); }
 }
 
 async function loadTransactionsPage(account, asset, since, until, page = 1) {
@@ -999,7 +1025,7 @@ async function ensureExportFormats() {
       sel.appendChild(opt);
     });
     _exportFormatsLoaded = true;
-  } catch (_) { /* サイレント */ }
+  } catch (e) { console.warn("[crypto-summary] dropdown/options load failed:", e); }
 }
 
 document.getElementById("tx-export-btn").addEventListener("click", async () => {
@@ -1069,7 +1095,7 @@ document.getElementById("tx-add-btn").addEventListener("click", async () => {
         opt.textContent = s.source;
         accSel.appendChild(opt);
       });
-    } catch (_) { /* サイレント */ }
+    } catch (e) { console.warn("[crypto-summary] dropdown/options load failed:", e); }
     // デフォルト日時を今にセット
     const now = new Date();
     const local = new Date(now - now.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
@@ -1325,7 +1351,7 @@ async function ensureImportExchanges() {
       sel.appendChild(opt);
     });
     _importExchangesLoaded = true;
-  } catch (_) { /* サイレント */ }
+  } catch (e) { console.warn("[crypto-summary] dropdown/options load failed:", e); }
 }
 
 async function loadImportAccountsTable() {
@@ -1604,7 +1630,6 @@ async function load() {
       fetchJSON(`/api/summary?currency=${currency}`),
       fetchJSON(`/api/sources?currency=${currency}`),
     ]);
-    lastSummary = summary;
     renderSummary(summary);
     renderSources(sources);
     // 取引履歴のフィルタ選択肢を再構築させる（口座名変更などを反映）
@@ -1641,11 +1666,17 @@ document.getElementById("refresh").addEventListener("click", () => {
 
 document.getElementById("toggle-small").addEventListener("click", () => {
   showSmall = !showSmall;
-  if (lastSummary) renderSummary(lastSummary);
+  if (lastAssetsData) {
+    renderAllAssets(lastAssetsData, document.getElementById("currency").value);
+  }
 });
 
 document.getElementById("account-back").addEventListener("click", () => navigate("accounts"));
 document.getElementById("asset-back").addEventListener("click", () => navigate("assets"));
+
+// ダッシュボードの「すべて表示 →」リンク（口座別 / 資産別ページへ）
+document.querySelectorAll("[data-nav]").forEach((el) =>
+  el.addEventListener("click", () => navigate(el.dataset.nav)));
 
 // ---- 初期化 ----
 

@@ -148,6 +148,9 @@ select { flex: 1; }
 .card:last-child { margin-bottom: 0; }
 .card h2 { font-size: 15px; font-weight: 600; margin-bottom: 14px; color: var(--text); }
 .card-hint { font-size: 12px; color: var(--text-dim); margin: -8px 0 14px; }
+.card-footer { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border); text-align: right; }
+.card-link { background: none; border: none; color: var(--accent); font-size: 13px; cursor: pointer; padding: 4px 2px; }
+.card-link:hover { text-decoration: underline; border: none; }
 .chart-wrap { position: relative; height: 280px; display: flex; align-items: center; justify-content: center; }
 
 /* ---- Chart legend (円グラフ下の凡例: 資産 / 比率 / 評価額) ---- */
