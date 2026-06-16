@@ -46,49 +46,91 @@ function escapeHtml(s) {
 
 const PAGES = ["dashboard", "accounts", "assets", "transactions", "import"];
 
-function showPage(name) {
-  if (!PAGES.includes(name)) name = "dashboard";
+// ---- ハッシュルーター ----
+// URL ハッシュに状態を全て持たせ、リロード・ブックマーク・進む/戻るで復元可能にする。
+//   #dashboard
+//   #accounts                         （口座一覧）
+//   #accounts/detail?name=bitFlyer    （口座詳細）
+//   #assets                           （資産一覧）
+//   #assets/detail?name=BTC           （資産詳細）
+//   #transactions?account=..&asset=..&since=..&until=..&page=2
+//   #import
 
-  PAGES.forEach((p) => {
-    const el = document.getElementById(`page-${p}`);
-    if (el) el.classList.toggle("hidden", p !== name);
-  });
-  document.querySelectorAll(".nav-link[data-page]").forEach((a) => {
-    a.classList.toggle("active", a.dataset.page === name);
-  });
+function _encodeParams(obj) {
+  const p = new URLSearchParams();
+  for (const [k, v] of Object.entries(obj || {})) {
+    if (v != null && v !== "") p.set(k, v);
+  }
+  const s = p.toString();
+  return s ? "?" + s : "";
+}
 
-  if (name === "dashboard") { load(); }
-  else if (name === "accounts") { showAccountsList(); loadAccountsPage(); }
-  else if (name === "assets") { showAssetsList(); loadAssetsPage(); }
-  else if (name === "import") { loadImportPage(); }
-  // transactions: caller sets filters
+function buildHash(page, sub, params) {
+  let h = page;
+  if (sub) h += "/" + sub;
+  h += _encodeParams(params);
+  return h;
+}
+
+function parseHash() {
+  const raw = location.hash.replace(/^#/, "");
+  if (!raw) return { page: "dashboard", sub: null, params: {} };
+  const qIdx = raw.indexOf("?");
+  const path = qIdx >= 0 ? raw.slice(0, qIdx) : raw;
+  const query = qIdx >= 0 ? raw.slice(qIdx + 1) : "";
+  const [page, sub] = path.split("/");
+  const params = {};
+  new URLSearchParams(query).forEach((v, k) => { params[k] = v; });
+  return { page: PAGES.includes(page) ? page : "dashboard", sub: sub || null, params };
+}
+
+// 現在の URL ハッシュを読み取って画面を描画する（唯一の描画起点）。
+function router() {
+  const { page, sub, params } = parseHash();
+  activatePage(page);
+
+  if (page === "dashboard") {
+    load();
+  } else if (page === "accounts") {
+    if (sub === "detail" && params.name) {
+      showAccountDetail(params.name);
+    } else {
+      showAccountsList();
+      loadAccountsPage();
+    }
+  } else if (page === "assets") {
+    if (sub === "detail" && params.name) {
+      showAssetDetail(params.name);
+    } else {
+      showAssetsList();
+      loadAssetsPage();
+    }
+  } else if (page === "transactions") {
+    loadTransactionsPage(
+      params.account || null, params.asset || null,
+      params.since || null, params.until || null,
+      Number(params.page) || 1,
+    );
+  } else if (page === "import") {
+    loadImportPage();
+  }
+}
+
+// ハッシュを更新して描画する（pushState は popstate を発火しないので明示的に router を呼ぶ）。
+function navigate(page, sub = null, params = null) {
+  history.pushState(null, "", "#" + buildHash(page, sub, params));
+  router();
 }
 
 document.querySelectorAll(".nav-link[data-page]").forEach((a) => {
   a.addEventListener("click", (e) => {
     e.preventDefault();
-    const page = a.dataset.page;
-    if (page === "transactions") {
-      navigateToTransactions({});
-    } else {
-      history.pushState({ page }, "", `#${page}`);
-      showPage(page);
-    }
+    navigate(a.dataset.page);
   });
 });
 
-window.addEventListener("popstate", (e) => {
-  const state = e.state || {};
-  const page = state.page || "dashboard";
-  showPage(page);
-  if (page === "transactions") {
-    loadTransactionsPage(
-      state.txAccount || null, state.txAsset || null,
-      state.txSince || null, state.txUntil || null,
-      state.txPage || 1,
-    );
-  }
-});
+// 進む/戻るは URL から状態を再構築する。
+window.addEventListener("popstate", router);
 
 function activatePage(name) {
   PAGES.forEach((p) => {
@@ -101,22 +143,15 @@ function activatePage(name) {
 }
 
 function navigateToAssetDetail(symbol) {
-  history.pushState({ page: "assets" }, "", "#assets");
-  activatePage("assets");
-  showAssetDetail(symbol);
+  navigate("assets", "detail", { name: symbol });
 }
 
 function navigateToAccountDetail(name) {
-  history.pushState({ page: "accounts" }, "", "#accounts");
-  activatePage("accounts");
-  showAccountDetail(name);
+  navigate("accounts", "detail", { name });
 }
 
 function navigateToTransactions({ account = null, asset = null, since = null, until = null, page = 1 } = {}) {
-  const state = { page: "transactions", txAccount: account, txAsset: asset, txSince: since, txUntil: until, txPage: page };
-  history.pushState(state, "", "#transactions");
-  activatePage("transactions");
-  loadTransactionsPage(account, asset, since, until, page);
+  navigate("transactions", null, { account, asset, since, until, page: page > 1 ? page : null });
 }
 
 // ---- ダッシュボード ----
@@ -1126,20 +1161,25 @@ function _clearDialogState() {
   _apiDeleteSourceId = null;
 }
 
+// タイトル・本文をセットしてダイアログを表示する（用途に応じてタイトルを変える）。
+function _openDeleteDialog(title, msg) {
+  document.getElementById("delete-dialog-title").textContent = title;
+  document.getElementById("delete-dialog-msg").textContent = msg;
+  document.getElementById("delete-dialog").classList.remove("hidden");
+}
+
 function showDeleteDialog(txId, desc, onSuccess) {
   _clearDialogState();
   _deleteCallback = { txId, onSuccess };
-  document.getElementById("delete-dialog-msg").textContent =
-    `「${desc}」を削除します。この操作は取り消せません。`;
-  document.getElementById("delete-dialog").classList.remove("hidden");
+  _openDeleteDialog("取引を削除しますか？",
+    `「${desc}」を削除します。この操作は取り消せません。`);
 }
 
 function showBatchDeleteDialog(batchId, desc) {
   _clearDialogState();
   _batchDeleteId = batchId;
-  document.getElementById("delete-dialog-msg").textContent =
-    `「${desc}」を削除します。このCSV由来の取引がすべて削除されます。この操作は取り消せません。`;
-  document.getElementById("delete-dialog").classList.remove("hidden");
+  _openDeleteDialog("CSVインポートを削除しますか？",
+    `「${desc}」を削除します。このCSV由来の取引がすべて削除されます。この操作は取り消せません。`);
 }
 
 document.getElementById("delete-confirm").addEventListener("click", async () => {
@@ -1234,6 +1274,16 @@ document.getElementById("delete-dialog").addEventListener("click", (e) => {
   }
 });
 
+// Esc キーでダイアログを閉じる
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape") return;
+  const dialog = document.getElementById("delete-dialog");
+  if (!dialog.classList.contains("hidden")) {
+    _clearDialogState();
+    dialog.classList.add("hidden");
+  }
+});
+
 // ---- インポートページ ----
 
 let _importTabsReady = false;
@@ -1307,10 +1357,10 @@ async function loadImportAccountsTable() {
         document.getElementById("import-csv-account").scrollIntoView({ behavior: "smooth" });
       });
       tr.querySelector(".btn-clear-account").addEventListener("click", () => {
-        const msg = `口座「${s.source}」（${s.source_ids.join(", ")}）の全取引 ${s.tx_count} 件を削除します。この操作は取り消せません。`;
+        _clearDialogState();
         _accountClearTarget = s.source;
-        document.getElementById("delete-dialog-msg").textContent = msg;
-        document.getElementById("delete-dialog").classList.remove("hidden");
+        _openDeleteDialog("口座を全消去しますか？",
+          `口座「${s.source}」（${s.source_ids.join(", ")}）の全取引 ${s.tx_count} 件を削除します。この操作は取り消せません。`);
       });
       tbody.appendChild(tr);
     });
@@ -1408,9 +1458,8 @@ async function loadApiAccountsTable() {
       tr.querySelector(".btn-api-delete").addEventListener("click", () => {
         _clearDialogState();
         _apiDeleteSourceId = a.source_id;
-        document.getElementById("delete-dialog-msg").textContent =
-          `API口座「${a.source_id}」（${a.exchange_label || a.exchange}）の登録を削除します。取引データは残ります。この操作は取り消せません。`;
-        document.getElementById("delete-dialog").classList.remove("hidden");
+        _openDeleteDialog("API登録を削除しますか？",
+          `API口座「${a.source_id}」（${a.exchange_label || a.exchange}）の登録を削除します。取引データは残ります。この操作は取り消せません。`);
       });
       tbody.appendChild(tr);
     });
@@ -1604,15 +1653,13 @@ document.getElementById("toggle-small").addEventListener("click", () => {
   if (lastSummary) renderSummary(lastSummary);
 });
 
-document.getElementById("account-back").addEventListener("click", showAccountsList);
-document.getElementById("asset-back").addEventListener("click", showAssetsList);
+document.getElementById("account-back").addEventListener("click", () => navigate("accounts"));
+document.getElementById("asset-back").addEventListener("click", () => navigate("assets"));
 
 // ---- 初期化 ----
 
 const saved = localStorage.getItem("cs_currency");
 if (saved) document.getElementById("currency").value = saved;
 
-const initHash = location.hash.replace("#", "") || "dashboard";
-const initPage = PAGES.includes(initHash) ? initHash : "dashboard";
-showPage(initPage);
-if (initPage === "transactions") loadTransactionsPage(null, null, null, null, 1);
+// 初期描画は現在の URL ハッシュから（直リンク・リロードで状態復元）。
+router();

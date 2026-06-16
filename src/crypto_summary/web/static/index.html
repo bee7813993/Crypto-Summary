@@ -523,9 +523,9 @@
   </div>
 
   <!-- 削除確認ダイアログ -->
-  <div id="delete-dialog" class="dialog-overlay hidden">
+  <div id="delete-dialog" class="dialog-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="delete-dialog-title">
     <div class="dialog">
-      <h3 class="dialog-title">取引を削除しますか？</h3>
+      <h3 id="delete-dialog-title" class="dialog-title">削除しますか？</h3>
       <p id="delete-dialog-msg" class="dialog-msg"></p>
       <div class="dialog-actions">
         <button id="delete-confirm" class="settings-save-btn" style="background:#f85149">削除</button>
