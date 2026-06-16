@@ -1627,25 +1627,16 @@ function getCurrentPage() {
 
 document.getElementById("currency").addEventListener("change", () => {
   localStorage.setItem("cs_currency", document.getElementById("currency").value);
+  // 通貨に依存しない画面（取引履歴・インポート）は再読込不要。
+  // それ以外（ダッシュボード・口座/資産の一覧と詳細）は現在の URL 状態のまま再描画。
   const cur = getCurrentPage();
-  if (cur === "dashboard") load();
-  else if (cur === "accounts") loadAccountsPage();
-  else if (cur === "assets") loadAssetsPage();
+  if (cur === "transactions" || cur === "import") return;
+  router();
 });
 
 document.getElementById("refresh").addEventListener("click", () => {
-  const cur = getCurrentPage();
-  if (cur === "dashboard") load();
-  else if (cur === "accounts") loadAccountsPage();
-  else if (cur === "assets") loadAssetsPage();
-  else if (cur === "import") loadImportPage();
-  else if (cur === "transactions") {
-    const account = document.getElementById("tx-filter-account").value || null;
-    const asset = document.getElementById("tx-filter-asset").value || null;
-    const since = document.getElementById("tx-filter-since").value || null;
-    const until = document.getElementById("tx-filter-until").value || null;
-    loadTransactionsPage(account, asset, since, until, 1);
-  }
+  // 現在の URL 状態（詳細表示やフィルタを含む）をそのまま再描画する。
+  router();
 });
 
 document.getElementById("toggle-small").addEventListener("click", () => {
