@@ -9,7 +9,7 @@ import base64
 import json
 import tempfile
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -20,6 +20,8 @@ from fastapi.staticfiles import StaticFiles
 
 from ..core.ledger import Ledger
 from ..core.models import CanonicalTx, TxType
+from ..core.portfolio import assets_in_range, daily_balances
+from ..core.price_history import fetch_price_history
 from ..core.prices import SUPPORTED_CURRENCIES, fetch_prices
 from ..core.secrets import SecretStore, SecretStoreError
 from ..sinks.cryptact_csv import to_cryptact_csv_string
@@ -773,6 +775,127 @@ def _sync_account_api(db_path: str, source_id: str) -> dict:
     }
 
 
+_RANGE_DAYS: dict[str, int | None] = {
+    "7d": 7, "30d": 30, "90d": 90, "1y": 365, "all": None,
+}
+
+
+def _portfolio_history(
+    db_path: str,
+    currency: str,
+    range_str: str,
+    scope: str,
+) -> dict:
+    """ポートフォリオ価値の日次時系列を返す。
+
+    scope: "total" | "account:<表示名>" | "asset:<シンボル>"
+    range_str: "7d" | "30d" | "90d" | "1y" | "all"
+    """
+    currency = currency.upper()
+    if currency not in SUPPORTED_CURRENCIES:
+        currency = "USD"
+
+    if range_str not in _RANGE_DAYS:
+        range_str = "90d"
+
+    today = date.today()
+    days = _RANGE_DAYS[range_str]
+    range_start = (today - timedelta(days=days)) if days is not None else None
+
+    # scope 解析
+    source_filter: list[str] | None = None
+    asset_filter: str | None = None
+
+    if scope.startswith("account:"):
+        account_name = scope[len("account:"):]
+        groups = _load_groups(db_path)
+        ledger = Ledger(db_path)
+        try:
+            all_ids = [src for src, *_ in ledger.sources()]
+        finally:
+            ledger.close()
+        source_filter = [s for s in all_ids if _display_name(s, groups) == account_name] or None
+    elif scope.startswith("asset:"):
+        asset_filter = scope[len("asset:"):].upper()
+
+    ledger = Ledger(db_path)
+    try:
+        snapshots = daily_balances(
+            ledger,
+            source=source_filter,
+            asset=asset_filter,
+            start=range_start,
+            end=today,
+        )
+    finally:
+        ledger.close()
+
+    if not snapshots:
+        return {
+            "currency": currency,
+            "range": range_str,
+            "scope": scope,
+            "points": [],
+            "unpriced": [],
+            "warnings": [],
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+    # 日付範囲の確定（all の場合は最初のスナップショット日から today まで）
+    first_snap_date = date.fromisoformat(min(snapshots))
+    effective_start = max(range_start, first_snap_date) if range_start else first_snap_date
+
+    all_assets = assets_in_range(snapshots)
+    if asset_filter:
+        all_assets = {asset_filter} & all_assets
+
+    warnings: list[str] = []
+    price_hist = fetch_price_history(
+        list(all_assets), currency, effective_start, today, warn=warnings.append
+    )
+
+    unpriced: set[str] = set()
+    points: list[dict] = []
+
+    d = effective_start
+    prev_snapshot: dict[str, Decimal] = {}
+    while d <= today:
+        iso = d.isoformat()
+        if iso in snapshots:
+            prev_snapshot = snapshots[iso]
+        elif not prev_snapshot:
+            d += timedelta(days=1)
+            continue
+
+        total_value = Decimal("0")
+        has_any_price = False
+        for asset, balance in prev_snapshot.items():
+            if asset_filter and asset != asset_filter:
+                continue
+            day_prices = price_hist.get(asset, {})
+            price = day_prices.get(iso)
+            if price is not None:
+                total_value += balance * price
+                has_any_price = True
+            else:
+                unpriced.add(asset)
+
+        if has_any_price:
+            points.append({"t": iso, "value": str(total_value)})
+
+        d += timedelta(days=1)
+
+    return {
+        "currency": currency,
+        "range": range_str,
+        "scope": scope,
+        "points": points,
+        "unpriced": sorted(unpriced),
+        "warnings": warnings,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
 def _get_account_groups(db_path: str) -> dict:
     """UI設定用: 現在のグループ設定とDBの全ソースIDを返す。"""
     groups = _load_groups(db_path)
@@ -926,6 +1049,14 @@ def create_app(db_path: str = "ledger.db") -> FastAPI:
                 raise HTTPException(status_code=422, detail="invalid groups format")
         _save_groups(db_path, groups)
         return {"ok": True, "groups": groups}
+
+    @app.get("/api/portfolio-history")
+    def portfolio_history(
+        currency: str = Query("USD"),
+        range: str = Query("90d"),
+        scope: str = Query("total"),
+    ) -> dict:
+        return _portfolio_history(db_path, currency, range, scope)
 
     @app.get("/api/meta")
     def meta() -> dict:
