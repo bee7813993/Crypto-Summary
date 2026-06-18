@@ -1067,7 +1067,24 @@ def create_app(db_path: str = "ledger.db") -> FastAPI:
 
     @app.get("/")
     def index() -> FileResponse:
-        return FileResponse(_STATIC_DIR / "index.html")
+        return FileResponse(
+            _STATIC_DIR / "index.html",
+            headers={"Cache-Control": "no-cache"},
+        )
+
+    @app.middleware("http")
+    async def _no_cache_static(request, call_next):
+        """静的アセット（index.html / /static/*）は常に再検証させる。
+
+        Cache-Control を付けないとブラウザのヒューリスティックキャッシュで
+        古い app.js / style.css が使われ続けることがある。no-cache は
+        ETag による 304 を維持しつつ「使う前に必ず確認」を強制する。
+        """
+        response = await call_next(request)
+        path = request.url.path
+        if path == "/" or path.startswith("/static"):
+            response.headers["Cache-Control"] = "no-cache"
+        return response
 
     app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
     return app
