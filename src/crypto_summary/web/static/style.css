@@ -589,6 +589,45 @@ tbody tr:hover { background: var(--bg-elev); }
 }
 .delete-btn:hover { border-color: var(--red); color: var(--red); opacity: 1; }
 
+/* ---- 推移グラフ ---- */
+.history-card { padding: 16px 20px 12px; margin-bottom: 20px; }
+.history-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+.history-header h2 { margin-bottom: 0; }
+.range-tabs { display: flex; gap: 2px; }
+.range-tab {
+  background: none;
+  border: 1px solid transparent;
+  color: var(--text-dim);
+  font-size: 12px;
+  font-weight: 500;
+  padding: 4px 9px;
+  border-radius: 6px;
+  cursor: pointer;
+  line-height: 1;
+}
+.range-tab:hover { color: var(--text); border-color: var(--border); }
+.range-tab.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+.history-chart-wrap {
+  position: relative;
+  height: 180px;
+}
+.history-empty {
+  color: var(--text-dim);
+  font-size: 13px;
+  text-align: center;
+  padding: 70px 0 0;
+}
+.history-unpriced {
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
 /* ---- Mobile: サイドバーを上部に折りたたむ ---- */
 @media (max-width: 640px) {
   body { overflow: auto; }

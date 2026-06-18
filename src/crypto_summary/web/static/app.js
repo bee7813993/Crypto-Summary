@@ -14,6 +14,16 @@ let allocChart = null;
 let lastAssetsData = null; // /api/summary の最新結果（資産別ページの再描画用）
 let showSmall = false;
 
+// 推移グラフのインスタンスと状態
+let _histChart = null;
+let _acctHistChart = null;
+let _assetHistChart = null;
+let _dashHistRange = "90d";
+let _acctHistRange = "90d";
+let _assetHistRange = "90d";
+let _acctHistName = null;
+let _assetHistSymbol = null;
+
 // ---- ユーティリティ ----
 
 function fmtMoney(value, currency) {
@@ -390,6 +400,154 @@ function setChartActive(idx) {
   }
 }
 
+// ---- 推移グラフ ----
+
+function renderHistoryChart(canvasId, points, currency, existingChart) {
+  const canvas = document.getElementById(canvasId);
+  if (!canvas) return null;
+  if (existingChart) existingChart.destroy();
+
+  const emptyEl = canvas.parentElement.querySelector(".history-empty");
+
+  if (!points || points.length < 2) {
+    canvas.style.display = "none";
+    if (emptyEl) emptyEl.classList.remove("hidden");
+    return null;
+  }
+  canvas.style.display = "";
+  if (emptyEl) emptyEl.classList.add("hidden");
+
+  const labels = points.map((p) => p.t);
+  const values = points.map((p) => Number(p.value));
+
+  return new Chart(canvas, {
+    type: "line",
+    data: {
+      labels,
+      datasets: [{
+        data: values,
+        borderColor: "#2f81f7",
+        backgroundColor(ctx) {
+          const area = ctx.chart.chartArea;
+          if (!area) return "rgba(47,129,247,0.15)";
+          const g = ctx.chart.ctx.createLinearGradient(0, area.top, 0, area.bottom);
+          g.addColorStop(0, "rgba(47,129,247,0.25)");
+          g.addColorStop(1, "rgba(47,129,247,0)");
+          return g;
+        },
+        fill: true,
+        tension: 0.3,
+        pointRadius: 0,
+        pointHoverRadius: 4,
+        borderWidth: 2,
+      }],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: "index", intersect: false },
+      scales: {
+        x: {
+          ticks: { color: "#8b949e", font: { size: 11 }, maxTicksLimit: 8, maxRotation: 0 },
+          grid: { color: "#2a3340" },
+          border: { display: false },
+        },
+        y: {
+          ticks: {
+            color: "#8b949e",
+            font: { size: 11 },
+            callback(v) { return fmtMoney(v, currency); },
+          },
+          grid: { color: "#2a3340" },
+          border: { display: false },
+        },
+      },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: "#1c2230",
+          borderColor: "#2a3340",
+          borderWidth: 1,
+          titleColor: "#e6edf3",
+          bodyColor: "#8b949e",
+          padding: 10,
+          callbacks: {
+            title: ([item]) => item.label,
+            label: (item) => "  " + fmtMoney(item.parsed.y, currency),
+          },
+        },
+      },
+    },
+  });
+}
+
+function _setRangeActive(tabsId, range) {
+  const tabs = document.getElementById(tabsId);
+  if (!tabs) return;
+  tabs.querySelectorAll(".range-tab").forEach((btn) =>
+    btn.classList.toggle("active", btn.dataset.range === range));
+}
+
+async function _fetchHistAndRender(scope, range, canvasId, loadingId, unpricedId, getRef, setRef) {
+  const currency = document.getElementById("currency").value;
+  const loading = document.getElementById(loadingId);
+  const unpricedEl = document.getElementById(unpricedId);
+  if (loading) loading.classList.remove("hidden");
+  try {
+    const data = await fetchJSON(
+      `/api/portfolio-history?scope=${encodeURIComponent(scope)}&range=${range}&currency=${currency}`
+    );
+    setRef(renderHistoryChart(canvasId, data.points, currency, getRef()));
+    if (unpricedEl) {
+      if (data.unpriced && data.unpriced.length) {
+        unpricedEl.textContent = "価格未対応（評価額に未算入）: " + data.unpriced.join(", ");
+        unpricedEl.classList.remove("hidden");
+      } else {
+        unpricedEl.classList.add("hidden");
+      }
+    }
+  } catch (e) {
+    console.warn("[crypto-summary] portfolio history:", e);
+    setRef(renderHistoryChart(canvasId, [], currency, getRef()));
+  } finally {
+    if (loading) loading.classList.add("hidden");
+  }
+}
+
+function loadDashHistoryChart(range) {
+  _dashHistRange = range || _dashHistRange;
+  _setRangeActive("dash-range-tabs", _dashHistRange);
+  return _fetchHistAndRender(
+    "total", _dashHistRange,
+    "history-chart", "history-loading", "history-unpriced",
+    () => _histChart, (c) => { _histChart = c; }
+  );
+}
+
+function loadAcctHistoryChart(name, range) {
+  if (name != null) _acctHistName = name;
+  if (range != null) _acctHistRange = range;
+  if (!_acctHistName) return;
+  _setRangeActive("acct-range-tabs", _acctHistRange);
+  return _fetchHistAndRender(
+    `account:${_acctHistName}`, _acctHistRange,
+    "acct-history-chart", "acct-history-loading", "acct-history-unpriced",
+    () => _acctHistChart, (c) => { _acctHistChart = c; }
+  );
+}
+
+function loadAssetHistoryChart(symbol, range) {
+  if (symbol != null) _assetHistSymbol = symbol;
+  if (range != null) _assetHistRange = range;
+  if (!_assetHistSymbol) return;
+  _setRangeActive("asset-range-tabs", _assetHistRange);
+  return _fetchHistAndRender(
+    `asset:${_assetHistSymbol}`, _assetHistRange,
+    "asset-history-chart", "asset-history-loading", "asset-history-unpriced",
+    () => _assetHistChart, (c) => { _assetHistChart = c; }
+  );
+}
+
 // ---- 口座別ページ ----
 
 function showAccountsList() {
@@ -407,7 +565,10 @@ function showAccountDetail(name) {
   document.getElementById("account-detail-name").textContent = name;
   document.getElementById("account-tx-link").onclick = () =>
     navigateToTransactions({ account: name });
+  // 別口座へ移動したらレンジをリセット
+  if (_acctHistName !== name) _acctHistRange = "90d";
   loadAccountDetail(name);
+  loadAcctHistoryChart(name, _acctHistRange);
 }
 
 async function loadAccountsPage() {
@@ -618,7 +779,10 @@ function showAssetDetail(symbol) {
   document.getElementById("asset-detail-name").textContent = symbol;
   document.getElementById("asset-tx-link").onclick = () =>
     navigateToTransactions({ asset: symbol });
+  // 別資産へ移動したらレンジをリセット
+  if (_assetHistSymbol !== symbol) _assetHistRange = "90d";
   loadAssetDetail(symbol);
+  loadAssetHistoryChart(symbol, _assetHistRange);
 }
 
 async function loadAssetsPage() {
@@ -1641,6 +1805,8 @@ async function load() {
   } finally {
     btn.classList.remove("spin");
   }
+  // 推移グラフは独立して（summary失敗でも試みる）
+  loadDashHistoryChart(_dashHistRange);
 }
 
 function getCurrentPage() {
@@ -1677,6 +1843,17 @@ document.getElementById("asset-back").addEventListener("click", () => navigate("
 // ダッシュボードの「すべて表示 →」リンク（口座別 / 資産別ページへ）
 document.querySelectorAll("[data-nav]").forEach((el) =>
   el.addEventListener("click", () => navigate(el.dataset.nav)));
+
+// ---- 推移グラフ レンジタブ ----
+
+document.getElementById("dash-range-tabs").querySelectorAll(".range-tab").forEach((btn) =>
+  btn.addEventListener("click", () => loadDashHistoryChart(btn.dataset.range)));
+
+document.getElementById("acct-range-tabs").querySelectorAll(".range-tab").forEach((btn) =>
+  btn.addEventListener("click", () => loadAcctHistoryChart(null, btn.dataset.range)));
+
+document.getElementById("asset-range-tabs").querySelectorAll(".range-tab").forEach((btn) =>
+  btn.addEventListener("click", () => loadAssetHistoryChart(null, btn.dataset.range)));
 
 // ---- 初期化 ----
 

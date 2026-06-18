@@ -61,6 +61,26 @@
 
         <div id="warnings" class="warnings hidden"></div>
 
+        <!-- 推移グラフ（ダッシュボード：総資産） -->
+        <section class="card history-card">
+          <div class="history-header">
+            <h2>資産推移</h2>
+            <div class="range-tabs" id="dash-range-tabs">
+              <button class="range-tab" data-range="7d">7D</button>
+              <button class="range-tab" data-range="30d">30D</button>
+              <button class="range-tab active" data-range="90d">90D</button>
+              <button class="range-tab" data-range="1y">1Y</button>
+              <button class="range-tab" data-range="all">ALL</button>
+            </div>
+          </div>
+          <div class="history-chart-wrap">
+            <canvas id="history-chart"></canvas>
+            <p class="history-empty hidden">取引データがありません</p>
+          </div>
+          <div id="history-loading" class="loading hidden">読み込み中…</div>
+          <div id="history-unpriced" class="history-unpriced hidden"></div>
+        </section>
+
         <div class="grid">
           <section class="card chart-card">
             <h2>資産構成</h2>
@@ -148,6 +168,26 @@
             <button id="account-settings-btn" class="action-btn">⚙ 設定</button>
           </div>
 
+          <!-- 推移グラフ（口座詳細） -->
+          <section class="card history-card">
+            <div class="history-header">
+              <h2>評価額推移</h2>
+              <div class="range-tabs" id="acct-range-tabs">
+                <button class="range-tab" data-range="7d">7D</button>
+                <button class="range-tab" data-range="30d">30D</button>
+                <button class="range-tab active" data-range="90d">90D</button>
+                <button class="range-tab" data-range="1y">1Y</button>
+                <button class="range-tab" data-range="all">ALL</button>
+              </div>
+            </div>
+            <div class="history-chart-wrap">
+              <canvas id="acct-history-chart"></canvas>
+              <p class="history-empty hidden">取引データがありません</p>
+            </div>
+            <div id="acct-history-loading" class="loading hidden">読み込み中…</div>
+            <div id="acct-history-unpriced" class="history-unpriced hidden"></div>
+          </section>
+
           <div id="account-settings-panel" class="settings-panel hidden">
             <h3 class="settings-title">口座設定</h3>
             <div class="settings-row">
@@ -226,6 +266,27 @@
             <h1 class="page-title" id="asset-detail-name"></h1>
             <button id="asset-tx-link" class="action-btn">≡ この資産の取引履歴</button>
           </div>
+
+          <!-- 推移グラフ（資産詳細） -->
+          <section class="card history-card">
+            <div class="history-header">
+              <h2>評価額推移</h2>
+              <div class="range-tabs" id="asset-range-tabs">
+                <button class="range-tab" data-range="7d">7D</button>
+                <button class="range-tab" data-range="30d">30D</button>
+                <button class="range-tab active" data-range="90d">90D</button>
+                <button class="range-tab" data-range="1y">1Y</button>
+                <button class="range-tab" data-range="all">ALL</button>
+              </div>
+            </div>
+            <div class="history-chart-wrap">
+              <canvas id="asset-history-chart"></canvas>
+              <p class="history-empty hidden">取引データがありません</p>
+            </div>
+            <div id="asset-history-loading" class="loading hidden">読み込み中…</div>
+            <div id="asset-history-unpriced" class="history-unpriced hidden"></div>
+          </section>
+
           <section class="card">
             <p class="card-hint">クリックでこの口座の保有資産の取引履歴</p>
             <div class="table-wrap">
