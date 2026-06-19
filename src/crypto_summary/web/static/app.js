@@ -23,6 +23,7 @@ const DASH_TOP = 5; // ダッシュボードのプレビュー件数（全件は
 let allocChart = null;
 let lastAssetsData = null; // /api/summary の最新結果（資産別ページの再描画用）
 let showSmall = false;
+let maskAmounts = localStorage.getItem("cs_mask") === "1";
 
 // 推移グラフのインスタンスと状態
 let _histChart = null;
@@ -37,12 +38,14 @@ let _assetHistSymbol = null;
 // ---- ユーティリティ ----
 
 function fmtMoney(value, currency) {
+  if (maskAmounts) return "●●●●●";
   const sym = CURRENCY_SYMBOL[currency] || "";
   const n = Number(value);
   return sym + n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
 function fmtAmount(value) {
+  if (maskAmounts) return "●●●●●";
   return Number(value).toLocaleString(undefined, { maximumFractionDigits: 8 });
 }
 
@@ -105,9 +108,15 @@ function _syncMaskBtn() {
 }
 
 document.getElementById("mask-toggle").addEventListener("click", () => {
-  const masked = document.body.classList.toggle("amounts-masked");
-  localStorage.setItem("cs_mask", masked ? "1" : "0");
+  maskAmounts = !maskAmounts;
+  document.body.classList.toggle("amounts-masked", maskAmounts);
+  localStorage.setItem("cs_mask", maskAmounts ? "1" : "0");
   _syncMaskBtn();
+  // グラフのテキスト（Y軸・中央テキスト・ツールチップ）を再描画
+  _histChart?.update();
+  _acctHistChart?.update();
+  _assetHistChart?.update();
+  if (allocChart) allocChart.draw();
 });
 
 // ---- ページナビゲーション ----
