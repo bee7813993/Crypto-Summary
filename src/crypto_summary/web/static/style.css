@@ -751,7 +751,7 @@ body.amounts-masked .hero-sub,
 body.amounts-masked .num,
 body.amounts-masked .legend-value,
 body.amounts-masked .legend-balance,
-body.amounts-masked canvas {
+body.amounts-masked canvas:not(#history-chart):not(#alloc-chart) {
   filter: blur(7px);
   user-select: none;
 }
