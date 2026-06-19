@@ -114,21 +114,33 @@ class Ledger:
     def clear(self, source: str | None = None) -> int:
         """トランザクションを削除する。source指定時はそのソースのみ。
 
-        削除した件数を返す。cursors も併せて削除する。
+        削除した件数を返す。cursors / exports / import_batches も併せて削除する。
         """
         if source:
             n = self.count(source)
-            self._conn.execute("DELETE FROM transactions WHERE source=?", (source,))
-            self._conn.execute("DELETE FROM cursors WHERE source=?", (source,))
+            # exports は transactions を参照するサブクエリで消すため先に実行する
             self._conn.execute(
                 "DELETE FROM exports WHERE tx_id IN "
                 "(SELECT id FROM transactions WHERE source=?)", (source,)
             )
+            self._conn.execute("DELETE FROM transactions WHERE source=?", (source,))
+            self._conn.execute("DELETE FROM cursors WHERE source=?", (source,))
+            # このソースのバッチに含まれる tx_id 紐付けを削除し、
+            # 孤立した import_batches レコードも合わせて消す
+            self._conn.execute(
+                "DELETE FROM batch_txs WHERE batch_id IN "
+                "(SELECT id FROM import_batches WHERE source=?)", (source,)
+            )
+            self._conn.execute(
+                "DELETE FROM import_batches WHERE source=?", (source,)
+            )
         else:
             n = self.count()
+            self._conn.execute("DELETE FROM exports")
             self._conn.execute("DELETE FROM transactions")
             self._conn.execute("DELETE FROM cursors")
-            self._conn.execute("DELETE FROM exports")
+            self._conn.execute("DELETE FROM batch_txs")
+            self._conn.execute("DELETE FROM import_batches")
         self._conn.commit()
         return n
 
