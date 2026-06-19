@@ -16,6 +16,18 @@ def _tx_date(tx: CanonicalTx) -> str:
     return tx.timestamp.date().isoformat()
 
 
+def _apply_tx(tx: CanonicalTx, running: dict[str, Decimal]) -> None:
+    ra, rv = tx.received_asset, tx.received_amount
+    sa, sv = tx.sent_asset, tx.sent_amount
+    fa, fv = tx.fee_asset, tx.fee_amount
+    if ra and rv:
+        running[ra] = running.get(ra, Decimal(0)) + rv
+    if sa and sv:
+        running[sa] = running.get(sa, Decimal(0)) - sv
+    if fa and fv:
+        running[fa] = running.get(fa, Decimal(0)) - fv
+
+
 def daily_balances(
     ledger: Ledger,
     source: str | list[str] | None = None,
@@ -53,23 +65,24 @@ def daily_balances(
         d = _tx_date(tx)
         tx_by_date.setdefault(d, []).append(tx)
 
-    # 累積残高を日ごとに計算
+    # range_start より前の取引を先にすべて適用して開始残高を求める。
+    # これがないと「当該期間の純増分」しかグラフに現れず、
+    # 期間外の取引で形成された残高が丸ごと欠落する。
     running: dict[str, Decimal] = {}
+    range_start_iso = range_start.isoformat()
+    for tx in txs:
+        if _tx_date(tx) >= range_start_iso:
+            break
+        _apply_tx(tx, running)
+
+    # range_start〜range_end の日次スナップショットを計算
     result: dict[str, dict[str, Decimal]] = {}
 
     d = range_start
     while d <= range_end:
         iso = d.isoformat()
         for tx in tx_by_date.get(iso, []):
-            ra, rv = tx.received_asset, tx.received_amount
-            sa, sv = tx.sent_asset, tx.sent_amount
-            fa, fv = tx.fee_asset, tx.fee_amount
-            if ra and rv:
-                running[ra] = running.get(ra, Decimal(0)) + rv
-            if sa and sv:
-                running[sa] = running.get(sa, Decimal(0)) - sv
-            if fa and fv:
-                running[fa] = running.get(fa, Decimal(0)) - fv
+            _apply_tx(tx, running)
 
         # ゼロ残高は含めない（グラフのノイズになるため）
         snapshot = {k: v for k, v in running.items() if v != Decimal(0)}

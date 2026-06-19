@@ -132,6 +132,34 @@ def test_start_before_first_tx(ledger):
     assert out["2024-01-05"]["BTC"] == Decimal("1")
 
 
+def test_range_includes_pre_range_balance(ledger):
+    """range_start より前の取引で形成された残高がグラフ範囲内でも正しく反映される。
+
+    これは 7D/30D などの期間フィルタで発生していたバグの回帰テスト。
+    以前は range_start 以前の取引が無視され、グラフが「期間内の純増分」
+    だけを示す誤った値になっていた。
+    """
+    # 1月1日に 1 BTC 入金（グラフ範囲外）
+    ledger.upsert(_tx("d1", "ex", _dt(2024, 1, 1), TxType.DEPOSIT,
+                      ra="BTC", rv=1))
+    # 3月1日に 0.5 BTC 追加入金（グラフ範囲外）
+    ledger.upsert(_tx("d2", "ex", _dt(2024, 3, 1), TxType.DEPOSIT,
+                      ra="BTC", rv=0.5))
+    # 6月1日に 0.1 BTC 入金（グラフ範囲内）
+    ledger.upsert(_tx("d3", "ex", _dt(2024, 6, 1), TxType.DEPOSIT,
+                      ra="BTC", rv=0.1))
+
+    # 5月29日〜6月1日の7日間 のグラフを要求
+    out = pf.daily_balances(ledger, start=date(2024, 5, 29), end=date(2024, 6, 1))
+
+    # 5/29: 1月+3月の残高 1.5 BTC が開始残高として正しく引き継がれている
+    assert out["2024-05-29"]["BTC"] == Decimal("1.5")
+    assert out["2024-05-30"]["BTC"] == Decimal("1.5")
+    assert out["2024-05-31"]["BTC"] == Decimal("1.5")
+    # 6/1: 0.1 BTC 追加 → 1.6 BTC
+    assert out["2024-06-01"]["BTC"] == Decimal("1.6")
+
+
 def test_assets_in_range(ledger):
     ledger.upsert(_tx("d1", "ex", _dt(2024, 1, 1), TxType.DEPOSIT,
                       ra="BTC", rv=1))
