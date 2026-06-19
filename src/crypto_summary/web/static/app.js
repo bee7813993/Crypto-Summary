@@ -37,7 +37,7 @@ let _assetHistSymbol = null;
 // ---- ユーティリティ ----
 
 function fmtMoney(value, currency) {
-  if (maskAmounts) return "●●●●●";
+  if (maskAmounts) return (CURRENCY_SYMBOL[currency] || "") + "●●●●●";
   const sym = CURRENCY_SYMBOL[currency] || "";
   const n = Number(value);
   return sym + n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
