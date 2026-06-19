@@ -51,12 +51,23 @@ def _groups_path(db_path: str) -> Path:
 
 
 def _load_groups(db_path: str) -> dict[str, list[str]]:
-    """設定ファイルからグループを読み込む（キャッシュあり）。"""
+    """設定ファイルからグループを読み込む（キャッシュあり）。
+
+    保存済みファイルを読み込んだ後、ACCOUNT_GROUPS に定義されているが
+    まだどのグループにも割り当てられていない source_id をデフォルト設定で補完する。
+    これにより、コードのデフォルト追加が既存ユーザーにも反映される。
+    """
     if db_path in _groups_cache:
         return _groups_cache[db_path]
     path = _groups_path(db_path)
     try:
         groups: dict[str, list[str]] = json.loads(path.read_text(encoding="utf-8"))
+        # デフォルトに新たに追加されたグループエントリを補完する
+        assigned = {sid for ids in groups.values() for sid in ids}
+        for name, ids in ACCOUNT_GROUPS.items():
+            for sid in ids:
+                if sid not in assigned:
+                    groups.setdefault(name, []).append(sid)
     except (OSError, json.JSONDecodeError):
         groups = dict(ACCOUNT_GROUPS)
     _groups_cache[db_path] = groups
@@ -73,6 +84,10 @@ def _save_groups(db_path: str, groups: dict[str, list[str]]) -> None:
 
 def _display_name(source_id: str, groups: dict[str, list[str]]) -> str:
     for name, ids in groups.items():
+        if source_id in ids:
+            return name
+    # 保存済み設定に含まれていない場合はビルトインのデフォルトで確認
+    for name, ids in ACCOUNT_GROUPS.items():
         if source_id in ids:
             return name
     return source_id.replace("_", " ").title()
