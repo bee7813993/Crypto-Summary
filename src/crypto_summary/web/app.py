@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import tempfile
 import uuid
 from datetime import date, datetime, timedelta, timezone
@@ -14,7 +15,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 
@@ -1169,25 +1170,71 @@ def _get_account_groups(db_path: str) -> dict:
     }
 
 
-def create_app(db_path: str = "ledger.db") -> FastAPI:
-    """FastAPI アプリを生成する。db_path はクロージャで束縛する。"""
+def create_app(
+    db_path: str = "ledger.db",
+    data_dir: str | None = None,
+) -> FastAPI:
+    """FastAPI アプリを生成する。
+
+    シングルユーザーモード: db_path を直接指定（CLIデフォルト、認証不要）。
+    マルチユーザーモード: data_dir を指定すると Google OAuth が有効になり、
+      ユーザーごとに {data_dir}/{google_sub}.db が使われる。
+    """
     app = FastAPI(title="Crypto-Summary", docs_url="/api/docs")
 
+    multi_user = data_dir is not None
+
+    if multi_user:
+        # Google OAuth セッション + ルート
+        from starlette.middleware.sessions import SessionMiddleware
+
+        _data_dir = Path(data_dir).expanduser()
+        _data_dir.mkdir(parents=True, exist_ok=True)
+
+        secret_key = os.environ.get("SECRET_KEY", "dev-secret-change-me-in-production")
+        app.add_middleware(SessionMiddleware, secret_key=secret_key, https_only=False)
+
+        from .auth import require_user, router as auth_router
+
+        app.include_router(auth_router)
+
+        def get_db_path(user: dict = Depends(require_user)) -> str:
+            return str(_data_dir / f"{user['sub']}.db")
+
+    else:
+        # シングルユーザー: 固定 db_path、認証不要
+        _fixed_db = db_path
+
+        def get_db_path() -> str:  # type: ignore[misc]
+            return _fixed_db
+
+    # ------------------------------------------------------------------
+    # API ルート（すべて get_db_path 依存で db パスを取得する）
+    # ------------------------------------------------------------------
+
     @app.get("/api/summary")
-    def summary(currency: str = Query("USD")) -> dict:
-        return _summary(db_path, currency)
+    def summary(currency: str = Query("USD"), db: str = Depends(get_db_path)) -> dict:
+        return _summary(db, currency)
 
     @app.get("/api/sources")
-    def sources(currency: str = Query("USD")) -> dict:
-        return _sources(db_path, currency)
+    def sources(currency: str = Query("USD"), db: str = Depends(get_db_path)) -> dict:
+        return _sources(db, currency)
 
     @app.get("/api/account-assets")
-    def account_assets(account: str = Query(...), currency: str = Query("USD")) -> dict:
-        return _account_assets(account, db_path, currency)
+    def account_assets(
+        account: str = Query(...),
+        currency: str = Query("USD"),
+        db: str = Depends(get_db_path),
+    ) -> dict:
+        return _account_assets(account, db, currency)
 
     @app.get("/api/asset-accounts")
-    def asset_accounts(asset: str = Query(...), currency: str = Query("USD")) -> dict:
-        return _asset_accounts(asset, db_path, currency)
+    def asset_accounts(
+        asset: str = Query(...),
+        currency: str = Query("USD"),
+        db: str = Depends(get_db_path),
+    ) -> dict:
+        return _asset_accounts(asset, db, currency)
 
     @app.get("/api/transactions")
     def transactions_api(
@@ -1196,16 +1243,17 @@ def create_app(db_path: str = "ledger.db") -> FastAPI:
         since: str | None = Query(None),
         until: str | None = Query(None),
         page: int = Query(1),
+        db: str = Depends(get_db_path),
     ) -> dict:
-        return _transactions(db_path, account, asset, since, until, page)
+        return _transactions(db, account, asset, since, until, page)
 
     @app.post("/api/transactions")
-    def add_transaction(body: dict[str, Any]) -> dict:
-        return _add_manual_transaction(db_path, body)
+    def add_transaction(body: dict[str, Any], db: str = Depends(get_db_path)) -> dict:
+        return _add_manual_transaction(db, body)
 
     @app.delete("/api/transactions/{tx_id}")
-    def delete_transaction(tx_id: str) -> dict:
-        ledger = Ledger(db_path)
+    def delete_transaction(tx_id: str, db: str = Depends(get_db_path)) -> dict:
+        ledger = Ledger(db)
         try:
             deleted = ledger.delete_by_id(tx_id)
         finally:
@@ -1219,16 +1267,16 @@ def create_app(db_path: str = "ledger.db") -> FastAPI:
         return _import_exchanges()
 
     @app.post("/api/import/csv")
-    def import_csv(body: dict[str, Any]) -> dict:
-        return _import_csv(db_path, body)
+    def import_csv(body: dict[str, Any], db: str = Depends(get_db_path)) -> dict:
+        return _import_csv(db, body)
 
     @app.get("/api/import/batches")
-    def import_batches() -> dict:
-        return _list_import_batches(db_path)
+    def import_batches(db: str = Depends(get_db_path)) -> dict:
+        return _list_import_batches(db)
 
     @app.delete("/api/import/batches/{batch_id}")
-    def delete_import_batch(batch_id: str) -> dict:
-        ledger = Ledger(db_path)
+    def delete_import_batch(batch_id: str, db: str = Depends(get_db_path)) -> dict:
+        ledger = Ledger(db)
         try:
             existing = {b["id"] for b in ledger.list_import_batches()}
             if batch_id not in existing:
@@ -1248,23 +1296,23 @@ def create_app(db_path: str = "ledger.db") -> FastAPI:
         account: str | None = Query(None),
         since: str | None = Query(None),
         until: str | None = Query(None),
+        db: str = Depends(get_db_path),
     ) -> Response:
-        return _export_csv(db_path, format, account, since, until)
+        return _export_csv(db, format, account, since, until)
 
     @app.delete("/api/sources/{account}")
-    def clear_account(account: str) -> dict:
+    def clear_account(account: str, db: str = Depends(get_db_path)) -> dict:
         """口座（表示名）配下の全ソースIDの取引をまとめて削除する。"""
-        groups = _load_groups(db_path)
-        ledger = Ledger(db_path)
+        groups = _load_groups(db)
+        ledger = Ledger(db)
         try:
             all_ids = [src for src, *_ in ledger.sources()]
         finally:
             ledger.close()
-        # account に一致するソースIDを厳密に検索（存在しなければ404）
         source_ids = [s for s in all_ids if _display_name(s, groups) == account]
         if not source_ids:
             raise HTTPException(status_code=404, detail="口座が見つかりません")
-        ledger = Ledger(db_path)
+        ledger = Ledger(db)
         try:
             total = sum(ledger.clear(sid) for sid in source_ids)
         finally:
@@ -1272,54 +1320,54 @@ def create_app(db_path: str = "ledger.db") -> FastAPI:
         return {"ok": True, "deleted": total, "source_ids": source_ids}
 
     @app.get("/api/account-apis")
-    def list_account_apis() -> dict:
-        return _list_account_apis(db_path)
+    def list_account_apis(db: str = Depends(get_db_path)) -> dict:
+        return _list_account_apis(db)
 
     @app.post("/api/account-apis")
-    def register_account_api(body: dict[str, Any]) -> dict:
-        return _register_account_api(db_path, body)
+    def register_account_api(body: dict[str, Any], db: str = Depends(get_db_path)) -> dict:
+        return _register_account_api(db, body)
 
     @app.delete("/api/account-apis/{source_id}")
-    def delete_account_api(source_id: str) -> dict:
-        return _delete_account_api(db_path, source_id)
+    def delete_account_api(source_id: str, db: str = Depends(get_db_path)) -> dict:
+        return _delete_account_api(db, source_id)
 
     @app.post("/api/account-apis/{source_id}/sync")
-    def sync_account_api(source_id: str) -> dict:
-        return _sync_account_api(db_path, source_id)
+    def sync_account_api(source_id: str, db: str = Depends(get_db_path)) -> dict:
+        return _sync_account_api(db, source_id)
 
     @app.get("/api/wallets")
-    def list_wallets() -> dict:
-        return _list_wallets(db_path)
+    def list_wallets(db: str = Depends(get_db_path)) -> dict:
+        return _list_wallets(db)
 
     @app.post("/api/wallets")
-    def register_wallet(body: dict[str, Any]) -> dict:
-        return _register_wallet(db_path, body)
+    def register_wallet(body: dict[str, Any], db: str = Depends(get_db_path)) -> dict:
+        return _register_wallet(db, body)
 
     @app.delete("/api/wallets/{source_id}")
-    def delete_wallet(source_id: str) -> dict:
-        return _delete_wallet(db_path, source_id)
+    def delete_wallet(source_id: str, db: str = Depends(get_db_path)) -> dict:
+        return _delete_wallet(db, source_id)
 
     @app.post("/api/wallets/{source_id}/sync")
-    def sync_wallet(source_id: str) -> dict:
-        return _sync_wallet(db_path, source_id)
+    def sync_wallet(source_id: str, db: str = Depends(get_db_path)) -> dict:
+        return _sync_wallet(db, source_id)
 
     @app.post("/api/sync-all")
-    def sync_all() -> dict:
-        return _sync_all(db_path)
+    def sync_all(db: str = Depends(get_db_path)) -> dict:
+        return _sync_all(db)
 
     @app.get("/api/account-groups")
-    def get_account_groups() -> dict:
-        return _get_account_groups(db_path)
+    def get_account_groups(db: str = Depends(get_db_path)) -> dict:
+        return _get_account_groups(db)
 
     @app.put("/api/account-groups")
-    def put_account_groups(body: dict[str, Any]) -> dict:
+    def put_account_groups(body: dict[str, Any], db: str = Depends(get_db_path)) -> dict:
         groups = body.get("groups")
         if not isinstance(groups, dict):
             raise HTTPException(status_code=422, detail="groups must be an object")
         for name, ids in groups.items():
             if not isinstance(name, str) or not isinstance(ids, list):
                 raise HTTPException(status_code=422, detail="invalid groups format")
-        _save_groups(db_path, groups)
+        _save_groups(db, groups)
         return {"ok": True, "groups": groups}
 
     @app.get("/api/portfolio-history")
@@ -1327,14 +1375,15 @@ def create_app(db_path: str = "ledger.db") -> FastAPI:
         currency: str = Query("USD"),
         range: str = Query("90d"),
         scope: str = Query("total"),
+        db: str = Depends(get_db_path),
     ) -> dict:
-        return _portfolio_history(db_path, currency, range, scope)
+        return _portfolio_history(db, currency, range, scope)
 
     @app.get("/api/meta")
     def meta() -> dict:
         return {
             "currencies": list(SUPPORTED_CURRENCIES),
-            "db_path": str(db_path),
+            "multi_user": multi_user,
         }
 
     @app.get("/")
@@ -1346,12 +1395,7 @@ def create_app(db_path: str = "ledger.db") -> FastAPI:
 
     @app.middleware("http")
     async def _no_cache_static(request, call_next):
-        """静的アセット（index.html / /static/*）は常に再検証させる。
-
-        Cache-Control を付けないとブラウザのヒューリスティックキャッシュで
-        古い app.js / style.css が使われ続けることがある。no-cache は
-        ETag による 304 を維持しつつ「使う前に必ず確認」を強制する。
-        """
+        """静的アセット（index.html / /static/*）は常に再検証させる。"""
         response = await call_next(request)
         path = request.url.path
         if path == "/" or path.startswith("/static"):
@@ -1360,3 +1404,13 @@ def create_app(db_path: str = "ledger.db") -> FastAPI:
 
     app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
     return app
+
+
+# uvicorn / Docker 用のモジュールレベルアプリインスタンス。
+# DATA_DIR が設定されていればマルチユーザーモード、なければシングルユーザーモード。
+_env_data_dir = os.environ.get("DATA_DIR")
+_env_db_path = os.environ.get("DB_PATH", "ledger.db")
+app = create_app(
+    db_path=_env_db_path,
+    data_dir=_env_data_dir,
+)

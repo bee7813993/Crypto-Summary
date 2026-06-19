@@ -242,7 +242,12 @@ var TRANSLATIONS = {
     "toggle.maskOn": "金額を隠す",
     "toggle.maskOff": "金額を表示する",
     "toggle.langBtn": "JA",
-    "toggle.langTitle": "日本語 / English"
+    "toggle.langTitle": "日本語 / English",
+
+    // Login screen
+    "login.sub": "ポートフォリオトラッカー",
+    "login.btn": "Google でログイン",
+    "login.logout": "ログアウト"
   },
 
   en: {
@@ -485,7 +490,12 @@ var TRANSLATIONS = {
     "toggle.maskOn": "Hide amounts",
     "toggle.maskOff": "Show amounts",
     "toggle.langBtn": "EN",
-    "toggle.langTitle": "日本語 / English"
+    "toggle.langTitle": "日本語 / English",
+
+    // Login screen
+    "login.sub": "Portfolio Tracker",
+    "login.btn": "Sign in with Google",
+    "login.logout": "Log out"
   }
 };
 

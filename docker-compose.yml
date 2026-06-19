@@ -1,0 +1,14 @@
+services:
+  app:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/data
+    environment:
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
+      - SECRET_KEY=${SECRET_KEY}
+      - BASE_URL=${BASE_URL:-http://localhost:8000}
+      - DATA_DIR=/data
+    restart: unless-stopped

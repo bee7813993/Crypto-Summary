@@ -2164,10 +2164,37 @@ document.getElementById("asset-range-tabs").querySelectorAll(".range-tab").forEa
 const saved = localStorage.getItem("cs_currency");
 if (saved) document.getElementById("currency").value = saved;
 
-_syncThemeBtn();
-_syncMaskBtn();
-_syncLangBtn();
-applyI18n();
+// ---- 認証チェック ----
+async function checkAuth() {
+  try {
+    const me = await fetchJSON("/auth/me");
+    if (!me.authenticated) {
+      document.getElementById("login-screen").classList.remove("hidden");
+      document.querySelector(".layout").classList.add("hidden");
+      return false;
+    }
+    // ユーザー情報をサイドバーに反映
+    const userInfo = document.getElementById("user-info");
+    userInfo.classList.remove("hidden");
+    if (me.picture) {
+      document.getElementById("user-avatar").src = me.picture;
+      document.getElementById("user-avatar").style.display = "";
+    }
+    document.getElementById("user-name").textContent = me.name || "";
+    document.getElementById("user-email").textContent = me.email || "";
+    return true;
+  } catch (e) {
+    return true; // ネットワークエラーは無視してアプリを表示
+  }
+}
 
-// 初期描画は現在の URL ハッシュから（直リンク・リロードで状態復元）。
-router();
+(async () => {
+  const ok = await checkAuth();
+  if (!ok) return;
+  _syncThemeBtn();
+  _syncMaskBtn();
+  _syncLangBtn();
+  applyI18n();
+  // 初期描画は現在の URL ハッシュから（直リンク・リロードで状態復元）。
+  router();
+})();
