@@ -10,13 +10,13 @@
   BYBIT_API_SECRET : APIシークレット
 
 取得エンドポイント（V5・Unified Trading Account 前提）:
-  /v5/execution/list            — 約定履歴（category=spot or linear）
-  /v5/asset/deposit/query-record  — 入金履歴（category=spot のみ取得）
-  /v5/asset/withdraw/query-record — 出金履歴（category=spot のみ取得）
+  /v5/execution/list            — 約定履歴（category=spot / linear / all）
+  /v5/asset/deposit/query-record  — 入金履歴（category=linear 以外で取得）
+  /v5/asset/withdraw/query-record — 出金履歴（category=linear 以外で取得）
 
-  入出金はウォレット全体の操作で category に依存しない。
-  spot と linear を同一アカウントで両方登録した場合の重複を防ぐため、
-  入出金は category=spot の登録からのみ取得する。
+  category="all" を指定すると spot + linear の約定を1回の登録で両方取得する。
+  入出金はウォレット全体の操作で category に依存しないため、
+  linear 単体登録のみスキップし二重取得を防ぐ。
 
 認証（GET）:
   X-BAPI-API-KEY / X-BAPI-TIMESTAMP(ms) / X-BAPI-RECV-WINDOW / X-BAPI-SIGN
@@ -179,13 +179,17 @@ def withdrawal_to_tx(item: dict, source_id: str) -> CanonicalTx | None:
 class BybitApiSource:
     """Bybit V5 API から履歴を取得して CanonicalTx を返す（read-only）。"""
 
+    # category="all" は内部で spot + linear を両方取得する仮想カテゴリ。
+    # Bybit API に "all" は存在しないため fetch_executions で展開する。
+    _EXEC_CATEGORIES = ("spot", "linear")
+
     def __init__(
         self,
         source_id: str,
         api_key: str,
         api_secret: str,
         *,
-        category: str = "spot",
+        category: str = "all",
         base_url: str = _BASE,
     ) -> None:
         self.source_id = source_id
@@ -238,10 +242,15 @@ class BybitApiSource:
     # -- 高レベル fetch -----------------------------------------------------
 
     def fetch_executions(self, start_time_ms: int | None = None) -> list[dict]:
-        params: dict = {"category": self.category, "limit": _PAGE_LIMIT}
-        if start_time_ms is not None:
-            params["startTime"] = start_time_ms
-        return self._paginate("/v5/execution/list", params)
+        """category="all" のときは spot + linear を順に取得して結合する。"""
+        cats = self._EXEC_CATEGORIES if self.category == "all" else (self.category,)
+        results: list[dict] = []
+        for cat in cats:
+            params: dict = {"category": cat, "limit": _PAGE_LIMIT}
+            if start_time_ms is not None:
+                params["startTime"] = start_time_ms
+            results.extend(self._paginate("/v5/execution/list", params))
+        return results
 
     def fetch_deposits(self, start_time_ms: int | None = None) -> list[dict]:
         params: dict = {"limit": _PAGE_LIMIT}
@@ -264,8 +273,8 @@ class BybitApiSource:
                 txs.append(tx)
 
         # 入出金はウォレット全体の操作で category に属さない。
-        # spot 登録のみで取得し、linear 等との重複を防ぐ。
-        if self.category == "spot":
+        # linear 単体登録では取得せず、spot / all 登録でのみ取得して重複を防ぐ。
+        if self.category != "linear":
             for item in self.fetch_deposits(start_time_ms):
                 tx = deposit_to_tx(item, self.source_id)
                 if tx:

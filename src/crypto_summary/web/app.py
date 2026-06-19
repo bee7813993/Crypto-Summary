@@ -691,7 +691,7 @@ def _register_account_api(db_path: str, body: dict[str, Any]) -> dict:
     source_id = (body.get("source_id") or "").strip()
     api_key = (body.get("api_key") or "").strip()
     api_secret = (body.get("api_secret") or "").strip()
-    category = (body.get("category") or "spot").strip()
+    category = (body.get("category") or "all").strip()
 
     if not exchange or exchange not in _API_EXCHANGE_LABELS:
         raise HTTPException(status_code=422, detail=f"未対応の取引所です: {exchange}")
