@@ -37,7 +37,7 @@ _DUST = Decimal("0.00000001")
 # ユーザーは Web UI から変更でき、DB と同じディレクトリの .accounts.json に保存される。
 ACCOUNT_GROUPS: dict[str, list[str]] = {
     "bitFlyer": ["bitflyer"],
-    "Nexo Pro": ["nexo_dnw", "nexo_spot"],
+    "Nexo Pro": ["nexo", "nexo_dnw", "nexo_spot"],
 }
 
 # メモリキャッシュ（db_path → groups）。PUT 時に無効化する。
@@ -492,6 +492,7 @@ def _add_manual_transaction(db_path: str, body: dict[str, Any]) -> dict:
 
 # CSV インポートで提示する取引所・サービスの表示名。
 _EXCHANGE_LABELS: dict[str, str] = {
+    "nexo": "Nexo Pro（自動判別: スポット/入出金/貯蓄）",
     "nexo_savings": "Nexo（貯蓄口座）",
     "nexo_spot": "Nexo Pro（スポット取引）",
     "nexo_dnw": "Nexo Pro（入出金）",
@@ -507,7 +508,7 @@ _EXCHANGE_LABELS: dict[str, str] = {
 
 # 新規口座追加で提示する取引所の表示順。
 _IMPORT_EXCHANGE_ORDER: list[str] = [
-    "nexo_savings", "nexo_spot", "nexo_dnw",
+    "nexo", "nexo_savings", "nexo_spot", "nexo_dnw",
     "bitflyer", "bitflyer_collateral", "bitflyer_conversion",
     "gmo", "bitlend", "pbr_lending", "binance", "universal",
 ]

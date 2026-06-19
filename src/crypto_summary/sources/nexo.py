@@ -16,6 +16,7 @@ from pathlib import Path
 
 from ..core.models import CanonicalTx, TxType
 from .base import CsvSourceAdapter
+from .nexo_savings import NexoSavingsCsvSource
 
 _DATE_FMT = "%Y-%m-%d %H:%M:%S.%f"
 
@@ -164,3 +165,49 @@ class NexoDnWCsvSource(CsvSourceAdapter):
                 sent_amount=amount,
                 raw=dict(row),
             )
+
+
+# ---------------------------------------------------------------------------
+# 自動判別ディスパッチャ
+# ---------------------------------------------------------------------------
+
+class NexoProCsvSource(CsvSourceAdapter):
+    """Nexo の CSV 種別をヘッダーから自動判別して取り込むディスパッチャ。
+
+    SpotHistory（スポット取引）/ DnWHistory（入出金）/ 取引明細（貯蓄口座）
+    のいずれかを判別し、対応するパーサーへ委譲する。利用者は CSV 種別を
+    選ばずに、すべての Nexo CSV を同一口座（同じ source_id）へ取り込める。
+    """
+
+    @staticmethod
+    def detect(fieldnames: list[str] | None) -> str | None:
+        """ヘッダー列から種別 ("spot" / "dnw" / "savings") を返す。不明なら None。"""
+        f = {(name or "").strip() for name in (fieldnames or [])}
+        if {"pair", "filledAmount"} <= f:
+            return "spot"
+        if {"asset", "side", "amount"} <= f and "pair" not in f:
+            return "dnw"
+        if {"Transaction", "Input Currency"} <= f or "Date / Time (UTC)" in f:
+            return "savings"
+        return None
+
+    def load(self, path: Path) -> list[CanonicalTx]:
+        with open(path, encoding="utf-8-sig", newline="") as f:
+            try:
+                header = next(csv.reader(f))
+            except StopIteration:
+                return []  # 空ファイル
+
+        kind = self.detect(header)
+        if kind == "spot":
+            return NexoSpotCsvSource(self.source_id).load(path)
+        if kind == "dnw":
+            return NexoDnWCsvSource(self.source_id).load(path)
+        if kind == "savings":
+            return NexoSavingsCsvSource(self.source_id).load(path)
+
+        raise ValueError(
+            "Nexo CSV の種別を判別できませんでした。"
+            "対応形式: SpotHistory / DnWHistory / 取引明細(Download Statement)。"
+            f" ヘッダー: {', '.join(header)}"
+        )

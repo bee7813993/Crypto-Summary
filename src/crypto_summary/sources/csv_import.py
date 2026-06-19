@@ -153,7 +153,7 @@ from .jp.bitflyer import (                                 # noqa: E402
     BitflyerCollateralCsvSource,
     BitflyerConversionCsvSource,
 )
-from .nexo import NexoSpotCsvSource, NexoDnWCsvSource      # noqa: E402
+from .nexo import NexoSpotCsvSource, NexoDnWCsvSource, NexoProCsvSource  # noqa: E402
 from .nexo_savings import NexoSavingsCsvSource             # noqa: E402
 
 EXCHANGE_SOURCES: dict[str, type[CsvSourceAdapter]] = {
@@ -164,6 +164,7 @@ EXCHANGE_SOURCES: dict[str, type[CsvSourceAdapter]] = {
     "bitflyer_collateral":  BitflyerCollateralCsvSource,
     "bitflyer_conversion":  BitflyerConversionCsvSource,
     "gmo":           GmoCsvSource,
+    "nexo":          NexoProCsvSource,
     "nexo_spot":     NexoSpotCsvSource,
     "nexo_dnw":      NexoDnWCsvSource,
     "nexo_savings":  NexoSavingsCsvSource,
