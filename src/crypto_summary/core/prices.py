@@ -32,7 +32,25 @@ SUPPORTED_CURRENCIES = ("USD", "JPY", "EUR", "GBP")
 
 _PRICE_CACHE_TTL = 300  # 秒。連続実行時の 429 を避けるためのキャッシュ有効期間。
 
+# CoinGecko へのリクエスト間に空ける最小間隔（秒）。
+# 通貨切替直後など、履歴価格を資産ごとに連続取得する際のバースト（429）を防ぐ。
+_MIN_REQUEST_INTERVAL = 1.5
+_last_request_ts = 0.0
+
 WarnFn = Callable[[str], None]
+
+
+def _throttle() -> None:
+    """直前の CoinGecko リクエストから最小間隔を空ける（バースト抑制）。
+
+    プロセス内で共有する単純なレートリミッタ。連続呼び出しでも
+    一定間隔以上に間引かれるため、まとめて取得しても 429 になりにくい。
+    """
+    global _last_request_ts
+    wait = _MIN_REQUEST_INTERVAL - (time.monotonic() - _last_request_ts)
+    if wait > 0:
+        time.sleep(wait)
+    _last_request_ts = time.monotonic()
 
 
 def _cache_path() -> Path:
@@ -83,6 +101,7 @@ def _fiat_rates(warn: WarnFn | None = None) -> dict[str, Decimal]:
         return cached
 
     try:
+        _throttle()
         resp = httpx.get(
             "https://api.coingecko.com/api/v3/exchange_rates", timeout=10
         )
@@ -165,10 +184,11 @@ def fetch_prices(
     data = None
     for attempt in range(3):
         try:
+            _throttle()
             response = httpx.get(url, timeout=10)
             if response.status_code == 429:
                 if attempt < 2:
-                    time.sleep(2 ** attempt)  # 1s, 2s
+                    time.sleep(3 * (attempt + 1))  # 3s, 6s
                     continue
                 _warn("CoinGecko のレート制限 (429) です。しばらく待って再実行してください。")
                 return result

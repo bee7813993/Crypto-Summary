@@ -22,7 +22,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Callable
 
-from .prices import COINGECKO_IDS, FIAT_ASSETS
+from .prices import COINGECKO_IDS, FIAT_ASSETS, _throttle
 
 WarnFn = Callable[[str], None]
 
@@ -101,10 +101,11 @@ def _fetch_coin_range(
 
     for attempt in range(3):
         try:
+            _throttle()
             resp = httpx.get(url, timeout=15)
             if resp.status_code == 429:
                 if attempt < 2:
-                    time.sleep(2 ** attempt)  # 1s, 2s
+                    time.sleep(3 * (attempt + 1))  # 3s, 6s
                     continue
                 _warn("CoinGecko のレート制限 (429) です。しばらく待って再実行してください。")
                 return {}
