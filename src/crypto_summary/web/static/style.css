@@ -99,6 +99,7 @@ body {
 }
 .sidebar-controls label { font-size: 12px; color: var(--text-dim); }
 .controls-row { display: flex; gap: 6px; align-items: center; }
+.controls-row-icons { gap: 4px; }
 
 select, button {
   background: var(--bg-elev); color: var(--text);
@@ -763,7 +764,7 @@ html.light .history-unpriced {
   line-height: 1;
   padding: 5px 8px;
 }
-#theme-toggle, #mask-toggle {
+#theme-toggle, #mask-toggle, #lang-toggle {
   flex-shrink: 0;
 }
 
