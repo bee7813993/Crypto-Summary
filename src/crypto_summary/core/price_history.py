@@ -147,6 +147,11 @@ def fetch_price_history(
     result: dict[str, dict[str, Decimal]] = {}
 
     today_iso = today.isoformat()
+    today_in_range = today_iso in req_dates
+    # 過去日はすべてキャッシュ済みで「当日だけ」不足している資産。
+    # これらは個別の market_chart/range ではなく、最後に simple/price の
+    # 1回のバッチ呼び出し（fetch_prices、5分キャッシュ付き）でまとめて取得する。
+    today_only_assets: list[str] = []
 
     for asset in {a.upper() for a in assets}:
         # 法定通貨: 対象通貨と一致すれば 1.0。異なる法定通貨は未対応（欠落）。
@@ -164,6 +169,14 @@ def fetch_price_history(
         cached_dates = set(series.keys()) - {today_iso}
         missing = [d for d in req_dates if d not in cached_dates]
 
+        # 不足が「当日のみ」なら個別取得せず、後段のバッチ取得へ回す。
+        if today_in_range and missing == [today_iso]:
+            today_only_assets.append(asset)
+            sub = {d: series[d] for d in req_dates if d in cached_dates}
+            if sub:
+                result[asset] = sub
+            continue
+
         if missing:
             fetch_start = date.fromisoformat(min(missing))
             fetched = _fetch_coin_range(coin_id, currency, fetch_start, end, warn)
@@ -175,6 +188,14 @@ def fetch_price_history(
         sub = {d: series[d] for d in req_dates if d in series}
         if sub:
             result[asset] = sub
+
+    # 当日のみ不足の資産を 1 回のバッチ（fetch_prices）でまとめて補完する。
+    if today_only_assets:
+        from .prices import fetch_prices
+
+        today_prices = fetch_prices(today_only_assets, currency, warn=warn)
+        for asset, price in today_prices.items():
+            result.setdefault(asset, {})[today_iso] = price
 
     if changed:
         _save_hist_cache(cache)

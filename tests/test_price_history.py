@@ -131,6 +131,42 @@ def test_cache_fetches_only_missing_tail(monkeypatch):
     }
 
 
+def test_today_only_uses_batched_fetch_prices(monkeypatch):
+    """過去がキャッシュ済みで当日だけ不足のときは market_chart を叩かず、
+    fetch_prices の 1 回バッチで複数資産の当日価格をまとめて補う。"""
+    today = date.today()
+    yesterday = date.fromordinal(today.toordinal() - 1)
+
+    # 昨日までを市場チャートで取得してキャッシュを温める（BTC/ETH 各1回）。
+    calls = _install_http(monkeypatch, {
+        "bitcoin":  [[_ms(yesterday.year, yesterday.month, yesterday.day), 40000]],
+        "ethereum": [[_ms(yesterday.year, yesterday.month, yesterday.day), 2500]],
+    })
+    ph.fetch_price_history(["BTC", "ETH"], "USD", yesterday, yesterday)
+    assert calls["n"] == 2  # 資産ごとに1回ずつ
+
+    # 当日を含むレンジ: 当日価格は per-coin ではなく fetch_prices で一括取得。
+    from crypto_summary.core import prices as prices_mod
+    batch_calls = {"n": 0}
+
+    def fake_fetch_prices(assets, currency, warn=None):
+        batch_calls["n"] += 1
+        return {a.upper(): Decimal("99999") for a in assets}
+
+    monkeypatch.setattr(prices_mod, "fetch_prices", fake_fetch_prices)
+    # market_chart が呼ばれたら検出できるよう httpx は失敗させておく。
+    import httpx
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: FakeResp({"prices": []}, status=500))
+
+    out = ph.fetch_price_history(["BTC", "ETH"], "USD", yesterday, today)
+    today_iso = today.isoformat()
+    assert batch_calls["n"] == 1  # 全資産まとめて1回だけ
+    assert out["BTC"][today_iso] == Decimal("99999")
+    assert out["ETH"][today_iso] == Decimal("99999")
+    # 過去日はキャッシュから保持される
+    assert out["BTC"][yesterday.isoformat()] == Decimal("40000")
+
+
 def test_future_end_clamped_to_today(monkeypatch):
     """end が未来でも今日までにクランプされる（未来日は要求しない）。"""
     _install_http(monkeypatch, {"bitcoin": [[_ms(2024, 1, 1), 40000]]})
