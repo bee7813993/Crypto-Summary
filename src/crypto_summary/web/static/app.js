@@ -1,5 +1,15 @@
 "use strict";
 
+// ---- テーマ・マスク初期化 ----
+(function initPrefs() {
+  if (localStorage.getItem("cs_theme") === "light") {
+    document.documentElement.classList.add("light");
+  }
+  if (localStorage.getItem("cs_mask") === "1") {
+    document.body.classList.add("amounts-masked");
+  }
+})();
+
 const CURRENCY_SYMBOL = { USD: "$", JPY: "¥", EUR: "€", GBP: "£" };
 const SMALL_THRESHOLD = { USD: 0.01, EUR: 0.01, GBP: 0.01, JPY: 1 };
 const PALETTE = [
@@ -53,6 +63,52 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
+
+function chartTheme() {
+  const s = getComputedStyle(document.documentElement);
+  const g = (v) => s.getPropertyValue(v).trim();
+  return {
+    tick: g("--text-dim"),
+    grid: g("--border"),
+    tooltipBg: g("--bg-elev"),
+    tooltipBorder: g("--border"),
+    tooltipTitle: g("--text"),
+    tooltipBody: g("--text-dim"),
+  };
+}
+
+// ---- テーマ切替 ----
+
+function _syncThemeBtn() {
+  const btn = document.getElementById("theme-toggle");
+  if (!btn) return;
+  const isLight = document.documentElement.classList.contains("light");
+  btn.textContent = isLight ? "🌙" : "☀";
+  btn.title = isLight ? "ダークモードに切替" : "ライトモードに切替";
+}
+
+document.getElementById("theme-toggle").addEventListener("click", () => {
+  const isLight = document.documentElement.classList.toggle("light");
+  localStorage.setItem("cs_theme", isLight ? "light" : "dark");
+  _syncThemeBtn();
+  router();
+});
+
+// ---- 金額マスク切替 ----
+
+function _syncMaskBtn() {
+  const btn = document.getElementById("mask-toggle");
+  if (!btn) return;
+  const masked = document.body.classList.contains("amounts-masked");
+  btn.textContent = masked ? "🔒" : "👁";
+  btn.title = masked ? "金額を表示する" : "金額を隠す";
+}
+
+document.getElementById("mask-toggle").addEventListener("click", () => {
+  const masked = document.body.classList.toggle("amounts-masked");
+  localStorage.setItem("cs_mask", masked ? "1" : "0");
+  _syncMaskBtn();
+});
 
 // ---- ページナビゲーション ----
 
@@ -435,6 +491,7 @@ function renderHistoryChart(canvasId, points, currency, existingChart) {
   const values = points.map((p) => Number(p.value));
   const balances = points.map((p) => (p.balance != null ? p.balance : null));
 
+  const th = chartTheme();
   return new Chart(canvas, {
     type: "line",
     data: {
@@ -463,28 +520,28 @@ function renderHistoryChart(canvasId, points, currency, existingChart) {
       interaction: { mode: "index", intersect: false },
       scales: {
         x: {
-          ticks: { color: "#8b949e", font: { size: 11 }, maxTicksLimit: 8, maxRotation: 0 },
-          grid: { color: "#2a3340" },
+          ticks: { color: th.tick, font: { size: 11 }, maxTicksLimit: 8, maxRotation: 0 },
+          grid: { color: th.grid },
           border: { display: false },
         },
         y: {
           ticks: {
-            color: "#8b949e",
+            color: th.tick,
             font: { size: 11 },
             callback(v) { return fmtMoney(v, currency); },
           },
-          grid: { color: "#2a3340" },
+          grid: { color: th.grid },
           border: { display: false },
         },
       },
       plugins: {
         legend: { display: false },
         tooltip: {
-          backgroundColor: "#1c2230",
-          borderColor: "#2a3340",
+          backgroundColor: th.tooltipBg,
+          borderColor: th.tooltipBorder,
           borderWidth: 1,
-          titleColor: "#e6edf3",
-          bodyColor: "#8b949e",
+          titleColor: th.tooltipTitle,
+          bodyColor: th.tooltipBody,
           padding: 10,
           callbacks: {
             title: ([item]) => item.label,
@@ -2037,6 +2094,9 @@ document.getElementById("asset-range-tabs").querySelectorAll(".range-tab").forEa
 
 const saved = localStorage.getItem("cs_currency");
 if (saved) document.getElementById("currency").value = saved;
+
+_syncThemeBtn();
+_syncMaskBtn();
 
 // 初期描画は現在の URL ハッシュから（直リンク・リロードで状態復元）。
 router();

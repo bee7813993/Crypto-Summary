@@ -12,6 +12,18 @@
   --sidebar-w: 220px;
 }
 
+html.light {
+  --bg: #f6f8fa;
+  --bg-card: #ffffff;
+  --bg-elev: #eaeef2;
+  --border: #d0d7de;
+  --text: #24292f;
+  --text-dim: #57606a;
+  --accent: #0969da;
+  --green: #1a7f37;
+  --red: #cf222e;
+}
+
 * { box-sizing: border-box; margin: 0; padding: 0; }
 
 body {
@@ -305,6 +317,13 @@ tbody tr:hover { background: var(--bg-elev); }
 .tx-type-fee      { background: #2d2a1a; color: #e3b341; }
 .tx-type-reward   { background: #2a1a38; color: #bc8cff; }
 .tx-type-transfer { background: #1c2a2a; color: #56d364; }
+
+html.light .tx-type-deposit  { background: #dcfce7; color: #166534; }
+html.light .tx-type-withdraw { background: #fee2e2; color: #991b1b; }
+html.light .tx-type-trade    { background: #dbeafe; color: #1e40af; }
+html.light .tx-type-fee      { background: #fef3c7; color: #92400e; }
+html.light .tx-type-reward   { background: #ede9fe; color: #5b21b6; }
+html.light .tx-type-transfer { background: #d1fae5; color: #065f46; }
 
 /* ハッシュ・ID の省略 */
 .tx-hash {
@@ -703,4 +722,36 @@ tbody tr:hover { background: var(--bg-elev); }
 }
 .wallet-copy-btn:hover {
   color: var(--accent);
+}
+
+/* ---- ライトモード：コンポーネント上書き ---- */
+html.light .hero {
+  background: linear-gradient(135deg, #eef4ff, #e8f0fe);
+}
+html.light .warnings {
+  background: #fefce8; border-color: #ca8a04; color: #713f12;
+}
+html.light .history-unpriced {
+  background: #fefce8; border-color: #ca8a04; color: #713f12;
+}
+
+/* ---- テーマ・マスク切替ボタン ---- */
+.icon-btn {
+  font-size: 15px;
+  line-height: 1;
+  padding: 5px 8px;
+}
+#theme-toggle, #mask-toggle {
+  flex-shrink: 0;
+}
+
+/* ---- 金額マスクモード ---- */
+body.amounts-masked .hero-value,
+body.amounts-masked .hero-sub,
+body.amounts-masked .num,
+body.amounts-masked .legend-value,
+body.amounts-masked .legend-balance,
+body.amounts-masked canvas {
+  filter: blur(7px);
+  user-select: none;
 }
