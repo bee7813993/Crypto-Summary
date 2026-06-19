@@ -167,3 +167,88 @@ class SecretStore:
         del accounts[key]
         self._save(data)
         return True
+
+    # -- ウォレット（公開アドレス）----------------------------------------
+    #
+    # ウォレットアドレスとチェーンは公開情報のため平文で保存する。
+    # スキャン用 API キー（Etherscan/Helius）は任意。指定された場合のみ
+    # 暗号化して保存し（マスター鍵が必要）、未指定なら同期時に環境変数を使う。
+
+    def set_wallet(
+        self,
+        source_id: str,
+        address: str,
+        chain: str,
+        *,
+        api_key: str | None = None,
+        helius_key: str | None = None,
+        user_id: str = _DEFAULT_USER,
+    ) -> None:
+        """ウォレットを登録する（既存は上書き）。"""
+        data = self._load()
+        data.setdefault("wallets", {})
+        rec: dict[str, Any] = {
+            "user_id": user_id,
+            "source_id": source_id,
+            "address": address,
+            "chain": chain,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        if api_key:
+            rec["api_key_enc"] = self._fernet_or_raise().encrypt(api_key.encode()).decode("ascii")
+        if helius_key:
+            rec["helius_key_enc"] = self._fernet_or_raise().encrypt(helius_key.encode()).decode("ascii")
+        data["wallets"][_acct_key(user_id, source_id)] = rec
+        self._save(data)
+
+    def get_wallet(
+        self, source_id: str, *, user_id: str = _DEFAULT_USER
+    ) -> dict[str, str] | None:
+        """ウォレット情報を返す（API キーは登録時のみ復号して含める）。未登録なら None。"""
+        rec = self._load().get("wallets", {}).get(_acct_key(user_id, source_id))
+        if not rec:
+            return None
+        out: dict[str, str] = {
+            "source_id": rec["source_id"],
+            "address": rec["address"],
+            "chain": rec["chain"],
+        }
+        if rec.get("api_key_enc") or rec.get("helius_key_enc"):
+            f = self._fernet_or_raise()
+            try:
+                if rec.get("api_key_enc"):
+                    out["api_key"] = f.decrypt(rec["api_key_enc"].encode()).decode()
+                if rec.get("helius_key_enc"):
+                    out["helius_key"] = f.decrypt(rec["helius_key_enc"].encode()).decode()
+            except (InvalidToken, KeyError) as e:
+                raise SecretStoreError(
+                    "ウォレットAPIキーの復号に失敗しました。マスター鍵が登録時と異なる可能性があります。"
+                ) from e
+        return out
+
+    def list_wallets(self, *, user_id: str | None = _DEFAULT_USER) -> list[dict[str, str]]:
+        """登録済みウォレットのメタ情報（API キーは含まない）を返す。"""
+        out: list[dict[str, str]] = []
+        for rec in self._load().get("wallets", {}).values():
+            if user_id is not None and rec.get("user_id") != user_id:
+                continue
+            out.append({
+                "user_id": rec.get("user_id", _DEFAULT_USER),
+                "source_id": rec.get("source_id", ""),
+                "address": rec.get("address", ""),
+                "chain": rec.get("chain", ""),
+                "created_at": rec.get("created_at", ""),
+            })
+        out.sort(key=lambda r: (r["user_id"], r["source_id"]))
+        return out
+
+    def delete_wallet(self, source_id: str, *, user_id: str = _DEFAULT_USER) -> bool:
+        """ウォレット登録を削除する。削除できたら True。"""
+        data = self._load()
+        wallets = data.get("wallets", {})
+        key = _acct_key(user_id, source_id)
+        if key not in wallets:
+            return False
+        del wallets[key]
+        self._save(data)
+        return True

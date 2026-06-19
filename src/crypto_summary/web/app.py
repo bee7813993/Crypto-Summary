@@ -791,6 +791,144 @@ def _sync_account_api(db_path: str, source_id: str) -> dict:
     }
 
 
+# ---------------------------------------------------------------------------
+# ウォレットアドレス連携
+# ---------------------------------------------------------------------------
+
+# チェーン表示名（同期対象のラベル）
+_WALLET_CHAIN_LABELS: dict[str, str] = {
+    "evm": "EVM（Ethereum / Arbitrum / Polygon / Base / Optimism）",
+    "solana": "Solana",
+}
+
+
+def _detect_wallet_chain(address: str) -> str:
+    """アドレス形式からチェーン種別を判定する（"evm" / "solana"）。
+
+    0x で始まる 42 文字の 16 進数は EVM、それ以外（base58）は Solana とみなす。
+    """
+    a = address.strip()
+    if a.lower().startswith("0x") and len(a) == 42:
+        try:
+            int(a[2:], 16)
+            return "evm"
+        except ValueError:
+            pass
+    # Solana は base58（32〜44 文字程度）。EVM 以外はすべて Solana 扱いにする。
+    return "solana"
+
+
+def _list_wallets(db_path: str) -> dict:
+    store = SecretStore(db_path)
+    wallets = store.list_wallets()
+    for w in wallets:
+        w["chain_label"] = _WALLET_CHAIN_LABELS.get(w["chain"], w["chain"])
+    return {"wallets": wallets}
+
+
+def _register_wallet(db_path: str, body: dict[str, Any]) -> dict:
+    address = (body.get("address") or "").strip()
+    source_id = (body.get("source_id") or "").strip()
+    api_key = (body.get("api_key") or "").strip() or None
+    helius_key = (body.get("helius_key") or "").strip() or None
+
+    if not address:
+        raise HTTPException(status_code=422, detail="ウォレットアドレスを入力してください")
+
+    chain = _detect_wallet_chain(address)
+    if not source_id:
+        # 表示名未指定ならアドレス先頭から自動生成
+        source_id = f"{chain}_{address[:8].lower()}"
+
+    store = SecretStore(db_path)
+    try:
+        store.set_wallet(
+            source_id, address, chain, api_key=api_key, helius_key=helius_key,
+        )
+    except SecretStoreError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    return {"ok": True, "source_id": source_id, "chain": chain,
+            "chain_label": _WALLET_CHAIN_LABELS.get(chain, chain)}
+
+
+def _delete_wallet(db_path: str, source_id: str) -> dict:
+    store = SecretStore(db_path)
+    if not store.delete_wallet(source_id):
+        raise HTTPException(status_code=404, detail="ウォレット登録が見つかりません")
+    return {"ok": True}
+
+
+def _sync_wallet(db_path: str, source_id: str) -> dict:
+    import os
+
+    store = SecretStore(db_path)
+    try:
+        wallet = store.get_wallet(source_id)
+    except SecretStoreError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    if wallet is None:
+        raise HTTPException(status_code=404, detail="ウォレット登録が見つかりません")
+
+    address = wallet["address"]
+    chain = wallet["chain"]
+    txs: list[CanonicalTx] = []
+
+    if chain == "solana":
+        from ..sources.solana.helius import HeliusApiSource
+
+        key = wallet.get("helius_key") or os.environ.get("HELIUS_API_KEY")
+        if not key:
+            raise HTTPException(
+                status_code=422,
+                detail="Solana には Helius APIキーが必要です。環境変数 HELIUS_API_KEY を設定するか、登録時に入力してください。",
+            )
+        try:
+            txs = HeliusApiSource(source_id, address, key).fetch_all(record_gas=True)
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(status_code=502, detail=f"Helius API エラー: {e}")
+    else:  # evm — 全 EVM チェーンをスキャンしてマージ
+        from ..sources.api.etherscan import CHAIN_IDS, EtherscanApiSource
+
+        key = wallet.get("api_key") or os.environ.get("ETHERSCAN_API_KEY")
+        if not key:
+            raise HTTPException(
+                status_code=422,
+                detail="EVM には Etherscan V2 APIキーが必要です。環境変数 ETHERSCAN_API_KEY を設定するか、登録時に入力してください。",
+            )
+        errors: list[str] = []
+        for chain_name, chain_id in CHAIN_IDS.items():
+            try:
+                adapter = EtherscanApiSource(source_id, address, key, chain_id)
+                txs.extend(adapter.fetch_all(record_gas=True))
+            except Exception as e:  # noqa: BLE001 - 1チェーン失敗でも他は継続
+                errors.append(f"{chain_name}: {e}")
+        if errors and not txs:
+            raise HTTPException(status_code=502, detail="Etherscan API エラー: " + "; ".join(errors))
+
+    if not txs:
+        return {"ok": True, "fetched": 0, "imported": 0, "source_id": source_id}
+
+    ledger = Ledger(db_path)
+    try:
+        before = ledger.count(source_id)
+        ledger.upsert_many(txs)
+        after = ledger.count(source_id)
+        latest_ts = max(t.timestamp for t in txs)
+        cur = ledger.get_cursor(source_id)
+        if cur is None or latest_ts > cur:
+            ledger.set_cursor(source_id, latest_ts)
+    finally:
+        ledger.close()
+
+    return {
+        "ok": True,
+        "fetched": len(txs),
+        "imported": after - before,
+        "source_id": source_id,
+    }
+
+
 _RANGE_DAYS: dict[str, int | None] = {
     "7d": 7, "30d": 30, "90d": 90, "1y": 365, "all": None,
 }
@@ -1056,6 +1194,22 @@ def create_app(db_path: str = "ledger.db") -> FastAPI:
     @app.post("/api/account-apis/{source_id}/sync")
     def sync_account_api(source_id: str) -> dict:
         return _sync_account_api(db_path, source_id)
+
+    @app.get("/api/wallets")
+    def list_wallets() -> dict:
+        return _list_wallets(db_path)
+
+    @app.post("/api/wallets")
+    def register_wallet(body: dict[str, Any]) -> dict:
+        return _register_wallet(db_path, body)
+
+    @app.delete("/api/wallets/{source_id}")
+    def delete_wallet(source_id: str) -> dict:
+        return _delete_wallet(db_path, source_id)
+
+    @app.post("/api/wallets/{source_id}/sync")
+    def sync_wallet(source_id: str) -> dict:
+        return _sync_wallet(db_path, source_id)
 
     @app.get("/api/account-groups")
     def get_account_groups() -> dict:

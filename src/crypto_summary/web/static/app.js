@@ -1365,12 +1365,14 @@ let _deleteCallback = null;    // { txId, onSuccess }  — 単一取引削除
 let _batchDeleteId = null;     // string               — CSVバッチ削除
 let _accountClearTarget = null; // string (表示名)      — 口座全消去
 let _apiDeleteSourceId = null; // string               — API口座登録削除
+let _walletDeleteSourceId = null; // string            — ウォレット登録削除
 
 function _clearDialogState() {
   _deleteCallback = null;
   _batchDeleteId = null;
   _accountClearTarget = null;
   _apiDeleteSourceId = null;
+  _walletDeleteSourceId = null;
 }
 
 // タイトル・本文をセットしてダイアログを表示する（用途に応じてタイトルを変える）。
@@ -1411,6 +1413,27 @@ document.getElementById("delete-confirm").addEventListener("click", async () => 
       const result = document.getElementById("import-api-result");
       result.className = "settings-result ok";
       result.textContent = `「${sourceId}」のAPI登録を削除しました（取引データは残ります）`;
+      result.classList.remove("hidden");
+    } catch (e) {
+      alert("削除に失敗しました: " + e.message);
+    }
+    return;
+  }
+
+  // ウォレット登録削除
+  if (_walletDeleteSourceId) {
+    const sourceId = _walletDeleteSourceId;
+    _clearDialogState();
+    try {
+      const resp = await fetch(`/api/wallets/${encodeURIComponent(sourceId)}`, { method: "DELETE" });
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}));
+        throw new Error(err.detail || `HTTP ${resp.status}`);
+      }
+      loadWalletsTable();
+      const result = document.getElementById("import-wallet-result");
+      result.className = "settings-result ok";
+      result.textContent = `「${sourceId}」のウォレット登録を削除しました（取引データは残ります）`;
       result.classList.remove("hidden");
     } catch (e) {
       alert("削除に失敗しました: " + e.message);
@@ -1507,6 +1530,7 @@ async function loadImportPage() {
   loadImportAccountsTable();
   loadImportBatches();
   loadApiAccountsTable();
+  loadWalletsTable();
 }
 
 function setupImportTabs() {
@@ -1796,12 +1820,119 @@ document.getElementById("import-api-register-btn").addEventListener("click", asy
   }
 });
 
-// ウォレット追加ボタン（スタブ — API未実装）
-document.getElementById("import-wallet-btn").addEventListener("click", () => {
+// 登録済みウォレット一覧テーブルを描画する
+async function loadWalletsTable() {
+  const tbody = document.querySelector("#import-wallets-table tbody");
+  if (!tbody) return;
+  tbody.innerHTML = '<tr><td colspan="5" class="loading">読み込み中…</td></tr>';
+  try {
+    const data = await fetchJSON("/api/wallets");
+    tbody.innerHTML = "";
+    if (!data.wallets || data.wallets.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="5" class="muted">登録済みのウォレットはありません</td></tr>';
+      return;
+    }
+    data.wallets.forEach((w) => {
+      const tr = document.createElement("tr");
+      const registeredAt = w.created_at ? fmtDate(w.created_at) : "-";
+      const shortAddr = w.address.length > 16
+        ? `${w.address.slice(0, 8)}…${w.address.slice(-6)}` : w.address;
+      tr.innerHTML = `
+        <td><code style="font-family:monospace">${escapeHtml(w.source_id)}</code></td>
+        <td><code style="font-family:monospace" title="${escapeHtml(w.address)}">${escapeHtml(shortAddr)}</code></td>
+        <td>${escapeHtml(w.chain_label || w.chain)}</td>
+        <td style="white-space:nowrap">${escapeHtml(registeredAt)}</td>
+        <td style="white-space:nowrap;display:flex;gap:6px;align-items:center">
+          <button class="tx-link-btn btn-wallet-sync">同期</button>
+          <button class="tx-link-btn btn-wallet-delete" style="border-color:#5a2a2a">削除</button>
+        </td>
+      `;
+      tr.querySelector(".btn-wallet-sync").addEventListener("click", async (e) => {
+        const btn = e.currentTarget;
+        btn.disabled = true;
+        btn.textContent = "同期中…";
+        const result = document.getElementById("import-wallet-result");
+        result.className = "settings-result ok";
+        result.textContent = `「${w.source_id}」をスキャン中…（チェーンによっては時間がかかります）`;
+        result.classList.remove("hidden");
+        try {
+          const resp = await fetch(`/api/wallets/${encodeURIComponent(w.source_id)}/sync`, {
+            method: "POST",
+          });
+          const d = await resp.json();
+          if (!resp.ok) throw new Error(d.detail || `HTTP ${resp.status}`);
+          result.className = "settings-result ok";
+          result.textContent = `同期完了: ${d.fetched} 件取得 / ${d.imported} 件新規追加（${w.source_id}）`;
+          loadImportAccountsTable();
+          _txAccountsLoaded = false;
+        } catch (err) {
+          result.className = "settings-result err";
+          result.textContent = `同期に失敗しました: ${err.message}`;
+        } finally {
+          btn.disabled = false;
+          btn.textContent = "同期";
+        }
+      });
+      tr.querySelector(".btn-wallet-delete").addEventListener("click", () => {
+        _clearDialogState();
+        _walletDeleteSourceId = w.source_id;
+        _openDeleteDialog("ウォレット登録を削除しますか？",
+          `ウォレット「${w.source_id}」（${w.chain_label || w.chain}）の登録を削除します。取引データは残ります。この操作は取り消せません。`);
+      });
+      tbody.appendChild(tr);
+    });
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="5" class="muted">エラー: ${escapeHtml(e.message)}</td></tr>`;
+  }
+}
+
+// ウォレット登録ボタン
+document.getElementById("import-wallet-btn").addEventListener("click", async () => {
   const result = document.getElementById("import-wallet-result");
-  result.className = "settings-result err";
-  result.textContent = "ウォレットスキャンは近日対応予定です。";
-  result.classList.remove("hidden");
+  result.classList.add("hidden");
+
+  const address = document.getElementById("import-wallet-address").value.trim();
+  const sourceId = document.getElementById("import-wallet-name").value.trim();
+  const etherscanKey = document.getElementById("import-wallet-etherscan").value.trim();
+  const heliusKey = document.getElementById("import-wallet-helius").value.trim();
+
+  if (!address) {
+    result.className = "settings-result err";
+    result.textContent = "ウォレットアドレスを入力してください";
+    result.classList.remove("hidden");
+    return;
+  }
+
+  try {
+    const resp = await fetch("/api/wallets", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        address,
+        source_id: sourceId || null,
+        api_key: etherscanKey || null,
+        helius_key: heliusKey || null,
+      }),
+    });
+    const d = await resp.json();
+    if (!resp.ok) throw new Error(d.detail || `HTTP ${resp.status}`);
+
+    result.className = "settings-result ok";
+    result.textContent = `「${d.source_id}」（${d.chain_label}）を登録しました。下の一覧から「同期」でスキャンを開始してください。`;
+    result.classList.remove("hidden");
+
+    // フォームをクリア
+    document.getElementById("import-wallet-address").value = "";
+    document.getElementById("import-wallet-name").value = "";
+    document.getElementById("import-wallet-etherscan").value = "";
+    document.getElementById("import-wallet-helius").value = "";
+
+    loadWalletsTable();
+  } catch (e) {
+    result.className = "settings-result err";
+    result.textContent = "登録に失敗しました: " + e.message;
+    result.classList.remove("hidden");
+  }
 });
 
 // ---- メインロード ----

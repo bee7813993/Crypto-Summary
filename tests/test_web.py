@@ -381,3 +381,85 @@ def test_index_served(client):
     r = client.get("/")
     assert r.status_code == 200
     assert "text/html" in r.headers["content-type"]
+
+
+# ---- ウォレットアドレス連携 ----
+
+def test_wallet_register_evm_autodetect(client):
+    """0x...42文字 は EVM と自動判定される（APIキー不要で登録可）。"""
+    addr = "0x" + "a" * 40
+    r = client.post("/api/wallets", json={"address": addr, "source_id": "mywallet"})
+    assert r.status_code == 200
+    d = r.json()
+    assert d["source_id"] == "mywallet"
+    assert d["chain"] == "evm"
+
+
+def test_wallet_register_solana_autodetect(client):
+    """0x で始まらないアドレスは Solana と判定される。"""
+    r = client.post("/api/wallets", json={"address": "So11111111111111111111111111111111111111112"})
+    assert r.status_code == 200
+    assert r.json()["chain"] == "solana"
+    # source_id 未指定なら自動生成される
+    assert r.json()["source_id"].startswith("solana_")
+
+
+def test_wallet_register_requires_address(client):
+    r = client.post("/api/wallets", json={"address": ""})
+    assert r.status_code == 422
+
+
+def test_wallet_list_and_delete(client):
+    addr = "0x" + "b" * 40
+    client.post("/api/wallets", json={"address": addr, "source_id": "w1"})
+    r = client.get("/api/wallets")
+    assert r.status_code == 200
+    wallets = r.json()["wallets"]
+    assert any(w["source_id"] == "w1" for w in wallets)
+    # chain_label が付与される
+    assert all("chain_label" in w for w in wallets)
+
+    r = client.delete("/api/wallets/w1")
+    assert r.status_code == 200
+    assert all(w["source_id"] != "w1" for w in client.get("/api/wallets").json()["wallets"])
+
+
+def test_wallet_delete_missing(client):
+    assert client.delete("/api/wallets/nope").status_code == 404
+
+
+def test_wallet_sync_missing_returns_404(client):
+    assert client.post("/api/wallets/nope/sync").status_code == 404
+
+
+def test_wallet_sync_solana_without_key_errors(client, monkeypatch):
+    """Helius キーが環境にもなければ 422 を返す。"""
+    monkeypatch.delenv("HELIUS_API_KEY", raising=False)
+    client.post("/api/wallets", json={"address": "SoLaNaWalletAddr", "source_id": "sol1"})
+    r = client.post("/api/wallets/sol1/sync")
+    assert r.status_code == 422
+    assert "Helius" in r.json()["detail"]
+
+
+def test_wallet_sync_evm_calls_all_chains(client, monkeypatch):
+    """EVM 同期は全 EVM チェーンをスキャンしてマージする。"""
+    addr = "0x" + "c" * 40
+    monkeypatch.setenv("ETHERSCAN_API_KEY", "DUMMYKEY")
+    client.post("/api/wallets", json={"address": addr, "source_id": "evm1"})
+
+    scanned_chains = []
+
+    class FakeEtherscan:
+        def __init__(self, source_id, address, key, chain_id):
+            scanned_chains.append(chain_id)
+
+        def fetch_all(self, record_gas=True):
+            return []
+
+    import crypto_summary.sources.api.etherscan as es
+    monkeypatch.setattr(es, "EtherscanApiSource", FakeEtherscan)
+
+    r = client.post("/api/wallets/evm1/sync")
+    assert r.status_code == 200
+    # 5 つの EVM チェーンすべてがスキャンされる
+    assert len(scanned_chains) == len(es.CHAIN_IDS)

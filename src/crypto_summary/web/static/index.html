@@ -519,30 +519,58 @@
 
           <!-- ウォレット タブ -->
           <div id="import-tab-wallet" class="import-tab-content hidden">
+            <div class="import-note" style="margin-bottom:12px">
+              <strong>📖 公開アドレスから取引履歴を取得します</strong><br>
+              ウォレットアドレスは公開情報のため平文で保存されます（秘密鍵は不要・絶対に入力しないこと）。<br>
+              スキャン用 API キーは読み取り専用です（出金権限の概念はありません）。
+            </div>
             <div class="settings-row">
               <label class="settings-label">ウォレットアドレス *</label>
               <input id="import-wallet-address" class="settings-input" type="text"
-                placeholder="0x... または ソルアドレス" style="max-width:420px; font-family:monospace" />
+                placeholder="0x... または Solana アドレス" style="max-width:420px; font-family:monospace" />
             </div>
             <div class="settings-row">
-              <label class="settings-label">表示名（任意）</label>
+              <label class="settings-label">ソースID（任意）</label>
               <input id="import-wallet-name" class="settings-input" type="text"
-                placeholder="マイウォレット" style="max-width:240px" />
+                placeholder="例: my_wallet（未入力なら自動生成）" style="max-width:240px" />
+              <p class="settings-hint">口座を識別する任意の名前。未入力ならアドレスから自動生成します。</p>
             </div>
             <div class="import-note">
-              <strong>対応予定チェーン（アドレスから自動判定）</strong><br>
-              Ethereum / Polygon / Arbitrum / Optimism / Base / Solana<br>
+              <strong>対応チェーン（アドレスから自動判定）</strong><br>
+              EVM（0x...）: Ethereum / Arbitrum / Polygon / Base / Optimism を全スキャンしてマージ<br>
+              Solana: Helius API でスキャン<br>
               取引のないチェーンは履歴に含みません。
             </div>
             <div class="settings-row">
-              <label class="settings-label">Helius API Key（Solana 必須）</label>
+              <label class="settings-label">Etherscan API Key（EVM 用・任意）</label>
+              <input id="import-wallet-etherscan" class="settings-input" type="password"
+                placeholder="環境変数 ETHERSCAN_API_KEY でも可" style="max-width:300px" autocomplete="off" />
+            </div>
+            <div class="settings-row">
+              <label class="settings-label">Helius API Key（Solana 用・任意）</label>
               <input id="import-wallet-helius" class="settings-input" type="password"
-                placeholder="環境変数 HELIUS_API_KEY でも可" style="max-width:300px" />
+                placeholder="環境変数 HELIUS_API_KEY でも可" style="max-width:300px" autocomplete="off" />
             </div>
             <div class="settings-actions">
-              <button id="import-wallet-btn" class="settings-save-btn">追加してスキャン</button>
+              <button id="import-wallet-btn" class="settings-save-btn">登録</button>
             </div>
             <div id="import-wallet-result" class="settings-result hidden"></div>
+
+            <h3 style="margin:24px 0 8px;font-size:14px;color:#8b949e;border-top:1px solid #30363d;padding-top:16px">登録済みウォレット</h3>
+            <div class="table-wrap">
+              <table id="import-wallets-table">
+                <thead>
+                  <tr>
+                    <th>ソースID</th>
+                    <th>アドレス</th>
+                    <th>チェーン</th>
+                    <th>登録日時</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
           </div>
         </section>
 

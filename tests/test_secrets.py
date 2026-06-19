@@ -96,3 +96,62 @@ def test_invalid_master_key_format(tmp_path: Path):
     store = SecretStore(tmp_path / "x.db", master_key="not-a-valid-fernet-key")
     with pytest.raises(SecretStoreError):
         store.set_account_api("a", "bybit", "k1", "s1")
+
+
+# ---- ウォレット ----
+
+def test_wallet_no_key_does_not_require_master_key(tmp_path: Path):
+    """アドレスは公開情報。APIキー未指定ならマスター鍵なしで登録・取得できる。"""
+    store = SecretStore(tmp_path / "x.db", master_key=None)
+    store.set_wallet("mywallet", "0xABC123", "evm")
+    w = store.get_wallet("mywallet")
+    assert w["address"] == "0xABC123"
+    assert w["chain"] == "evm"
+    assert "api_key" not in w
+
+
+def test_wallet_address_stored_plaintext(tmp_path: Path):
+    store = SecretStore(tmp_path / "x.db", master_key=None)
+    store.set_wallet("w", "0xDEADBEEF", "evm")
+    raw = (tmp_path / "x.secrets.json").read_text(encoding="utf-8")
+    assert "0xDEADBEEF" in raw  # アドレスは公開情報なので平文でよい
+
+
+def test_wallet_api_key_encrypted(tmp_path: Path, key: str):
+    """APIキー指定時は暗号化され、平文では残らない。"""
+    store = SecretStore(tmp_path / "x.db", master_key=key)
+    store.set_wallet("w", "0xABC", "evm", api_key="SECRETKEY", helius_key="HELIUSK")
+    raw = (tmp_path / "x.secrets.json").read_text(encoding="utf-8")
+    assert "SECRETKEY" not in raw
+    assert "HELIUSK" not in raw
+    w = store.get_wallet("w")
+    assert w["api_key"] == "SECRETKEY"
+    assert w["helius_key"] == "HELIUSK"
+
+
+def test_wallet_api_key_requires_master_key(tmp_path: Path):
+    store = SecretStore(tmp_path / "x.db", master_key=None)
+    with pytest.raises(SecretStoreError):
+        store.set_wallet("w", "0xABC", "evm", api_key="SECRETKEY")
+
+
+def test_wallet_list_and_delete(tmp_path: Path):
+    store = SecretStore(tmp_path / "x.db", master_key=None)
+    store.set_wallet("w1", "0xAAA", "evm")
+    store.set_wallet("w2", "SoLaNaAddr", "solana")
+    wallets = store.list_wallets()
+    assert {w["source_id"] for w in wallets} == {"w1", "w2"}
+    # 一覧にはキーを含めない
+    assert all("api_key" not in w for w in wallets)
+    assert store.delete_wallet("w1") is True
+    assert {w["source_id"] for w in store.list_wallets()} == {"w2"}
+    assert store.delete_wallet("nope") is False
+
+
+def test_wallet_and_account_coexist(tmp_path: Path, key: str):
+    """同じ secrets ファイルで API 口座とウォレットが共存できる。"""
+    store = SecretStore(tmp_path / "x.db", master_key=key)
+    store.set_account_api("bybit1", "bybit", "k", "s")
+    store.set_wallet("w1", "0xABC", "evm")
+    assert len(store.list_accounts()) == 1
+    assert len(store.list_wallets()) == 1
