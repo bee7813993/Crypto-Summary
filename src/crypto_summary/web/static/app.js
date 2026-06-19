@@ -1,12 +1,11 @@
 "use strict";
 
-// ---- テーマ・マスク初期化 ----
+// ---- テーマ初期化 ----
+// 金額マスクは描画時に fmtMoney/fmtAmount が maskAmounts を参照するため、
+// ここでクラス付与等の初期化は不要（フラグは宣言時に localStorage から復元）。
 (function initPrefs() {
   if (localStorage.getItem("cs_theme") === "light") {
     document.documentElement.classList.add("light");
-  }
-  if (localStorage.getItem("cs_mask") === "1") {
-    document.body.classList.add("amounts-masked");
   }
 })();
 
@@ -102,21 +101,16 @@ document.getElementById("theme-toggle").addEventListener("click", () => {
 function _syncMaskBtn() {
   const btn = document.getElementById("mask-toggle");
   if (!btn) return;
-  const masked = document.body.classList.contains("amounts-masked");
-  btn.textContent = masked ? "🔒" : "👁";
-  btn.title = masked ? "金額を表示する" : "金額を隠す";
+  btn.textContent = maskAmounts ? "🔒" : "👁";
+  btn.title = maskAmounts ? "金額を表示する" : "金額を隠す";
 }
 
 document.getElementById("mask-toggle").addEventListener("click", () => {
   maskAmounts = !maskAmounts;
-  document.body.classList.toggle("amounts-masked", maskAmounts);
   localStorage.setItem("cs_mask", maskAmounts ? "1" : "0");
   _syncMaskBtn();
-  // グラフのテキスト（Y軸・中央テキスト・ツールチップ）を再描画
-  _histChart?.update();
-  _acctHistChart?.update();
-  _assetHistChart?.update();
-  if (allocChart) allocChart.draw();
+  // HTML の金額表示・グラフのテキストを再描画して一括で反映する。
+  router();
 });
 
 // ---- ページナビゲーション ----
