@@ -492,7 +492,7 @@ def _add_manual_transaction(db_path: str, body: dict[str, Any]) -> dict:
 
 # CSV インポートで提示する取引所・サービスの表示名。
 _EXCHANGE_LABELS: dict[str, str] = {
-    "nexo": "Nexo Pro（自動判別: スポット/入出金/貯蓄）",
+    "nexo": "Nexo Pro（自動判別: スポット/入出金）",
     "nexo_savings": "Nexo（貯蓄口座）",
     "nexo_spot": "Nexo Pro（スポット取引）",
     "nexo_dnw": "Nexo Pro（入出金）",

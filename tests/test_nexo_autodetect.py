@@ -51,25 +51,24 @@ def test_detect_dnw(tmp_path):
     assert all(t.source == "Nexo Pro" for t in txs)
 
 
-def test_detect_savings(tmp_path):
+def test_detect_savings_raises(tmp_path):
+    """貯蓄口座CSVをNexo Proアダプタで読み込むとエラーになる。"""
     p = _write(tmp_path, "nexo_transactions.csv", _SAVINGS)
-    txs = NexoProCsvSource("Nexo Pro").load(p)
-    assert len(txs) == 1
-    assert txs[0].type == TxType.REWARD
+    with pytest.raises(ValueError, match="判別できませんでした"):
+        NexoProCsvSource("Nexo Pro").load(p)
 
 
 def test_all_share_same_source_id(tmp_path):
-    """3種を同じ source_id で取り込むと1口座にまとまる。"""
+    """SpotとDnWを同じ source_id で取り込むと1口座にまとまる。"""
     paths = [
         _write(tmp_path, "s.csv", _SPOT),
         _write(tmp_path, "d.csv", _DNW),
-        _write(tmp_path, "i.csv", _SAVINGS),
     ]
     all_txs = []
     for p in paths:
         all_txs.extend(NexoProCsvSource("Nexo Pro").load(p))
     assert {t.source for t in all_txs} == {"Nexo Pro"}
-    assert len(all_txs) == 4
+    assert len(all_txs) == 3
 
 
 def test_unknown_header_raises(tmp_path):
