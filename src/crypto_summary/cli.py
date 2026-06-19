@@ -1327,4 +1327,8 @@ def web_cmd(ctx: click.Context, host: str, port: int, lan: bool, reload: bool) -
             f"[dim]停止: Ctrl+C[/dim]"
         )
     import uvicorn
-    uvicorn.run(app, host=host, port=port, reload=reload, log_level="warning")
+    # loop="asyncio" で Windows の ProactorEventLoop を避ける。
+    # ProactorEventLoop はブラウザがリクエストをキャンセルした際に
+    # WinError 10054 を大量出力するため SelectorEventLoop を使う。
+    # 他 OS では uvicorn が loop 引数を無視するので影響なし。
+    uvicorn.run(app, host=host, port=port, reload=reload, log_level="warning", loop="asyncio")
