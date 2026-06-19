@@ -22,6 +22,7 @@ COINGECKO_IDS: dict[str, str] = {
     "XRP": "ripple", "ADA": "cardano", "DOT": "polkadot",
     "LINK": "chainlink", "UNI": "uniswap", "AAVE": "aave",
     "NEXO": "nexo", "TRX": "tron", "LPT": "livepeer", "MONA": "monacoin",
+    "TRIA": "tria",
 }
 
 # 法定通貨は CoinGecko の暗号資産IDではなく為替として扱う。
