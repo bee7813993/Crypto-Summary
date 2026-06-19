@@ -384,15 +384,16 @@ const centerTextPlugin = {
     ctx.save();
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
+    const th = chartTheme();
     const shift = amount ? 6 : 0;  // 残高表示があるときは上へ寄せる
-    ctx.fillStyle = "#8b949e";
+    ctx.fillStyle = th.tick;
     ctx.font = "12px -apple-system, 'Noto Sans JP', sans-serif";
     ctx.fillText(title, cx, cy - 11 - shift);
-    ctx.fillStyle = "#e6edf3";
+    ctx.fillStyle = th.tooltipTitle;
     ctx.font = "600 17px -apple-system, 'Noto Sans JP', sans-serif";
     ctx.fillText(sub, cx, cy + 10 - shift);
     if (amount) {
-      ctx.fillStyle = "#8b949e";
+      ctx.fillStyle = th.tick;
       ctx.font = "11px -apple-system, 'Noto Sans JP', sans-serif";
       ctx.fillText(amount, cx, cy + 26 - shift);
     }
