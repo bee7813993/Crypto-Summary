@@ -10,9 +10,13 @@
   BYBIT_API_SECRET : APIシークレット
 
 取得エンドポイント（V5・Unified Trading Account 前提）:
-  /v5/execution/list            — 約定履歴（category=spot 既定）
-  /v5/asset/deposit/query-record  — 入金履歴
-  /v5/asset/withdraw/query-record — 出金履歴
+  /v5/execution/list            — 約定履歴（category=spot or linear）
+  /v5/asset/deposit/query-record  — 入金履歴（category=spot のみ取得）
+  /v5/asset/withdraw/query-record — 出金履歴（category=spot のみ取得）
+
+  入出金はウォレット全体の操作で category に依存しない。
+  spot と linear を同一アカウントで両方登録した場合の重複を防ぐため、
+  入出金は category=spot の登録からのみ取得する。
 
 認証（GET）:
   X-BAPI-API-KEY / X-BAPI-TIMESTAMP(ms) / X-BAPI-RECV-WINDOW / X-BAPI-SIGN
@@ -259,15 +263,18 @@ class BybitApiSource:
             if tx:
                 txs.append(tx)
 
-        for item in self.fetch_deposits(start_time_ms):
-            tx = deposit_to_tx(item, self.source_id)
-            if tx:
-                txs.append(tx)
+        # 入出金はウォレット全体の操作で category に属さない。
+        # spot 登録のみで取得し、linear 等との重複を防ぐ。
+        if self.category == "spot":
+            for item in self.fetch_deposits(start_time_ms):
+                tx = deposit_to_tx(item, self.source_id)
+                if tx:
+                    txs.append(tx)
 
-        for item in self.fetch_withdrawals(start_time_ms):
-            tx = withdrawal_to_tx(item, self.source_id)
-            if tx:
-                txs.append(tx)
+            for item in self.fetch_withdrawals(start_time_ms):
+                tx = withdrawal_to_tx(item, self.source_id)
+                if tx:
+                    txs.append(tx)
 
         self.close()
         return txs
