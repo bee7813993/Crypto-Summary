@@ -18,9 +18,9 @@ let showSmall = false;
 let _histChart = null;
 let _acctHistChart = null;
 let _assetHistChart = null;
-let _dashHistRange = "90d";
-let _acctHistRange = "90d";
-let _assetHistRange = "90d";
+let _dashHistRange = localStorage.getItem("cs_dash_range") || "90d";
+let _acctHistRange = localStorage.getItem("cs_acct_range") || "90d";
+let _assetHistRange = localStorage.getItem("cs_asset_range") || "90d";
 let _acctHistName = null;
 let _assetHistSymbol = null;
 
@@ -535,6 +535,7 @@ async function _fetchHistAndRender(scope, range, canvasId, loadingId, unpricedId
 
 function loadDashHistoryChart(range) {
   _dashHistRange = range || _dashHistRange;
+  localStorage.setItem("cs_dash_range", _dashHistRange);
   _setRangeActive("dash-range-tabs", _dashHistRange);
   return _fetchHistAndRender(
     "total", _dashHistRange,
@@ -547,6 +548,7 @@ function loadAcctHistoryChart(name, range) {
   if (name != null) _acctHistName = name;
   if (range != null) _acctHistRange = range;
   if (!_acctHistName) return;
+  localStorage.setItem("cs_acct_range", _acctHistRange);
   _setRangeActive("acct-range-tabs", _acctHistRange);
   return _fetchHistAndRender(
     `account:${_acctHistName}`, _acctHistRange,
@@ -559,6 +561,7 @@ function loadAssetHistoryChart(symbol, range) {
   if (symbol != null) _assetHistSymbol = symbol;
   if (range != null) _assetHistRange = range;
   if (!_assetHistSymbol) return;
+  localStorage.setItem("cs_asset_range", _assetHistRange);
   _setRangeActive("asset-range-tabs", _assetHistRange);
   return _fetchHistAndRender(
     `asset:${_assetHistSymbol}`, _assetHistRange,
