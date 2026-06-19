@@ -238,6 +238,28 @@ tbody tr:hover { background: var(--bg-elev); }
 .back-btn:hover { border-color: var(--accent); color: var(--accent); }
 .detail-header .page-title { margin-bottom: 0; }
 
+.list-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+.list-header .page-title { margin-bottom: 0; }
+
+.sync-all-result {
+  border-radius: 8px;
+  padding: 10px 14px;
+  margin-bottom: 16px;
+  font-size: 13px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+}
+.sync-all-result.ok { border-color: var(--green); color: var(--green); }
+.sync-all-result.err { border-color: var(--red); color: var(--red); }
+.sync-all-result .sync-detail { color: var(--text-dim); font-size: 12px; margin-top: 4px; }
+
 /* ---- Misc ---- */
 .warnings {
   background: #3a2d00; border: 1px solid #6b5400; color: #f0d77a;

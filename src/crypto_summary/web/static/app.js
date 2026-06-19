@@ -2069,6 +2069,47 @@ document.getElementById("refresh").addEventListener("click", () => {
   router();
 });
 
+// ---- 全同期ボタン（口座別ページ） ----
+
+document.getElementById("sync-all-btn").addEventListener("click", async () => {
+  const btn = document.getElementById("sync-all-btn");
+  const result = document.getElementById("sync-all-result");
+  if (btn.disabled) return;
+  btn.disabled = true;
+  const origText = btn.textContent;
+  btn.textContent = "⟳ 同期中…";
+  result.className = "sync-all-result";
+  result.classList.remove("hidden");
+  result.textContent = "登録済みのAPI口座・ウォレットを同期しています…（チェーンによっては時間がかかります）";
+  try {
+    const res = await fetch("/api/sync-all", { method: "POST" });
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.detail || `HTTP ${res.status}`);
+    if (d.total === 0) {
+      result.className = "sync-all-result";
+      result.textContent = "同期対象の登録（API口座・ウォレット）がありません。";
+    } else {
+      result.className = "sync-all-result " + (d.failed === 0 ? "ok" : "err");
+      let msg = `同期完了: ${d.succeeded}/${d.total} 件成功`;
+      msg += ` ・ 新規 ${d.total_imported} 件取り込み（取得 ${d.total_fetched} 件）`;
+      if (d.failed > 0) {
+        const fails = d.results.filter((r) => !r.ok)
+          .map((r) => `${r.source_id}: ${r.error}`).join(" / ");
+        msg += `<div class="sync-detail">失敗 ${d.failed} 件 → ${escapeHtml(fails)}</div>`;
+      }
+      result.innerHTML = msg;
+    }
+    // 取り込み結果を画面に反映
+    loadAccountsPage();
+  } catch (e) {
+    result.className = "sync-all-result err";
+    result.textContent = "同期に失敗しました: " + e.message;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = origText;
+  }
+});
+
 document.getElementById("toggle-small").addEventListener("click", () => {
   showSmall = !showSmall;
   if (lastAssetsData) {

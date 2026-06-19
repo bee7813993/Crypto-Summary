@@ -465,6 +465,70 @@ def test_wallet_sync_evm_calls_all_chains(client, monkeypatch):
     assert len(scanned_chains) == len(es.CHAIN_IDS)
 
 
+def test_sync_all_empty(client):
+    """登録ゼロなら total=0 で正常終了する。"""
+    r = client.post("/api/sync-all")
+    assert r.status_code == 200
+    d = r.json()
+    assert d["total"] == 0
+    assert d["succeeded"] == 0
+    assert d["failed"] == 0
+
+
+def test_sync_all_syncs_wallets(client, monkeypatch):
+    """登録済みウォレットを一括同期し、結果を集約する。"""
+    monkeypatch.setenv("ETHERSCAN_API_KEY", "DUMMYKEY")
+    client.post("/api/wallets", json={"address": "0x" + "a" * 40, "source_id": "w1"})
+    client.post("/api/wallets", json={"address": "0x" + "b" * 40, "source_id": "w2"})
+
+    class FakeEtherscan:
+        def __init__(self, source_id, address, key, chain_id):
+            pass
+
+        def fetch_all(self, record_gas=True):
+            return []
+
+    import crypto_summary.sources.api.etherscan as es
+    monkeypatch.setattr(es, "EtherscanApiSource", FakeEtherscan)
+
+    r = client.post("/api/sync-all")
+    assert r.status_code == 200
+    d = r.json()
+    assert d["total"] == 2
+    assert d["succeeded"] == 2
+    assert d["failed"] == 0
+    assert {x["source_id"] for x in d["results"]} == {"w1", "w2"}
+
+
+def test_sync_all_continues_on_failure(client, monkeypatch):
+    """1件の同期失敗で全体を止めず、失敗を集計に含める。"""
+    # Solana ウォレットを鍵なしで登録 → 同期は 422 で失敗するはず
+    client.post("/api/wallets", json={"address": "SoLaNaAddrXXXXXXXXXXXX", "source_id": "sol1"})
+    monkeypatch.setenv("ETHERSCAN_API_KEY", "DUMMYKEY")
+    client.post("/api/wallets", json={"address": "0x" + "e" * 40, "source_id": "evm1"})
+    monkeypatch.delenv("HELIUS_API_KEY", raising=False)
+
+    class FakeEtherscan:
+        def __init__(self, source_id, address, key, chain_id):
+            pass
+
+        def fetch_all(self, record_gas=True):
+            return []
+
+    import crypto_summary.sources.api.etherscan as es
+    monkeypatch.setattr(es, "EtherscanApiSource", FakeEtherscan)
+
+    r = client.post("/api/sync-all")
+    assert r.status_code == 200
+    d = r.json()
+    assert d["total"] == 2
+    assert d["succeeded"] == 1
+    assert d["failed"] == 1
+    failed = next(x for x in d["results"] if not x["ok"])
+    assert failed["source_id"] == "sol1"
+    assert "error" in failed
+
+
 # ---- スパムトークンフィルター ----
 
 @pytest.fixture

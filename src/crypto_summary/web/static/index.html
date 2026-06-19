@@ -142,7 +142,11 @@
       <!-- 口座別ページ -->
       <div id="page-accounts" class="page hidden">
         <div id="accounts-list-view">
-          <h1 class="page-title">口座別</h1>
+          <div class="list-header">
+            <h1 class="page-title">口座別</h1>
+            <button id="sync-all-btn" class="action-btn" title="登録済みのAPI口座・ウォレットをすべて同期">⟳ 全同期</button>
+          </div>
+          <div id="sync-all-result" class="sync-all-result hidden"></div>
           <section class="card">
             <p class="card-hint">クリックで資産内訳 / 取引履歴</p>
             <div class="table-wrap">

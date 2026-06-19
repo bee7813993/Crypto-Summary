@@ -971,6 +971,56 @@ def _sync_wallet(db_path: str, source_id: str) -> dict:
     }
 
 
+def _sync_all(db_path: str) -> dict:
+    """登録済みの全 API 口座・全ウォレットを順に同期する。
+
+    1件の失敗で全体を止めず、各ソースの結果（成功/失敗）を集約して返す。
+    """
+    store = SecretStore(db_path)
+    results: list[dict] = []
+
+    def _run(source_id: str, kind: str, fn) -> None:
+        try:
+            r = fn(db_path, source_id)
+            results.append({
+                "source_id": source_id,
+                "kind": kind,
+                "ok": True,
+                "fetched": r.get("fetched", 0),
+                "imported": r.get("imported", 0),
+            })
+        except HTTPException as e:
+            results.append({
+                "source_id": source_id, "kind": kind,
+                "ok": False, "error": str(e.detail),
+            })
+        except Exception as e:  # noqa: BLE001 - 1件失敗でも他は継続
+            results.append({
+                "source_id": source_id, "kind": kind,
+                "ok": False, "error": str(e),
+            })
+
+    for acct in store.list_accounts():
+        _run(acct["source_id"], "api", _sync_account_api)
+    for wallet in store.list_wallets():
+        _run(wallet["source_id"], "wallet", _sync_wallet)
+
+    succeeded = [r for r in results if r["ok"]]
+    failed = [r for r in results if not r["ok"]]
+    total_imported = sum(r.get("imported", 0) for r in succeeded)
+    total_fetched = sum(r.get("fetched", 0) for r in succeeded)
+
+    return {
+        "ok": True,
+        "total": len(results),
+        "succeeded": len(succeeded),
+        "failed": len(failed),
+        "total_fetched": total_fetched,
+        "total_imported": total_imported,
+        "results": results,
+    }
+
+
 _RANGE_DAYS: dict[str, int | None] = {
     "7d": 7, "30d": 30, "90d": 90, "1y": 365, "all": None,
 }
@@ -1252,6 +1302,10 @@ def create_app(db_path: str = "ledger.db") -> FastAPI:
     @app.post("/api/wallets/{source_id}/sync")
     def sync_wallet(source_id: str) -> dict:
         return _sync_wallet(db_path, source_id)
+
+    @app.post("/api/sync-all")
+    def sync_all() -> dict:
+        return _sync_all(db_path)
 
     @app.get("/api/account-groups")
     def get_account_groups() -> dict:
