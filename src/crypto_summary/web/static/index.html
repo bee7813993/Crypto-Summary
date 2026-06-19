@@ -18,24 +18,24 @@
 
       <nav class="nav">
         <a class="nav-link active" data-page="dashboard" href="#dashboard">
-          <span class="nav-icon">⊞</span><span>ダッシュボード</span>
+          <span class="nav-icon">⊞</span><span data-i18n="nav.dashboard">ダッシュボード</span>
         </a>
         <a class="nav-link" data-page="accounts" href="#accounts">
-          <span class="nav-icon">◫</span><span>口座別</span>
+          <span class="nav-icon">◫</span><span data-i18n="nav.accounts">口座別</span>
         </a>
         <a class="nav-link" data-page="assets" href="#assets">
-          <span class="nav-icon">◎</span><span>資産別</span>
+          <span class="nav-icon">◎</span><span data-i18n="nav.assets">資産別</span>
         </a>
         <a class="nav-link" data-page="transactions" href="#transactions">
-          <span class="nav-icon">≡</span><span>取引履歴</span>
+          <span class="nav-icon">≡</span><span data-i18n="nav.transactions">取引履歴</span>
         </a>
         <a class="nav-link" data-page="import" href="#import">
-          <span class="nav-icon">↑</span><span>インポート</span>
+          <span class="nav-icon">↑</span><span data-i18n="nav.import">インポート</span>
         </a>
       </nav>
 
       <div class="sidebar-controls">
-        <label for="currency">通貨</label>
+        <label for="currency" data-i18n="label.currency">通貨</label>
         <div class="controls-row">
           <select id="currency">
             <option value="USD">USD</option>
@@ -43,9 +43,10 @@
             <option value="EUR">EUR</option>
             <option value="GBP">GBP</option>
           </select>
-          <button id="refresh" title="再取得">⟳</button>
+          <button id="refresh" data-i18n-title="btn.refresh" title="再取得">⟳</button>
           <button id="theme-toggle" class="icon-btn" title="ライト／ダークモード切替">☀</button>
           <button id="mask-toggle" class="icon-btn" title="金額の表示／非表示">👁</button>
+          <button id="lang-toggle" class="icon-btn" title="日本語 / English">EN</button>
         </div>
       </div>
     </aside>
@@ -56,7 +57,7 @@
       <!-- ダッシュボードページ -->
       <div id="page-dashboard" class="page">
         <section class="hero">
-          <div class="hero-label">総資産評価額</div>
+          <div class="hero-label" data-i18n="dash.totalValue">総資産評価額</div>
           <div class="hero-value" id="total-value">—</div>
           <div class="hero-sub" id="total-sub">読み込み中…</div>
         </section>
@@ -66,7 +67,7 @@
         <!-- 推移グラフ（ダッシュボード：総資産） -->
         <section class="card history-card">
           <div class="history-header">
-            <h2>資産推移</h2>
+            <h2 data-i18n="dash.valueHistory">資産推移</h2>
             <div class="range-tabs" id="dash-range-tabs">
               <button class="range-tab" data-range="7d">7D</button>
               <button class="range-tab" data-range="30d">30D</button>
@@ -77,15 +78,15 @@
           </div>
           <div class="history-chart-wrap">
             <canvas id="history-chart"></canvas>
-            <p class="history-empty hidden">取引データがありません</p>
+            <p class="history-empty hidden" data-i18n="label.noTxData">取引データがありません</p>
           </div>
-          <div id="history-loading" class="loading hidden">読み込み中…</div>
+          <div id="history-loading" class="loading hidden" data-i18n="label.loading">読み込み中…</div>
           <div id="history-unpriced" class="history-unpriced hidden"></div>
         </section>
 
         <div class="grid">
           <section class="card chart-card">
-            <h2>資産構成</h2>
+            <h2 data-i18n="dash.assetAlloc">資産構成</h2>
             <div class="chart-wrap">
               <canvas id="alloc-chart"></canvas>
             </div>
@@ -93,12 +94,17 @@
           </section>
 
           <section class="card">
-            <h2>主な口座</h2>
-            <p class="card-hint">評価額の大きい順・上位のみ（クリックで内訳 / 履歴）</p>
+            <h2 data-i18n="dash.topAccounts">主な口座</h2>
+            <p class="card-hint" data-i18n="dash.topAccountsHint">評価額の大きい順・上位のみ（クリックで内訳 / 履歴）</p>
             <div class="table-wrap">
               <table id="sources-table">
                 <thead>
-                  <tr><th>口座</th><th class="num">取引数</th><th class="num">評価額</th><th></th></tr>
+                  <tr>
+                    <th data-i18n="th.account">口座</th>
+                    <th class="num" data-i18n="th.txCount">取引数</th>
+                    <th class="num" data-i18n="th.value">評価額</th>
+                    <th></th>
+                  </tr>
                 </thead>
                 <tbody></tbody>
               </table>
@@ -110,17 +116,17 @@
         </div>
 
         <section class="card">
-          <h2>主な資産</h2>
-          <p class="card-hint">評価額の大きい順・上位のみ（クリックで内訳 / 履歴）</p>
+          <h2 data-i18n="dash.topAssets">主な資産</h2>
+          <p class="card-hint" data-i18n="dash.topAssetsHint">評価額の大きい順・上位のみ（クリックで内訳 / 履歴）</p>
           <div class="table-wrap">
             <table id="assets-table">
               <thead>
                 <tr>
-                  <th>資産</th>
-                  <th class="num">残高</th>
-                  <th class="num">単価</th>
-                  <th class="num">評価額</th>
-                  <th class="num">構成比</th>
+                  <th data-i18n="th.asset">資産</th>
+                  <th class="num" data-i18n="th.balance">残高</th>
+                  <th class="num" data-i18n="th.price">単価</th>
+                  <th class="num" data-i18n="th.value">評価額</th>
+                  <th class="num" data-i18n="th.alloc">構成比</th>
                   <th></th>
                 </tr>
               </thead>
@@ -135,7 +141,7 @@
         <footer class="footer">
           <span id="generated">—</span>
           <span class="dot">·</span>
-          <span>価格: CoinGecko（5分キャッシュ）</span>
+          <span data-i18n="dash.priceSource">価格: CoinGecko（5分キャッシュ）</span>
         </footer>
       </div>
 
@@ -143,20 +149,20 @@
       <div id="page-accounts" class="page hidden">
         <div id="accounts-list-view">
           <div class="list-header">
-            <h1 class="page-title">口座別</h1>
-            <button id="sync-all-btn" class="action-btn" title="登録済みのAPI口座・ウォレットをすべて同期">⟳ 全同期</button>
+            <h1 class="page-title" data-i18n="nav.accounts">口座別</h1>
+            <button id="sync-all-btn" class="action-btn" data-i18n="btn.syncAll" title="登録済みのAPI口座・ウォレットをすべて同期">⟳ 全同期</button>
           </div>
           <div id="sync-all-result" class="sync-all-result hidden"></div>
           <section class="card">
-            <p class="card-hint">クリックで資産内訳 / 取引履歴</p>
+            <p class="card-hint" data-i18n="label.accountsHint">クリックで資産内訳 / 取引履歴</p>
             <div class="table-wrap">
               <table id="accounts-table">
                 <thead>
                   <tr>
-                    <th>口座</th>
-                    <th class="num">取引数</th>
-                    <th class="num">資産数</th>
-                    <th class="num">評価額</th>
+                    <th data-i18n="th.account">口座</th>
+                    <th class="num" data-i18n="th.txCount">取引数</th>
+                    <th class="num" data-i18n="th.assetCount">資産数</th>
+                    <th class="num" data-i18n="th.value">評価額</th>
                     <th></th>
                   </tr>
                 </thead>
@@ -168,10 +174,10 @@
 
         <div id="account-detail-view" class="hidden">
           <div class="detail-header">
-            <button id="account-back" class="back-btn">← 口座一覧</button>
+            <button id="account-back" class="back-btn" data-i18n="btn.backToAccounts">← 口座一覧</button>
             <h1 class="page-title" id="account-detail-name"></h1>
-            <button id="account-tx-link" class="action-btn">≡ この口座の取引履歴</button>
-            <button id="account-settings-btn" class="action-btn">⚙ 設定</button>
+            <button id="account-tx-link" class="action-btn" data-i18n="btn.accountTxHistory">≡ この口座の取引履歴</button>
+            <button id="account-settings-btn" class="action-btn" data-i18n="btn.settings">⚙ 設定</button>
           </div>
 
           <!-- ウォレットアドレス情報 -->
@@ -180,7 +186,7 @@
           <!-- 推移グラフ（口座詳細） -->
           <section class="card history-card">
             <div class="history-header">
-              <h2>評価額推移</h2>
+              <h2 data-i18n="label.valueHistorySection">評価額推移</h2>
               <div class="range-tabs" id="acct-range-tabs">
                 <button class="range-tab" data-range="7d">7D</button>
                 <button class="range-tab" data-range="30d">30D</button>
@@ -191,45 +197,45 @@
             </div>
             <div class="history-chart-wrap">
               <canvas id="acct-history-chart"></canvas>
-              <p class="history-empty hidden">取引データがありません</p>
+              <p class="history-empty hidden" data-i18n="label.noTxData">取引データがありません</p>
             </div>
-            <div id="acct-history-loading" class="loading hidden">読み込み中…</div>
+            <div id="acct-history-loading" class="loading hidden" data-i18n="label.loading">読み込み中…</div>
             <div id="acct-history-unpriced" class="history-unpriced hidden"></div>
           </section>
 
           <div id="account-settings-panel" class="settings-panel hidden">
-            <h3 class="settings-title">口座設定</h3>
+            <h3 class="settings-title" data-i18n="settings.title">口座設定</h3>
             <div class="settings-row">
-              <label class="settings-label">表示名</label>
+              <label class="settings-label" data-i18n="settings.displayName">表示名</label>
               <input id="settings-display-name" class="settings-input" type="text" />
             </div>
             <div class="settings-row">
-              <label class="settings-label">この口座のソースID</label>
+              <label class="settings-label" data-i18n="settings.sourceIds">この口座のソースID</label>
               <div id="settings-source-ids" class="source-ids-wrap"></div>
-              <p class="settings-hint">チェックを外すとこの口座から外れます（単独の口座になります）</p>
+              <p class="settings-hint" data-i18n="settings.sourceIdsHint">チェックを外すとこの口座から外れます（単独の口座になります）</p>
             </div>
             <div class="settings-row">
-              <label class="settings-label">他のソースID</label>
+              <label class="settings-label" data-i18n="settings.otherSourceIds">他のソースID</label>
               <div id="settings-unassigned-ids" class="source-ids-wrap"></div>
-              <p class="settings-hint">チェックするとこの口座に統合します（複数をまとめられます）</p>
+              <p class="settings-hint" data-i18n="settings.otherSourceIdsHint">チェックするとこの口座に統合します（複数をまとめられます）</p>
             </div>
             <div class="settings-actions">
-              <button id="settings-save" class="settings-save-btn">保存</button>
-              <button id="settings-cancel" class="link-btn">キャンセル</button>
+              <button id="settings-save" class="settings-save-btn" data-i18n="btn.save">保存</button>
+              <button id="settings-cancel" class="link-btn" data-i18n="btn.cancel">キャンセル</button>
             </div>
             <div id="settings-result" class="settings-result hidden"></div>
           </div>
 
           <section class="card">
-            <p class="card-hint">クリックでこの口座内の資産の取引履歴</p>
+            <p class="card-hint" data-i18n="label.accountDetailHint">クリックでこの口座内の資産の取引履歴</p>
             <div class="table-wrap">
               <table id="account-assets-table">
                 <thead>
                   <tr>
-                    <th>資産</th>
-                    <th class="num">残高</th>
-                    <th class="num">単価</th>
-                    <th class="num">評価額</th>
+                    <th data-i18n="th.asset">資産</th>
+                    <th class="num" data-i18n="th.balance">残高</th>
+                    <th class="num" data-i18n="th.price">単価</th>
+                    <th class="num" data-i18n="th.value">評価額</th>
                     <th></th>
                   </tr>
                 </thead>
@@ -237,25 +243,25 @@
               </table>
             </div>
           </section>
-          <div id="account-detail-loading" class="loading hidden">読み込み中…</div>
+          <div id="account-detail-loading" class="loading hidden" data-i18n="label.loading">読み込み中…</div>
         </div>
       </div>
 
       <!-- 資産別ページ -->
       <div id="page-assets" class="page hidden">
         <div id="assets-list-view">
-          <h1 class="page-title">資産別</h1>
+          <h1 class="page-title" data-i18n="nav.assets">資産別</h1>
           <section class="card">
-            <p class="card-hint">クリックで口座別内訳 / 取引履歴</p>
+            <p class="card-hint" data-i18n="label.assetsHint">クリックで口座別内訳 / 取引履歴</p>
             <div class="table-wrap">
               <table id="all-assets-table">
                 <thead>
                   <tr>
-                    <th>資産</th>
-                    <th class="num">残高</th>
-                    <th class="num">単価</th>
-                    <th class="num">評価額</th>
-                    <th class="num">構成比</th>
+                    <th data-i18n="th.asset">資産</th>
+                    <th class="num" data-i18n="th.balance">残高</th>
+                    <th class="num" data-i18n="th.price">単価</th>
+                    <th class="num" data-i18n="th.value">評価額</th>
+                    <th class="num" data-i18n="th.alloc">構成比</th>
                     <th></th>
                   </tr>
                 </thead>
@@ -271,15 +277,15 @@
 
         <div id="asset-detail-view" class="hidden">
           <div class="detail-header">
-            <button id="asset-back" class="back-btn">← 資産一覧</button>
+            <button id="asset-back" class="back-btn" data-i18n="btn.backToAssets">← 資産一覧</button>
             <h1 class="page-title" id="asset-detail-name"></h1>
-            <button id="asset-tx-link" class="action-btn">≡ この資産の取引履歴</button>
+            <button id="asset-tx-link" class="action-btn" data-i18n="btn.assetTxHistory">≡ この資産の取引履歴</button>
           </div>
 
           <!-- 推移グラフ（資産詳細） -->
           <section class="card history-card">
             <div class="history-header">
-              <h2>評価額推移</h2>
+              <h2 data-i18n="label.valueHistorySection">評価額推移</h2>
               <div class="range-tabs" id="asset-range-tabs">
                 <button class="range-tab" data-range="7d">7D</button>
                 <button class="range-tab" data-range="30d">30D</button>
@@ -290,21 +296,21 @@
             </div>
             <div class="history-chart-wrap">
               <canvas id="asset-history-chart"></canvas>
-              <p class="history-empty hidden">取引データがありません</p>
+              <p class="history-empty hidden" data-i18n="label.noTxData">取引データがありません</p>
             </div>
-            <div id="asset-history-loading" class="loading hidden">読み込み中…</div>
+            <div id="asset-history-loading" class="loading hidden" data-i18n="label.loading">読み込み中…</div>
             <div id="asset-history-unpriced" class="history-unpriced hidden"></div>
           </section>
 
           <section class="card">
-            <p class="card-hint">クリックでこの口座の保有資産の取引履歴</p>
+            <p class="card-hint" data-i18n="label.accountDetailHint">クリックでこの口座内の資産の取引履歴</p>
             <div class="table-wrap">
               <table id="asset-accounts-table">
                 <thead>
                   <tr>
-                    <th>口座</th>
-                    <th class="num">残高</th>
-                    <th class="num">評価額</th>
+                    <th data-i18n="th.account">口座</th>
+                    <th class="num" data-i18n="th.balance">残高</th>
+                    <th class="num" data-i18n="th.value">評価額</th>
                     <th></th>
                   </tr>
                 </thead>
@@ -312,96 +318,96 @@
               </table>
             </div>
           </section>
-          <div id="asset-detail-loading" class="loading hidden">読み込み中…</div>
+          <div id="asset-detail-loading" class="loading hidden" data-i18n="label.loading">読み込み中…</div>
         </div>
       </div>
 
       <!-- 取引履歴ページ -->
       <div id="page-transactions" class="page hidden">
         <div class="tx-header">
-          <h1 class="page-title">取引履歴</h1>
-          <button id="tx-add-btn" class="action-btn">＋ 手動追加</button>
+          <h1 class="page-title" data-i18n="nav.transactions">取引履歴</h1>
+          <button id="tx-add-btn" class="action-btn" data-i18n="btn.manualAdd">＋ 手動追加</button>
           <div class="tx-export">
             <select id="tx-export-format" class="filter-date" title="エクスポート形式"></select>
-            <button id="tx-export-btn" class="action-btn">⬇ CSVエクスポート</button>
+            <button id="tx-export-btn" class="action-btn" data-i18n="btn.export">⬇ CSVエクスポート</button>
           </div>
         </div>
         <div id="tx-export-result" class="settings-result hidden"></div>
 
         <div class="tx-filters">
           <div class="filter-group">
-            <label class="filter-label">口座</label>
-            <select id="tx-filter-account"><option value="">すべての口座</option></select>
+            <label class="filter-label" data-i18n="th.account">口座</label>
+            <select id="tx-filter-account"><option value="" data-i18n="label.allAccounts">すべての口座</option></select>
           </div>
           <div class="filter-group">
-            <label class="filter-label">資産</label>
-            <select id="tx-filter-asset"><option value="">すべての資産</option></select>
+            <label class="filter-label" data-i18n="th.asset">資産</label>
+            <select id="tx-filter-asset"><option value="" data-i18n="label.allAssets">すべての資産</option></select>
           </div>
           <div class="filter-group">
-            <label class="filter-label">開始日</label>
+            <label class="filter-label" data-i18n="filter.from">開始日</label>
             <input type="date" id="tx-filter-since" class="filter-date" />
           </div>
           <div class="filter-group">
-            <label class="filter-label">終了日</label>
+            <label class="filter-label" data-i18n="filter.to">終了日</label>
             <input type="date" id="tx-filter-until" class="filter-date" />
           </div>
-          <button id="tx-filter-clear" class="link-btn">絞り込みを解除</button>
+          <button id="tx-filter-clear" class="link-btn" data-i18n="btn.clearFilter">絞り込みを解除</button>
         </div>
 
         <div id="tx-active-filter" class="tx-active-filter hidden"></div>
 
         <!-- 手動追加フォーム -->
         <div id="tx-add-form" class="settings-panel hidden">
-          <h3 class="settings-title">取引を手動追加</h3>
+          <h3 class="settings-title" data-i18n="manual.title">取引を手動追加</h3>
           <div class="manual-add-grid">
             <div class="settings-row">
-              <label class="settings-label">口座 *</label>
+              <label class="settings-label" data-i18n="manual.account">口座 *</label>
               <select id="manual-account" class="settings-input"></select>
             </div>
             <div class="settings-row">
-              <label class="settings-label">日時 *</label>
+              <label class="settings-label" data-i18n="manual.datetime">日時 *</label>
               <input id="manual-timestamp" class="settings-input" type="datetime-local" />
             </div>
             <div class="settings-row">
-              <label class="settings-label">種別 *</label>
+              <label class="settings-label" data-i18n="manual.type">種別 *</label>
               <select id="manual-type" class="settings-input">
-                <option value="deposit">入金</option>
-                <option value="withdraw">出金</option>
-                <option value="trade">売買</option>
-                <option value="fee">手数料</option>
-                <option value="reward">報酬</option>
-                <option value="transfer">振替</option>
+                <option value="deposit" data-i18n="manual.deposit">入金</option>
+                <option value="withdraw" data-i18n="manual.withdrawal">出金</option>
+                <option value="trade" data-i18n="manual.trade">売買</option>
+                <option value="fee" data-i18n="manual.fee">手数料</option>
+                <option value="reward" data-i18n="manual.reward">報酬</option>
+                <option value="transfer" data-i18n="manual.transfer">振替</option>
               </select>
             </div>
             <div class="settings-row">
-              <label class="settings-label">受取資産</label>
+              <label class="settings-label" data-i18n="manual.receivedAsset">受取資産</label>
               <div class="input-pair">
                 <input id="manual-recv-asset" class="settings-input" type="text" placeholder="例: BTC" />
-                <input id="manual-recv-amount" class="settings-input" type="number" step="any" placeholder="数量" />
+                <input id="manual-recv-amount" class="settings-input" type="number" step="any" data-i18n-placeholder="manual.amount" placeholder="数量" />
               </div>
             </div>
             <div class="settings-row">
-              <label class="settings-label">送付資産</label>
+              <label class="settings-label" data-i18n="manual.sentAsset">送付資産</label>
               <div class="input-pair">
                 <input id="manual-sent-asset" class="settings-input" type="text" placeholder="例: ETH" />
-                <input id="manual-sent-amount" class="settings-input" type="number" step="any" placeholder="数量" />
+                <input id="manual-sent-amount" class="settings-input" type="number" step="any" data-i18n-placeholder="manual.amount" placeholder="数量" />
               </div>
             </div>
             <div class="settings-row">
-              <label class="settings-label">手数料</label>
+              <label class="settings-label" data-i18n="manual.feeAsset">手数料</label>
               <div class="input-pair">
                 <input id="manual-fee-asset" class="settings-input" type="text" placeholder="例: ETH" />
-                <input id="manual-fee-amount" class="settings-input" type="number" step="any" placeholder="数量" />
+                <input id="manual-fee-amount" class="settings-input" type="number" step="any" data-i18n-placeholder="manual.amount" placeholder="数量" />
               </div>
             </div>
             <div class="settings-row">
-              <label class="settings-label">メモ</label>
+              <label class="settings-label" data-i18n="manual.memo">メモ</label>
               <input id="manual-label" class="settings-input" type="text" placeholder="任意のメモ" />
             </div>
           </div>
           <div class="settings-actions">
-            <button id="manual-save" class="settings-save-btn">追加</button>
-            <button id="manual-cancel" class="link-btn">キャンセル</button>
+            <button id="manual-save" class="settings-save-btn" data-i18n="btn.add">追加</button>
+            <button id="manual-cancel" class="link-btn" data-i18n="btn.cancel">キャンセル</button>
           </div>
           <div id="manual-result" class="settings-result hidden"></div>
         </div>
@@ -411,21 +417,21 @@
             <table id="tx-table">
               <thead>
                 <tr>
-                  <th>日時</th>
-                  <th>口座</th>
-                  <th>種別</th>
-                  <th>受取</th>
-                  <th>送付</th>
-                  <th>手数料</th>
-                  <th class="num">取引後残高</th>
+                  <th data-i18n="th.datetime">日時</th>
+                  <th data-i18n="th.account">口座</th>
+                  <th data-i18n="th.type">種別</th>
+                  <th data-i18n="th.received">受取</th>
+                  <th data-i18n="th.sent">送付</th>
+                  <th data-i18n="th.fee">手数料</th>
+                  <th class="num" data-i18n="th.afterBalance">取引後残高</th>
                   <th></th>
                 </tr>
               </thead>
               <tbody></tbody>
             </table>
           </div>
-          <div id="tx-loading" class="loading hidden">読み込み中…</div>
-          <div id="tx-empty" class="loading hidden">取引履歴がありません</div>
+          <div id="tx-loading" class="loading hidden" data-i18n="label.loading">読み込み中…</div>
+          <div id="tx-empty" class="loading hidden" data-i18n="label.noTxFound">取引履歴がありません</div>
         </section>
 
         <div class="tx-pagination" id="tx-pagination"></div>
@@ -433,34 +439,34 @@
 
       <!-- インポートページ -->
       <div id="page-import" class="page hidden">
-        <h1 class="page-title">インポート</h1>
+        <h1 class="page-title" data-i18n="nav.import">インポート</h1>
 
         <!-- 新規口座追加 -->
         <section class="card import-section">
-          <h2>新規口座を追加</h2>
+          <h2 data-i18n="manual.newAccount">新規口座を追加</h2>
           <div class="import-tabs">
-            <button class="import-tab active" data-tab="csv">📄 CSV インポート</button>
-            <button class="import-tab" data-tab="api">🔑 取引所 API</button>
-            <button class="import-tab" data-tab="wallet">💼 ウォレットアドレス</button>
+            <button class="import-tab active" data-tab="csv" data-i18n="import.csvTab">📄 CSV インポート</button>
+            <button class="import-tab" data-tab="api" data-i18n="import.apiTab">🔑 取引所 API</button>
+            <button class="import-tab" data-tab="wallet" data-i18n="import.walletTab">💼 ウォレットアドレス</button>
           </div>
 
           <!-- CSV タブ -->
           <div id="import-tab-csv" class="import-tab-content">
             <div class="settings-row">
-              <label class="settings-label">取引所・サービス</label>
+              <label class="settings-label" data-i18n="import.exchange">取引所・サービス</label>
               <select id="import-csv-exchange" class="settings-input" style="max-width:300px"></select>
             </div>
             <div class="settings-row">
-              <label class="settings-label">CSVファイル</label>
+              <label class="settings-label" data-i18n="import.csvFile">CSVファイル</label>
               <input id="import-csv-file" type="file" accept=".csv" class="file-input" />
             </div>
             <div class="settings-row">
-              <label class="settings-label">ソースID（任意）</label>
-              <input id="import-csv-account" class="settings-input" type="text" placeholder="未入力の場合は取引所名を使用" style="max-width:300px" />
-              <p class="settings-hint">既存口座に追加する場合はその口座のソースIDを指定してください。</p>
+              <label class="settings-label" data-i18n="import.sourceId">ソースID（任意）</label>
+              <input id="import-csv-account" class="settings-input" type="text" data-i18n-placeholder="import.sourceIdHint" placeholder="未入力の場合は取引所名を使用" style="max-width:300px" />
+              <p class="settings-hint" data-i18n="import.sourceIdHint2">既存口座に追加する場合はその口座のソースIDを指定してください。</p>
             </div>
             <div class="settings-actions">
-              <button id="import-csv-btn" class="settings-save-btn">インポート</button>
+              <button id="import-csv-btn" class="settings-save-btn" data-i18n="btn.import">インポート</button>
             </div>
             <div id="import-csv-result" class="settings-result hidden"></div>
           </div>
@@ -475,50 +481,50 @@
             </div>
 
             <div class="settings-row">
-              <label class="settings-label">取引所</label>
+              <label class="settings-label" data-i18n="import.apiExchange">取引所</label>
               <select id="import-api-exchange" class="settings-input" style="max-width:240px">
                 <option value="bybit">Bybit</option>
               </select>
             </div>
             <div class="settings-row">
-              <label class="settings-label">ソースID *</label>
+              <label class="settings-label" data-i18n="import.apiSourceId">ソースID *</label>
               <input id="import-api-source-id" class="settings-input" type="text"
-                placeholder="例: mybybit" style="max-width:240px" />
-              <p class="settings-hint">口座を識別する任意の名前（既存ソースIDを指定すると追加インポートになります）</p>
+                data-i18n-placeholder="import.apiSourceIdExample" placeholder="例: mybybit" style="max-width:240px" />
+              <p class="settings-hint" data-i18n="import.apiSourceIdHint">口座を識別する任意の名前（既存ソースIDを指定すると追加インポートになります）</p>
             </div>
             <div class="settings-row">
-              <label class="settings-label">API Key *</label>
+              <label class="settings-label" data-i18n="import.apiKey">API Key *</label>
               <input id="import-api-key" class="settings-input" type="password"
-                placeholder="APIキーを入力" style="max-width:380px;font-family:monospace" autocomplete="off" />
+                data-i18n-placeholder="import.apiKeyPlaceholder" placeholder="APIキーを入力" style="max-width:380px;font-family:monospace" autocomplete="off" />
             </div>
             <div class="settings-row">
-              <label class="settings-label">API Secret *</label>
+              <label class="settings-label" data-i18n="import.apiSecret">API Secret *</label>
               <input id="import-api-secret" class="settings-input" type="password"
-                placeholder="APIシークレットを入力" style="max-width:380px;font-family:monospace" autocomplete="off" />
+                data-i18n-placeholder="import.apiSecretPlaceholder" placeholder="APIシークレットを入力" style="max-width:380px;font-family:monospace" autocomplete="off" />
             </div>
             <div class="settings-row" id="import-api-category-row">
-              <label class="settings-label">カテゴリ</label>
+              <label class="settings-label" data-i18n="import.category">カテゴリ</label>
               <select id="import-api-category" class="settings-input" style="max-width:200px">
-                <option value="all" selected>Spot + Linear（両方）</option>
-                <option value="spot">Spot のみ（現物）</option>
-                <option value="linear">Linear のみ（無期限先物）</option>
+                <option value="all" selected data-i18n="import.categoryAll">Spot + Linear（両方）</option>
+                <option value="spot" data-i18n="import.categorySpot">Spot のみ（現物）</option>
+                <option value="linear" data-i18n="import.categoryLinear">Linear のみ（無期限先物）</option>
               </select>
             </div>
             <div class="settings-actions">
-              <button id="import-api-register-btn" class="settings-save-btn">登録して暗号化保存</button>
+              <button id="import-api-register-btn" class="settings-save-btn" data-i18n="btn.registerAndSave">登録して暗号化保存</button>
             </div>
             <div id="import-api-result" class="settings-result hidden"></div>
 
-            <h3 style="margin:24px 0 8px;font-size:14px;color:#8b949e;border-top:1px solid #30363d;padding-top:16px">登録済み API 口座</h3>
+            <h3 style="margin:24px 0 8px;font-size:14px;color:#8b949e;border-top:1px solid #30363d;padding-top:16px" data-i18n="label.registeredApis">登録済み API 口座</h3>
             <div class="table-wrap">
               <table id="import-api-accounts-table">
                 <thead>
                   <tr>
-                    <th>ソースID</th>
-                    <th>取引所</th>
-                    <th>カテゴリ</th>
-                    <th>登録日時</th>
-                    <th>操作</th>
+                    <th data-i18n="th.sourceId">ソースID</th>
+                    <th data-i18n="th.exchange">取引所</th>
+                    <th data-i18n="label.currency">カテゴリ</th>
+                    <th data-i18n="th.registeredAt">登録日時</th>
+                    <th data-i18n="th.action">操作</th>
                   </tr>
                 </thead>
                 <tbody></tbody>
@@ -534,47 +540,47 @@
               スキャン用 API キーは読み取り専用です（出金権限の概念はありません）。
             </div>
             <div class="settings-row">
-              <label class="settings-label">ウォレットアドレス *</label>
+              <label class="settings-label" data-i18n="import.walletAddress">ウォレットアドレス *</label>
               <input id="import-wallet-address" class="settings-input" type="text"
-                placeholder="0x... または Solana アドレス" style="max-width:420px; font-family:monospace" />
+                data-i18n-placeholder="import.walletAddressPlaceholder" placeholder="0x... または Solana アドレス" style="max-width:420px; font-family:monospace" />
             </div>
             <div class="settings-row">
-              <label class="settings-label">ソースID（任意）</label>
+              <label class="settings-label" data-i18n="import.walletSourceId">ソースID（任意）</label>
               <input id="import-wallet-name" class="settings-input" type="text"
-                placeholder="例: my_wallet（未入力なら自動生成）" style="max-width:240px" />
-              <p class="settings-hint">口座を識別する任意の名前。未入力ならアドレスから自動生成します。</p>
+                data-i18n-placeholder="import.walletSourceIdExample" placeholder="例: my_wallet（未入力なら自動生成）" style="max-width:240px" />
+              <p class="settings-hint" data-i18n="import.walletSourceIdHint">口座を識別する任意の名前。未入力ならアドレスから自動生成します。</p>
             </div>
             <div class="import-note">
-              <strong>対応チェーン（アドレスから自動判定）</strong><br>
-              EVM（0x...）: Ethereum / Arbitrum / Polygon / Base / Optimism を全スキャンしてマージ<br>
-              Solana: Helius API でスキャン<br>
-              取引のないチェーンは履歴に含みません。
+              <strong data-i18n="import.chainHint">対応チェーン（アドレスから自動判定）</strong><br>
+              <span data-i18n="import.chainEvmHint">EVM（0x...）: Ethereum / Arbitrum / Polygon / Base / Optimism を全スキャンしてマージ</span><br>
+              <span data-i18n="import.chainSolanaHint">Solana: Helius API でスキャン</span><br>
+              <span data-i18n="import.chainNoTxHint">取引のないチェーンは履歴に含みません。</span>
             </div>
             <div class="settings-row">
-              <label class="settings-label">Etherscan API Key（EVM 用・任意）</label>
+              <label class="settings-label" data-i18n="import.etherscanKey">Etherscan API Key（EVM 用・任意）</label>
               <input id="import-wallet-etherscan" class="settings-input" type="password"
-                placeholder="環境変数 ETHERSCAN_API_KEY でも可" style="max-width:300px" autocomplete="off" />
+                data-i18n-placeholder="import.etherscanKeyHint" placeholder="環境変数 ETHERSCAN_API_KEY でも可" style="max-width:300px" autocomplete="off" />
             </div>
             <div class="settings-row">
-              <label class="settings-label">Helius API Key（Solana 用・任意）</label>
+              <label class="settings-label" data-i18n="import.heliusKey">Helius API Key（Solana 用・任意）</label>
               <input id="import-wallet-helius" class="settings-input" type="password"
-                placeholder="環境変数 HELIUS_API_KEY でも可" style="max-width:300px" autocomplete="off" />
+                data-i18n-placeholder="import.heliusKeyHint" placeholder="環境変数 HELIUS_API_KEY でも可" style="max-width:300px" autocomplete="off" />
             </div>
             <div class="settings-actions">
-              <button id="import-wallet-btn" class="settings-save-btn">登録</button>
+              <button id="import-wallet-btn" class="settings-save-btn" data-i18n="btn.register">登録</button>
             </div>
             <div id="import-wallet-result" class="settings-result hidden"></div>
 
-            <h3 style="margin:24px 0 8px;font-size:14px;color:#8b949e;border-top:1px solid #30363d;padding-top:16px">登録済みウォレット</h3>
+            <h3 style="margin:24px 0 8px;font-size:14px;color:#8b949e;border-top:1px solid #30363d;padding-top:16px" data-i18n="label.registeredWallets">登録済みウォレット</h3>
             <div class="table-wrap">
               <table id="import-wallets-table">
                 <thead>
                   <tr>
-                    <th>ソースID</th>
-                    <th>アドレス</th>
-                    <th>チェーン</th>
-                    <th>登録日時</th>
-                    <th>操作</th>
+                    <th data-i18n="th.sourceId">ソースID</th>
+                    <th data-i18n="th.address">アドレス</th>
+                    <th data-i18n="th.chain">チェーン</th>
+                    <th data-i18n="th.registeredAt">登録日時</th>
+                    <th data-i18n="th.action">操作</th>
                   </tr>
                 </thead>
                 <tbody></tbody>
@@ -585,16 +591,16 @@
 
         <!-- 既存口座の操作 -->
         <section class="card import-section">
-          <h2>既存の口座</h2>
-          <p class="card-hint">各口座への追加CSVインポート・全消去</p>
+          <h2 data-i18n="label.existingAccounts">既存の口座</h2>
+          <p class="card-hint" data-i18n="label.existingAccountsHint">各口座への追加CSVインポート・全消去</p>
           <div class="table-wrap">
             <table id="import-accounts-table">
               <thead>
                 <tr>
-                  <th>口座</th>
-                  <th>ソースID</th>
-                  <th class="num">取引数</th>
-                  <th>操作</th>
+                  <th data-i18n="th.account">口座</th>
+                  <th data-i18n="th.sourceId">ソースID</th>
+                  <th class="num" data-i18n="th.txCount">取引数</th>
+                  <th data-i18n="th.action">操作</th>
                 </tr>
               </thead>
               <tbody></tbody>
@@ -604,17 +610,17 @@
 
         <!-- インポート履歴（CSV単位の削除） -->
         <section class="card import-section">
-          <h2>インポート履歴（CSV単位で削除）</h2>
-          <p class="card-hint">過去に取り込んだCSVを、そのCSV由来の取引ごとまとめて削除できます</p>
+          <h2 data-i18n="label.csvHistory">インポート履歴（CSV単位で削除）</h2>
+          <p class="card-hint" data-i18n="label.csvHistoryHint">過去に取り込んだCSVを、そのCSV由来の取引ごとまとめて削除できます</p>
           <div class="table-wrap">
             <table id="import-batches-table">
               <thead>
                 <tr>
-                  <th>取込日時</th>
-                  <th>口座</th>
-                  <th>取引所</th>
-                  <th>ファイル</th>
-                  <th class="num">取引数</th>
+                  <th data-i18n="th.importedAt">取込日時</th>
+                  <th data-i18n="th.account">口座</th>
+                  <th data-i18n="th.exchange">取引所</th>
+                  <th data-i18n="th.file">ファイル</th>
+                  <th class="num" data-i18n="th.txCount">取引数</th>
                   <th></th>
                 </tr>
               </thead>
@@ -633,12 +639,13 @@
       <h3 id="delete-dialog-title" class="dialog-title">削除しますか？</h3>
       <p id="delete-dialog-msg" class="dialog-msg"></p>
       <div class="dialog-actions">
-        <button id="delete-confirm" class="settings-save-btn" style="background:#f85149">削除</button>
-        <button id="delete-cancel" class="link-btn">キャンセル</button>
+        <button id="delete-confirm" class="settings-save-btn" style="background:#f85149" data-i18n="btn.delete">削除</button>
+        <button id="delete-cancel" class="link-btn" data-i18n="btn.cancel">キャンセル</button>
       </div>
     </div>
   </div>
 
+  <script src="/static/i18n.js"></script>
   <script src="/static/app.js"></script>
 </body>
 </html>

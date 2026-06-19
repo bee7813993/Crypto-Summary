@@ -66,6 +66,14 @@ function escapeHtml(s) {
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
+// 取引種別の表示名。英語表示時は txtype.* で翻訳し、日本語時はバックエンド由来の type_ja を使う。
+function _txTypeLabel(tx) {
+  if (_lang === "ja") return tx.type_ja || tx.type;
+  const key = "txtype." + tx.type;
+  const translated = t(key);
+  return translated === key ? (tx.type_ja || tx.type) : translated;
+}
+
 function chartTheme() {
   const s = getComputedStyle(document.documentElement);
   const g = (v) => s.getPropertyValue(v).trim();
@@ -86,7 +94,7 @@ function _syncThemeBtn() {
   if (!btn) return;
   const isLight = document.documentElement.classList.contains("light");
   btn.textContent = isLight ? "🌙" : "☀";
-  btn.title = isLight ? "ダークモードに切替" : "ライトモードに切替";
+  btn.title = isLight ? t("toggle.toDark") : t("toggle.toLight");
 }
 
 document.getElementById("theme-toggle").addEventListener("click", () => {
@@ -102,8 +110,23 @@ function _syncMaskBtn() {
   const btn = document.getElementById("mask-toggle");
   if (!btn) return;
   btn.textContent = maskAmounts ? "🔒" : "👁";
-  btn.title = maskAmounts ? "金額を表示する" : "金額を隠す";
+  btn.title = maskAmounts ? t("toggle.maskOff") : t("toggle.maskOn");
 }
+
+function _syncLangBtn() {
+  const btn = document.getElementById("lang-toggle");
+  if (!btn) return;
+  btn.textContent = t("toggle.langBtn");
+  btn.title = t("toggle.langTitle");
+}
+
+document.getElementById("lang-toggle").addEventListener("click", () => {
+  setLang(_lang === "ja" ? "en" : "ja");
+  _syncThemeBtn();
+  _syncMaskBtn();
+  _syncLangBtn();
+  router();
+});
 
 document.getElementById("mask-toggle").addEventListener("click", () => {
   maskAmounts = !maskAmounts;
@@ -266,7 +289,7 @@ function buildChartSlices(priced, total) {
   });
 
   if (otherValue > 0) {
-    slices.push({ label: "その他", value: otherValue, color: OTHER_COLOR });
+    slices.push({ label: t("label.other"), value: otherValue, color: OTHER_COLOR });
   }
   return { slices, colorByAsset };
 }
@@ -277,9 +300,9 @@ function renderSummary(data) {
 
   document.getElementById("total-value").textContent = fmtMoney(data.total_value, cur);
   document.getElementById("total-sub").textContent =
-    `${data.asset_count} 資産 / うち ${data.priced_count} 件に価格あり`;
+    t("dash.assetsSummary", { count: data.asset_count, priced: data.priced_count });
   document.getElementById("generated").textContent =
-    "更新: " + new Date(data.generated_at).toLocaleString();
+    t("status.updatedAt", { time: new Date(data.generated_at).toLocaleString() });
 
   const priced = data.assets.filter((a) => a.has_price && a.value !== null);
   const { slices, colorByAsset } = buildChartSlices(priced, total);
@@ -301,7 +324,7 @@ function renderSummary(data) {
       <td class="num">${a.price ? fmtMoney(a.price, cur) : '<span class="muted">-</span>'}</td>
       <td class="num">${a.value ? fmtMoney(a.value, cur) : '<span class="muted">-</span>'}</td>
       <td class="num">${pct !== null ? pct.toFixed(1) + "%" : '<span class="muted">-</span>'}</td>
-      <td><button class="tx-link-btn" data-asset="${escapeHtml(a.asset)}">≡ 履歴</button></td>
+      <td><button class="tx-link-btn" data-asset="${escapeHtml(a.asset)}">${t("btn.txHistoryShort")}</button></td>
     `;
     tr.querySelector("[data-action='asset-detail']").addEventListener("click", () =>
       navigateToAssetDetail(a.asset));
@@ -314,7 +337,7 @@ function renderSummary(data) {
 
   const moreAssets = document.getElementById("assets-more");
   if (moreAssets) {
-    moreAssets.textContent = `すべての資産を表示（${data.assets.length}）→`;
+    moreAssets.textContent = t("dash.showAllAssets");
     moreAssets.style.display = data.assets.length > DASH_TOP ? "" : "none";
   }
 
@@ -335,7 +358,7 @@ function renderSources(data) {
       </td>
       <td class="num">${s.tx_count}</td>
       <td class="num">${fmtMoney(s.total_value, cur)}</td>
-      <td><button class="tx-link-btn" data-account="${escapeHtml(s.source)}">≡ 履歴</button></td>
+      <td><button class="tx-link-btn" data-account="${escapeHtml(s.source)}">${t("btn.txHistoryShort")}</button></td>
     `;
     tr.querySelector("[data-action='account-detail']").addEventListener("click", () =>
       navigateToAccountDetail(s.source));
@@ -348,7 +371,7 @@ function renderSources(data) {
 
   const moreSources = document.getElementById("sources-more");
   if (moreSources) {
-    moreSources.textContent = `すべての口座を表示（${data.sources.length}）→`;
+    moreSources.textContent = t("dash.showAllAccounts", { count: data.sources.length });
     moreSources.style.display = data.sources.length > DASH_TOP ? "" : "none";
   }
 }
@@ -377,7 +400,7 @@ const centerTextPlugin = {
         amount = fmtAmount(bal) + " " + title;
       }
     } else {
-      title = "合計";
+      title = t("label.total");
       sub = fmtMoney(total, cur);
     }
 
@@ -580,7 +603,7 @@ async function _fetchHistAndRender(scope, range, canvasId, loadingId, unpricedId
     setRef(renderHistoryChart(canvasId, data.points, currency, getRef()));
     if (unpricedEl) {
       if (data.unpriced && data.unpriced.length) {
-        unpricedEl.textContent = "価格未対応（評価額に未算入）: " + data.unpriced.join(", ");
+        unpricedEl.textContent = t("label.unpricedAssets") + data.unpriced.join(", ");
         unpricedEl.classList.remove("hidden");
       } else {
         unpricedEl.classList.add("hidden");
@@ -657,7 +680,7 @@ function showAccountDetail(name) {
 async function loadAccountsPage() {
   const currency = document.getElementById("currency").value;
   const tbody = document.querySelector("#accounts-table tbody");
-  tbody.innerHTML = '<tr><td colspan="5" class="loading">読み込み中…</td></tr>';
+  tbody.innerHTML = `<tr><td colspan="5" class="loading">${t("label.loading")}</td></tr>`;
   try {
     const data = await fetchJSON(`/api/sources?currency=${currency}`);
     tbody.innerHTML = "";
@@ -670,7 +693,7 @@ async function loadAccountsPage() {
         <td class="num">${s.tx_count}</td>
         <td class="num">${s.asset_count}</td>
         <td class="num">${fmtMoney(s.total_value, currency)}</td>
-        <td><button class="tx-link-btn">≡ 履歴</button></td>
+        <td><button class="tx-link-btn">${t("btn.txHistoryShort")}</button></td>
       `;
       tr.querySelector("[data-action='account-detail']").addEventListener("click", () =>
         navigateToAccountDetail(s.source));
@@ -681,7 +704,7 @@ async function loadAccountsPage() {
       tbody.appendChild(tr);
     });
   } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="5" class="muted">エラー: ${escapeHtml(e.message)}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="5" class="muted">${t("status.error")}${escapeHtml(e.message)}</td></tr>`;
   }
 }
 
@@ -706,10 +729,10 @@ async function loadAccountDetail(name) {
         return `<span class="wallet-address-chip" title="${escapeHtml(w.address)}">
           <span class="wallet-chain-label">${escapeHtml(w.chain_label)}</span>
           <code class="wallet-addr-text">${escapeHtml(short)}</code>
-          <button class="wallet-copy-btn" data-address="${escapeHtml(w.address)}" title="コピー">⧉</button>
+          <button class="wallet-copy-btn" data-address="${escapeHtml(w.address)}" title="copy">⧉</button>
         </span>`;
       }).join("");
-      walletInfo.innerHTML = `<div class="wallet-info-row"><span class="wallet-info-label">ウォレットアドレス</span>${chips}</div>`;
+      walletInfo.innerHTML = `<div class="wallet-info-row"><span class="wallet-info-label">${t("label.walletAddress")}</span>${chips}</div>`;
       walletInfo.classList.remove("hidden");
       walletInfo.querySelectorAll(".wallet-copy-btn").forEach((btn) => {
         btn.addEventListener("click", () => {
@@ -728,18 +751,18 @@ async function loadAccountDetail(name) {
         <td class="num">${fmtAmount(a.balance)}</td>
         <td class="num">${a.price ? fmtMoney(a.price, currency) : '<span class="muted">-</span>'}</td>
         <td class="num">${a.value ? fmtMoney(a.value, currency) : '<span class="muted">-</span>'}</td>
-        <td><button class="tx-link-btn">≡ 履歴</button></td>
+        <td><button class="tx-link-btn">${t("btn.txHistoryShort")}</button></td>
       `;
       tr.querySelector(".tx-link-btn").addEventListener("click", () =>
         navigateToTransactions({ account: name, asset: a.asset }));
       tbody.appendChild(tr);
     });
     if (data.assets.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="5" class="muted">残高なし</td></tr>';
+      tbody.innerHTML = `<tr><td colspan="5" class="muted">${t("label.noBalance")}</td></tr>`;
     }
   } catch (e) {
     loading.classList.add("hidden");
-    tbody.innerHTML = `<tr><td colspan="5" class="muted">エラー: ${escapeHtml(e.message)}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="5" class="muted">${t("status.error")}${escapeHtml(e.message)}</td></tr>`;
   }
 }
 
@@ -779,7 +802,7 @@ async function openAccountSettings(accountName) {
     renderSettingsSourceIds(assignedIds, otherIds);
   } catch (e) {
     result.className = "settings-result err";
-    result.textContent = "設定の読み込みに失敗しました: " + e.message;
+    result.textContent = t("status.settingsLoadFail") + ": " + e.message;
     result.classList.remove("hidden");
   }
 }
@@ -789,13 +812,13 @@ function renderSettingsSourceIds(assignedIds, otherIds) {
   assignedWrap.innerHTML = "";
   assignedIds.forEach((sid) => assignedWrap.appendChild(makeSourceChip(sid, true)));
   if (assignedIds.length === 0) {
-    assignedWrap.innerHTML = '<span class="muted" style="font-size:12px">なし</span>';
+    assignedWrap.innerHTML = `<span class="muted" style="font-size:12px">${t("label.none")}</span>`;
   }
 
   const unassignedWrap = document.getElementById("settings-unassigned-ids");
   unassignedWrap.innerHTML = "";
   if (otherIds.length === 0) {
-    unassignedWrap.innerHTML = '<span class="muted" style="font-size:12px">なし</span>';
+    unassignedWrap.innerHTML = `<span class="muted" style="font-size:12px">${t("label.none")}</span>`;
   } else {
     otherIds.forEach((sid) => unassignedWrap.appendChild(makeSourceChip(sid, false, true)));
   }
@@ -821,7 +844,7 @@ document.getElementById("settings-save").addEventListener("click", async () => {
   const newName = document.getElementById("settings-display-name").value.trim();
   if (!newName) {
     result.className = "settings-result err";
-    result.textContent = "表示名を入力してください";
+    result.textContent = t("status.nameRequired");
     result.classList.remove("hidden");
     return;
   }
@@ -851,7 +874,7 @@ document.getElementById("settings-save").addEventListener("click", async () => {
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
 
     result.className = "settings-result ok";
-    result.textContent = "保存しました";
+    result.textContent = t("status.settingsSaved");
     result.classList.remove("hidden");
 
     if (newName !== _currentAccountName) {
@@ -868,7 +891,7 @@ document.getElementById("settings-save").addEventListener("click", async () => {
 
   } catch (e) {
     result.className = "settings-result err";
-    result.textContent = "保存に失敗しました: " + e.message;
+    result.textContent = t("status.settingsSaveFail", { error: e.message });
     result.classList.remove("hidden");
   }
 });
@@ -896,13 +919,13 @@ function showAssetDetail(symbol) {
 async function loadAssetsPage() {
   const currency = document.getElementById("currency").value;
   const tbody = document.querySelector("#all-assets-table tbody");
-  tbody.innerHTML = '<tr><td colspan="6" class="loading">読み込み中…</td></tr>';
+  tbody.innerHTML = `<tr><td colspan="6" class="loading">${t("label.loading")}</td></tr>`;
   try {
     const data = await fetchJSON(`/api/summary?currency=${currency}`);
     lastAssetsData = data;
     renderAllAssets(data, currency);
   } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="6" class="muted">エラー: ${escapeHtml(e.message)}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="6" class="muted">${t("status.error")}${escapeHtml(e.message)}</td></tr>`;
   }
 }
 
@@ -927,7 +950,7 @@ function renderAllAssets(data, currency) {
       <td class="num">${a.price ? fmtMoney(a.price, currency) : '<span class="muted">-</span>'}</td>
       <td class="num">${a.value ? fmtMoney(a.value, currency) : '<span class="muted">-</span>'}</td>
       <td class="num">${pct !== null ? pct.toFixed(1) + "%" : '<span class="muted">-</span>'}</td>
-      <td><button class="tx-link-btn">≡ 履歴</button></td>
+      <td><button class="tx-link-btn">${t("btn.txHistoryShort")}</button></td>
     `;
     tr.querySelector("[data-action='asset-detail']").addEventListener("click", () =>
       navigateToAssetDetail(a.asset));
@@ -938,7 +961,7 @@ function renderAllAssets(data, currency) {
     tbody.appendChild(tr);
   });
   if (data.assets.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="6" class="muted">データなし</td></tr>';
+    tbody.innerHTML = `<tr><td colspan="6" class="muted">${t("label.noData")}</td></tr>`;
   }
 
   const toggleBtn = document.getElementById("toggle-small");
@@ -946,8 +969,8 @@ function renderAllAssets(data, currency) {
     if (hiddenCount > 0 || showSmall) {
       toggleBtn.style.display = "";
       toggleBtn.textContent = showSmall
-        ? "少額残高のトークンを隠す ▴"
-        : `少額残高のトークンを表示（${hiddenCount}） ▾`;
+        ? t("label.hideSmall")
+        : t("label.showSmall", { count: hiddenCount });
     } else {
       toggleBtn.style.display = "none";
     }
@@ -957,7 +980,7 @@ function renderAllAssets(data, currency) {
   if (unpricedEl) {
     if (data.unpriced && data.unpriced.length) {
       unpricedEl.classList.remove("hidden");
-      unpricedEl.textContent = "価格未対応（評価額に未算入）: " + data.unpriced.join(", ");
+      unpricedEl.textContent = t("label.unpricedAssets") + data.unpriced.join(", ");
     } else {
       unpricedEl.classList.add("hidden");
     }
@@ -981,18 +1004,18 @@ async function loadAssetDetail(symbol) {
         <td>${escapeHtml(a.account)}</td>
         <td class="num">${fmtAmount(a.balance)}</td>
         <td class="num">${a.value ? fmtMoney(a.value, currency) : '<span class="muted">-</span>'}</td>
-        <td><button class="tx-link-btn">≡ 履歴</button></td>
+        <td><button class="tx-link-btn">${t("btn.txHistoryShort")}</button></td>
       `;
       tr.querySelector(".tx-link-btn").addEventListener("click", () =>
         navigateToTransactions({ account: a.account, asset: symbol }));
       tbody.appendChild(tr);
     });
     if (data.accounts.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="4" class="muted">保有口座なし</td></tr>';
+      tbody.innerHTML = `<tr><td colspan="4" class="muted">${t("label.noAccountsHere")}</td></tr>`;
     }
   } catch (e) {
     loading.classList.add("hidden");
-    tbody.innerHTML = `<tr><td colspan="4" class="muted">エラー: ${escapeHtml(e.message)}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="4" class="muted">${t("status.error")}${escapeHtml(e.message)}</td></tr>`;
   }
 }
 
@@ -1082,12 +1105,12 @@ async function loadTransactionsPage(account, asset, since, until, page = 1) {
   // アクティブフィルター表示
   const banner = document.getElementById("tx-active-filter");
   const parts = [];
-  if (account) parts.push(`口座: <strong>${escapeHtml(account)}</strong>`);
-  if (asset) parts.push(`資産: <strong>${escapeHtml(asset)}</strong>`);
-  if (since) parts.push(`開始: <strong>${since}</strong>`);
-  if (until) parts.push(`終了: <strong>${until}</strong>`);
+  if (account) parts.push(t("filter.account") + `<strong>${escapeHtml(account)}</strong>`);
+  if (asset) parts.push(t("filter.asset") + `<strong>${escapeHtml(asset)}</strong>`);
+  if (since) parts.push(t("filter.from") + `<strong>${since}</strong>`);
+  if (until) parts.push(t("filter.to") + `<strong>${until}</strong>`);
   if (parts.length) {
-    banner.innerHTML = "絞り込み中 — " + parts.join(" ／ ");
+    banner.innerHTML = t("filter.active") + parts.join(" ／ ");
     banner.classList.remove("hidden");
   } else {
     banner.classList.add("hidden");
@@ -1146,12 +1169,12 @@ async function loadTransactionsPage(account, asset, since, until, page = 1) {
         }
 
         const isManual = tx.id.startsWith("manual:");
-        const delBtn = `<button class="delete-btn" title="削除" data-txid="${escapeHtml(tx.id)}" data-txdesc="${escapeHtml(fmtDate(tx.timestamp) + " " + (tx.type_ja || tx.type))}">✕</button>`;
+        const delBtn = `<button class="delete-btn" title="${t("btn.delete")}" data-txid="${escapeHtml(tx.id)}" data-txdesc="${escapeHtml(fmtDate(tx.timestamp) + " " + (tx.type_ja || tx.type))}">✕</button>`;
 
         tr.innerHTML = `
           <td style="white-space:nowrap">${fmtDate(tx.timestamp)}</td>
           <td>${escapeHtml(tx.account)}</td>
-          <td><span class="tx-type tx-type-${escapeHtml(tx.type)}">${escapeHtml(tx.type_ja)}</span></td>
+          <td><span class="tx-type tx-type-${escapeHtml(tx.type)}">${escapeHtml(_txTypeLabel(tx))}</span></td>
           <td>${recv}</td>
           <td>${sent}</td>
           <td>${fee}</td>
@@ -1174,7 +1197,7 @@ async function loadTransactionsPage(account, asset, since, until, page = 1) {
     renderTxPagination(data, account, asset, since, until);
   } catch (e) {
     loading.classList.add("hidden");
-    tbody.innerHTML = `<tr><td colspan="8" class="muted">エラー: ${escapeHtml(e.message)}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="8" class="muted">${t("status.error")}${escapeHtml(e.message)}</td></tr>`;
     document.getElementById("tx-pagination").innerHTML = "";
   }
 }
@@ -1185,7 +1208,7 @@ function renderTxPagination(data, account, asset, since, until) {
   if (data.total_pages <= 1) {
     const info = document.createElement("span");
     info.className = "page-info";
-    info.textContent = `${data.total.toLocaleString()} 件`;
+    info.textContent = t("filter.count", { count: data.total.toLocaleString() });
     el.appendChild(info);
     return;
   }
@@ -1225,7 +1248,7 @@ function renderTxPagination(data, account, asset, since, until) {
 
   const info = document.createElement("span");
   info.className = "page-info";
-  info.textContent = `${data.total.toLocaleString()} 件`;
+  info.textContent = t("filter.count", { count: data.total.toLocaleString() });
   el.appendChild(info);
 }
 
@@ -1315,7 +1338,7 @@ document.getElementById("tx-export-btn").addEventListener("click", async () => {
   if (until) url += `&until=${encodeURIComponent(until)}`;
 
   result.className = "settings-result ok";
-  result.textContent = "エクスポート中…";
+  result.textContent = t("status.exportRunning");
   result.classList.remove("hidden");
 
   try {
@@ -1340,12 +1363,11 @@ document.getElementById("tx-export-btn").addEventListener("click", async () => {
     URL.revokeObjectURL(blobUrl);
 
     result.className = "settings-result ok";
-    const scope = account ? `口座: ${account}` : "全口座";
-    result.textContent = `エクスポート完了: ${filename}（${scope}）`;
+    result.textContent = t("status.exportDoneFile", { filename });
     result.classList.remove("hidden");
   } catch (e) {
     result.className = "settings-result err";
-    result.textContent = "エクスポートに失敗しました: " + e.message;
+    result.textContent = t("status.exportFail", { error: e.message });
     result.classList.remove("hidden");
   }
 });
@@ -1398,7 +1420,7 @@ document.getElementById("manual-save").addEventListener("click", async () => {
 
   if (!account || !timestamp) {
     result.className = "settings-result err";
-    result.textContent = "口座と日時は必須です";
+    result.textContent = t("status.manualRequired");
     result.classList.remove("hidden");
     return;
   }
@@ -1425,7 +1447,7 @@ document.getElementById("manual-save").addEventListener("click", async () => {
       throw new Error(err.detail || `HTTP ${resp.status}`);
     }
     result.className = "settings-result ok";
-    result.textContent = "追加しました";
+    result.textContent = t("status.addDone");
     result.classList.remove("hidden");
     // フォームをリセット
     ["manual-recv-asset", "manual-recv-amount", "manual-sent-asset", "manual-sent-amount",
@@ -1440,7 +1462,7 @@ document.getElementById("manual-save").addEventListener("click", async () => {
     loadTransactionsPage(account2, asset2, since2, until2, 1);
   } catch (e) {
     result.className = "settings-result err";
-    result.textContent = "追加に失敗しました: " + e.message;
+    result.textContent = t("status.addFail", { error: e.message });
     result.classList.remove("hidden");
   }
 });
@@ -1471,15 +1493,15 @@ function _openDeleteDialog(title, msg) {
 function showDeleteDialog(txId, desc, onSuccess) {
   _clearDialogState();
   _deleteCallback = { txId, onSuccess };
-  _openDeleteDialog("取引を削除しますか？",
-    `「${desc}」を削除します。この操作は取り消せません。`);
+  _openDeleteDialog(t("status.txDelConfirmTitle"),
+    t("status.txDelConfirmBody", { desc }));
 }
 
 function showBatchDeleteDialog(batchId, desc) {
   _clearDialogState();
   _batchDeleteId = batchId;
-  _openDeleteDialog("CSVインポートを削除しますか？",
-    `「${desc}」を削除します。このCSV由来の取引がすべて削除されます。この操作は取り消せません。`);
+  _openDeleteDialog(t("status.csvDelConfirmTitle"),
+    t("status.csvDelConfirmBody", { desc }));
 }
 
 document.getElementById("delete-confirm").addEventListener("click", async () => {
@@ -1498,10 +1520,10 @@ document.getElementById("delete-confirm").addEventListener("click", async () => 
       loadApiAccountsTable();
       const result = document.getElementById("import-api-result");
       result.className = "settings-result ok";
-      result.textContent = `「${sourceId}」のAPI登録を削除しました（取引データは残ります）`;
+      result.textContent = t("status.apiDelDone", { id: sourceId });
       result.classList.remove("hidden");
     } catch (e) {
-      alert("削除に失敗しました: " + e.message);
+      alert(t("status.apiDelFail", { error: e.message }));
     }
     return;
   }
@@ -1519,10 +1541,10 @@ document.getElementById("delete-confirm").addEventListener("click", async () => 
       loadWalletsTable();
       const result = document.getElementById("import-wallet-result");
       result.className = "settings-result ok";
-      result.textContent = `「${sourceId}」のウォレット登録を削除しました（取引データは残ります）`;
+      result.textContent = t("status.walletDelDone", { id: sourceId });
       result.classList.remove("hidden");
     } catch (e) {
-      alert("削除に失敗しました: " + e.message);
+      alert(t("status.walletDelFail", { error: e.message }));
     }
     return;
   }
@@ -1540,10 +1562,10 @@ document.getElementById("delete-confirm").addEventListener("click", async () => 
       _txAccountsLoaded = false;
       const result = document.getElementById("import-csv-result");
       result.className = "settings-result ok";
-      result.textContent = `「${account}」の取引 ${d.deleted} 件を削除しました`;
+      result.textContent = t("status.txDelDone", { account, count: d.deleted });
       result.classList.remove("hidden");
     } catch (e) {
-      alert("削除に失敗しました: " + e.message);
+      alert(t("status.walletDelFail", { error: e.message }));
     }
     return;
   }
@@ -1561,10 +1583,10 @@ document.getElementById("delete-confirm").addEventListener("click", async () => 
       _txAccountsLoaded = false;
       const result = document.getElementById("import-csv-result");
       result.className = "settings-result ok";
-      result.textContent = `${d.deleted} 件を削除しました`;
+      result.textContent = t("status.deleteCount", { count: d.deleted });
       result.classList.remove("hidden");
     } catch (e) {
-      alert("削除に失敗しました: " + e.message);
+      alert(t("status.walletDelFail", { error: e.message }));
     }
     return;
   }
@@ -1578,7 +1600,7 @@ document.getElementById("delete-confirm").addEventListener("click", async () => 
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     if (onSuccess) onSuccess();
   } catch (e) {
-    alert("削除に失敗しました: " + e.message);
+    alert(t("status.walletDelFail", { error: e.message }));
   }
 });
 
@@ -1653,12 +1675,12 @@ async function ensureImportExchanges() {
 async function loadImportAccountsTable() {
   const tbody = document.querySelector("#import-accounts-table tbody");
   if (!tbody) return;
-  tbody.innerHTML = '<tr><td colspan="4" class="loading">読み込み中…</td></tr>';
+  tbody.innerHTML = `<tr><td colspan="4" class="loading">${t("label.loading")}</td></tr>`;
   try {
     const data = await fetchJSON("/api/sources?currency=USD");
     tbody.innerHTML = "";
     if (data.sources.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="4" class="muted">口座なし</td></tr>';
+      tbody.innerHTML = `<tr><td colspan="4" class="muted">${t("label.noAccountsHere")}</td></tr>`;
       return;
     }
     data.sources.forEach((s) => {
@@ -1669,8 +1691,8 @@ async function loadImportAccountsTable() {
         <td><span class="muted" style="font-size:12px;font-family:monospace">${escapeHtml(s.source_ids.join(", "))}</span></td>
         <td class="num">${s.tx_count}</td>
         <td style="white-space:nowrap;display:flex;gap:6px;align-items:center">
-          <button class="tx-link-btn btn-csv-import">CSV 追加インポート</button>
-          <button class="tx-link-btn btn-clear-account" style="border-color:#5a2a2a">全消去</button>
+          <button class="tx-link-btn btn-csv-import">${t("btn.csvAppend")}</button>
+          <button class="tx-link-btn btn-clear-account" style="border-color:#5a2a2a">${t("btn.clearAll")}</button>
         </td>
       `;
       tr.querySelector(".btn-csv-import").addEventListener("click", () => {
@@ -1681,25 +1703,25 @@ async function loadImportAccountsTable() {
       tr.querySelector(".btn-clear-account").addEventListener("click", () => {
         _clearDialogState();
         _accountClearTarget = s.source;
-        _openDeleteDialog("口座を全消去しますか？",
-          `口座「${s.source}」（${s.source_ids.join(", ")}）の全取引 ${s.tx_count} 件を削除します。この操作は取り消せません。`);
+        _openDeleteDialog(t("status.accountClearConfirmTitle"),
+          t("status.accountClearConfirmBody", { account: s.source, ids: s.source_ids.join(", "), count: s.tx_count }));
       });
       tbody.appendChild(tr);
     });
   } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="4" class="muted">エラー: ${escapeHtml(e.message)}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="4" class="muted">${t("status.error")}${escapeHtml(e.message)}</td></tr>`;
   }
 }
 
 async function loadImportBatches() {
   const tbody = document.querySelector("#import-batches-table tbody");
   if (!tbody) return;
-  tbody.innerHTML = '<tr><td colspan="6" class="loading">読み込み中…</td></tr>';
+  tbody.innerHTML = `<tr><td colspan="6" class="loading">${t("label.loading")}</td></tr>`;
   try {
     const data = await fetchJSON("/api/import/batches");
     tbody.innerHTML = "";
     if (!data.batches || data.batches.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="6" class="muted">CSVインポート履歴はまだありません</td></tr>';
+      tbody.innerHTML = `<tr><td colspan="6" class="muted">${t("label.noCsvHistory")}</td></tr>`;
       return;
     }
     data.batches.forEach((b) => {
@@ -1714,28 +1736,28 @@ async function loadImportBatches() {
         <td>${escapeHtml(b.exchange_label)}</td>
         <td><span class="muted" style="font-size:12px">${escapeHtml(b.filename || "-")}</span></td>
         <td class="num">${countLabel}</td>
-        <td><button class="tx-link-btn" style="border-color:#5a2a2a">CSVごと削除</button></td>
+        <td><button class="tx-link-btn" style="border-color:#5a2a2a">${t("btn.deleteByFile")}</button></td>
       `;
       tr.querySelector(".tx-link-btn").addEventListener("click", () => {
-        const desc = `${b.exchange_label} / ${b.filename || "-"}（${b.existing_count} 件）`;
+        const desc = `${b.exchange_label} / ${b.filename || "-"}（${t("filter.count", { count: b.existing_count })}）`;
         showBatchDeleteDialog(b.id, desc);
       });
       tbody.appendChild(tr);
     });
   } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="6" class="muted">エラー: ${escapeHtml(e.message)}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="6" class="muted">${t("status.error")}${escapeHtml(e.message)}</td></tr>`;
   }
 }
 
 async function loadApiAccountsTable() {
   const tbody = document.querySelector("#import-api-accounts-table tbody");
   if (!tbody) return;
-  tbody.innerHTML = '<tr><td colspan="5" class="loading">読み込み中…</td></tr>';
+  tbody.innerHTML = `<tr><td colspan="5" class="loading">${t("label.loading")}</td></tr>`;
   try {
     const data = await fetchJSON("/api/account-apis");
     tbody.innerHTML = "";
     if (!data.accounts || data.accounts.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="5" class="muted">登録済みのAPI口座はありません</td></tr>';
+      tbody.innerHTML = `<tr><td colspan="5" class="muted">${t("label.noApiAccounts")}</td></tr>`;
       return;
     }
     data.accounts.forEach((a) => {
@@ -1747,17 +1769,17 @@ async function loadApiAccountsTable() {
         <td>${escapeHtml(a.category)}</td>
         <td style="white-space:nowrap">${escapeHtml(registeredAt)}</td>
         <td style="white-space:nowrap;display:flex;gap:6px;align-items:center">
-          <button class="tx-link-btn btn-api-sync">同期</button>
-          <button class="tx-link-btn btn-api-delete" style="border-color:#5a2a2a">削除</button>
+          <button class="tx-link-btn btn-api-sync">${t("btn.sync")}</button>
+          <button class="tx-link-btn btn-api-delete" style="border-color:#5a2a2a">${t("btn.delete")}</button>
         </td>
       `;
       tr.querySelector(".btn-api-sync").addEventListener("click", async (e) => {
         const btn = e.currentTarget;
         btn.disabled = true;
-        btn.textContent = "同期中…";
+        btn.textContent = t("btn.syncing");
         const result = document.getElementById("import-api-result");
         result.className = "settings-result ok";
-        result.textContent = `「${a.source_id}」を同期中…`;
+        result.textContent = t("status.walletScanning", { id: a.source_id });
         result.classList.remove("hidden");
         try {
           const resp = await fetch(`/api/account-apis/${encodeURIComponent(a.source_id)}/sync`, {
@@ -1766,27 +1788,27 @@ async function loadApiAccountsTable() {
           const d = await resp.json();
           if (!resp.ok) throw new Error(d.detail || `HTTP ${resp.status}`);
           result.className = "settings-result ok";
-          result.textContent = `同期完了: ${d.fetched} 件取得 / ${d.imported} 件新規追加（${a.source_id}）`;
+          result.textContent = t("status.apiSyncDone", { fetched: d.fetched, imported: d.imported, id: a.source_id });
           loadImportAccountsTable();
           _txAccountsLoaded = false;
         } catch (err) {
           result.className = "settings-result err";
-          result.textContent = `同期に失敗しました: ${err.message}`;
+          result.textContent = t("status.apiSyncFail", { error: err.message });
         } finally {
           btn.disabled = false;
-          btn.textContent = "同期";
+          btn.textContent = t("btn.sync");
         }
       });
       tr.querySelector(".btn-api-delete").addEventListener("click", () => {
         _clearDialogState();
         _apiDeleteSourceId = a.source_id;
-        _openDeleteDialog("API登録を削除しますか？",
-          `API口座「${a.source_id}」（${a.exchange_label || a.exchange}）の登録を削除します。取引データは残ります。この操作は取り消せません。`);
+        _openDeleteDialog(t("status.apiDelConfirmTitle"),
+          t("status.apiDelConfirmMsg", { id: a.source_id, exchange: a.exchange_label || a.exchange }));
       });
       tbody.appendChild(tr);
     });
   } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="5" class="muted">エラー: ${escapeHtml(e.message)}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="5" class="muted">${t("status.error")}${escapeHtml(e.message)}</td></tr>`;
   }
 }
 
@@ -1799,7 +1821,7 @@ function readFileAsBase64(file) {
       const comma = res.indexOf(",");
       resolve(comma >= 0 ? res.slice(comma + 1) : res);
     };
-    reader.onerror = () => reject(new Error("ファイルの読み込みに失敗しました"));
+    reader.onerror = () => reject(new Error(t("status.fileReadFail")));
     reader.readAsDataURL(file);
   });
 }
@@ -1815,7 +1837,7 @@ document.getElementById("import-csv-btn").addEventListener("click", async () => 
 
   if (!fileInput.files || fileInput.files.length === 0) {
     result.className = "settings-result err";
-    result.textContent = "CSVファイルを選択してください";
+    result.textContent = t("status.noFile");
     result.classList.remove("hidden");
     return;
   }
@@ -1823,7 +1845,7 @@ document.getElementById("import-csv-btn").addEventListener("click", async () => 
   const file = fileInput.files[0];
 
   result.className = "settings-result ok";
-  result.textContent = "インポート中…";
+  result.textContent = t("status.importRunning");
   result.classList.remove("hidden");
 
   try {
@@ -1845,9 +1867,9 @@ document.getElementById("import-csv-btn").addEventListener("click", async () => 
     const d = await resp.json();
     result.className = "settings-result ok";
     if (d.parsed === 0) {
-      result.textContent = d.message || "取引が見つかりませんでした";
+      result.textContent = d.message || t("label.noTxFound");
     } else {
-      result.textContent = `インポート完了: ${d.parsed} 件解析 / ${d.imported} 件新規追加（ソース: ${d.source}）`;
+      result.textContent = t("status.importDone", { parsed: d.parsed, imported: d.imported, source: d.source });
     }
     result.classList.remove("hidden");
     fileInput.value = "";
@@ -1857,7 +1879,7 @@ document.getElementById("import-csv-btn").addEventListener("click", async () => 
     _txAccountsLoaded = false;
   } catch (e) {
     result.className = "settings-result err";
-    result.textContent = "インポートに失敗しました: " + e.message;
+    result.textContent = t("status.importFail", { error: e.message });
     result.classList.remove("hidden");
   }
 });
@@ -1875,7 +1897,7 @@ document.getElementById("import-api-register-btn").addEventListener("click", asy
 
   if (!sourceId || !apiKey || !apiSecret) {
     result.className = "settings-result err";
-    result.textContent = "ソースID・APIキー・APIシークレットは必須です";
+    result.textContent = t("status.apiRequired");
     result.classList.remove("hidden");
     return;
   }
@@ -1890,7 +1912,7 @@ document.getElementById("import-api-register-btn").addEventListener("click", asy
     if (!resp.ok) throw new Error(d.detail || `HTTP ${resp.status}`);
 
     result.className = "settings-result ok";
-    result.textContent = `「${sourceId}」のAPIキーを暗号化して登録しました`;
+    result.textContent = t("status.apiRegDone", { id: sourceId });
     result.classList.remove("hidden");
 
     // フォームをクリア（セキュリティのため即座に消去）
@@ -1901,7 +1923,7 @@ document.getElementById("import-api-register-btn").addEventListener("click", asy
     loadApiAccountsTable();
   } catch (e) {
     result.className = "settings-result err";
-    result.textContent = "登録に失敗しました: " + e.message;
+    result.textContent = t("status.apiRegFail", { error: e.message });
     result.classList.remove("hidden");
   }
 });
@@ -1910,12 +1932,12 @@ document.getElementById("import-api-register-btn").addEventListener("click", asy
 async function loadWalletsTable() {
   const tbody = document.querySelector("#import-wallets-table tbody");
   if (!tbody) return;
-  tbody.innerHTML = '<tr><td colspan="5" class="loading">読み込み中…</td></tr>';
+  tbody.innerHTML = `<tr><td colspan="5" class="loading">${t("label.loading")}</td></tr>`;
   try {
     const data = await fetchJSON("/api/wallets");
     tbody.innerHTML = "";
     if (!data.wallets || data.wallets.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="5" class="muted">登録済みのウォレットはありません</td></tr>';
+      tbody.innerHTML = `<tr><td colspan="5" class="muted">${t("label.noWallets")}</td></tr>`;
       return;
     }
     data.wallets.forEach((w) => {
@@ -1929,17 +1951,17 @@ async function loadWalletsTable() {
         <td>${escapeHtml(w.chain_label || w.chain)}</td>
         <td style="white-space:nowrap">${escapeHtml(registeredAt)}</td>
         <td style="white-space:nowrap;display:flex;gap:6px;align-items:center">
-          <button class="tx-link-btn btn-wallet-sync">同期</button>
-          <button class="tx-link-btn btn-wallet-delete" style="border-color:#5a2a2a">削除</button>
+          <button class="tx-link-btn btn-wallet-sync">${t("btn.sync")}</button>
+          <button class="tx-link-btn btn-wallet-delete" style="border-color:#5a2a2a">${t("btn.delete")}</button>
         </td>
       `;
       tr.querySelector(".btn-wallet-sync").addEventListener("click", async (e) => {
         const btn = e.currentTarget;
         btn.disabled = true;
-        btn.textContent = "同期中…";
+        btn.textContent = t("btn.syncing");
         const result = document.getElementById("import-wallet-result");
         result.className = "settings-result ok";
-        result.textContent = `「${w.source_id}」をスキャン中…（チェーンによっては時間がかかります）`;
+        result.textContent = t("status.walletScanning", { id: w.source_id });
         result.classList.remove("hidden");
         try {
           const resp = await fetch(`/api/wallets/${encodeURIComponent(w.source_id)}/sync`, {
@@ -1948,27 +1970,27 @@ async function loadWalletsTable() {
           const d = await resp.json();
           if (!resp.ok) throw new Error(d.detail || `HTTP ${resp.status}`);
           result.className = "settings-result ok";
-          result.textContent = `同期完了: ${d.fetched} 件取得 / ${d.imported} 件新規追加（${w.source_id}）`;
+          result.textContent = t("status.walletSyncDone", { fetched: d.fetched, imported: d.imported, id: w.source_id });
           loadImportAccountsTable();
           _txAccountsLoaded = false;
         } catch (err) {
           result.className = "settings-result err";
-          result.textContent = `同期に失敗しました: ${err.message}`;
+          result.textContent = t("status.apiSyncFail", { error: err.message });
         } finally {
           btn.disabled = false;
-          btn.textContent = "同期";
+          btn.textContent = t("btn.sync");
         }
       });
       tr.querySelector(".btn-wallet-delete").addEventListener("click", () => {
         _clearDialogState();
         _walletDeleteSourceId = w.source_id;
-        _openDeleteDialog("ウォレット登録を削除しますか？",
-          `ウォレット「${w.source_id}」（${w.chain_label || w.chain}）の登録を削除します。取引データは残ります。この操作は取り消せません。`);
+        _openDeleteDialog(t("status.walletDelConfirmTitle"),
+          t("status.walletDelConfirmMsg", { id: w.source_id }));
       });
       tbody.appendChild(tr);
     });
   } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="5" class="muted">エラー: ${escapeHtml(e.message)}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="5" class="muted">${t("status.error")}${escapeHtml(e.message)}</td></tr>`;
   }
 }
 
@@ -1984,7 +2006,7 @@ document.getElementById("import-wallet-btn").addEventListener("click", async () 
 
   if (!address) {
     result.className = "settings-result err";
-    result.textContent = "ウォレットアドレスを入力してください";
+    result.textContent = t("status.walletRequired");
     result.classList.remove("hidden");
     return;
   }
@@ -2004,7 +2026,7 @@ document.getElementById("import-wallet-btn").addEventListener("click", async () 
     if (!resp.ok) throw new Error(d.detail || `HTTP ${resp.status}`);
 
     result.className = "settings-result ok";
-    result.textContent = `「${d.source_id}」（${d.chain_label}）を登録しました。下の一覧から「同期」でスキャンを開始してください。`;
+    result.textContent = t("status.walletRegDone", { id: d.source_id, chain: d.chain_label });
     result.classList.remove("hidden");
 
     // フォームをクリア
@@ -2016,7 +2038,7 @@ document.getElementById("import-wallet-btn").addEventListener("click", async () 
     loadWalletsTable();
   } catch (e) {
     result.className = "settings-result err";
-    result.textContent = "登録に失敗しました: " + e.message;
+    result.textContent = t("status.walletRegFail", { error: e.message });
     result.classList.remove("hidden");
   }
 });
@@ -2027,7 +2049,7 @@ async function load() {
   const currency = document.getElementById("currency").value;
   const btn = document.getElementById("refresh");
   btn.classList.add("spin");
-  document.getElementById("total-sub").textContent = "読み込み中…";
+  document.getElementById("total-sub").textContent = t("label.loading");
   try {
     const [summary, sources] = await Promise.all([
       fetchJSON(`/api/summary?currency=${currency}`),
@@ -2040,7 +2062,7 @@ async function load() {
     const accSel = document.getElementById("tx-filter-account");
     [...accSel.options].forEach((o) => { if (o.value) o.remove(); });
   } catch (e) {
-    document.getElementById("total-sub").textContent = "読み込みエラー: " + e.message;
+    document.getElementById("total-sub").textContent = t("status.loadError") + e.message;
   } finally {
     btn.classList.remove("spin");
   }
@@ -2077,25 +2099,27 @@ document.getElementById("sync-all-btn").addEventListener("click", async () => {
   if (btn.disabled) return;
   btn.disabled = true;
   const origText = btn.textContent;
-  btn.textContent = "⟳ 同期中…";
+  btn.textContent = t("btn.syncAllRunning");
   result.className = "sync-all-result";
   result.classList.remove("hidden");
-  result.textContent = "登録済みのAPI口座・ウォレットを同期しています…（チェーンによっては時間がかかります）";
+  result.textContent = t("status.syncAllRunning");
   try {
     const res = await fetch("/api/sync-all", { method: "POST" });
     const d = await res.json();
     if (!res.ok) throw new Error(d.detail || `HTTP ${res.status}`);
     if (d.total === 0) {
       result.className = "sync-all-result";
-      result.textContent = "同期対象の登録（API口座・ウォレット）がありません。";
+      result.textContent = t("status.syncAllNone");
     } else {
       result.className = "sync-all-result " + (d.failed === 0 ? "ok" : "err");
-      let msg = `同期完了: ${d.succeeded}/${d.total} 件成功`;
-      msg += ` ・ 新規 ${d.total_imported} 件取り込み（取得 ${d.total_fetched} 件）`;
+      let msg = t("status.syncAllDone", {
+        succeeded: d.succeeded, total: d.total,
+        imported: d.total_imported, fetched: d.total_fetched,
+      });
       if (d.failed > 0) {
         const fails = d.results.filter((r) => !r.ok)
           .map((r) => `${r.source_id}: ${r.error}`).join(" / ");
-        msg += `<div class="sync-detail">失敗 ${d.failed} 件 → ${escapeHtml(fails)}</div>`;
+        msg += `<div class="sync-detail">${t("status.syncAllFailed", { count: d.failed, detail: escapeHtml(fails) })}</div>`;
       }
       result.innerHTML = msg;
     }
@@ -2103,7 +2127,7 @@ document.getElementById("sync-all-btn").addEventListener("click", async () => {
     loadAccountsPage();
   } catch (e) {
     result.className = "sync-all-result err";
-    result.textContent = "同期に失敗しました: " + e.message;
+    result.textContent = t("status.syncAllError", { error: e.message });
   } finally {
     btn.disabled = false;
     btn.textContent = origText;
@@ -2142,6 +2166,8 @@ if (saved) document.getElementById("currency").value = saved;
 
 _syncThemeBtn();
 _syncMaskBtn();
+_syncLangBtn();
+applyI18n();
 
 // 初期描画は現在の URL ハッシュから（直リンク・リロードで状態復元）。
 router();
