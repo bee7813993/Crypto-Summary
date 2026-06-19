@@ -628,13 +628,38 @@ async function loadAccountDetail(name) {
   const currency = document.getElementById("currency").value;
   const tbody = document.querySelector("#account-assets-table tbody");
   const loading = document.getElementById("account-detail-loading");
+  const walletInfo = document.getElementById("account-wallet-info");
   tbody.innerHTML = "";
+  walletInfo.innerHTML = "";
+  walletInfo.classList.add("hidden");
   loading.classList.remove("hidden");
   try {
     const data = await fetchJSON(
       `/api/account-assets?account=${encodeURIComponent(name)}&currency=${currency}`
     );
     loading.classList.add("hidden");
+    if (data.wallets && data.wallets.length > 0) {
+      const chips = data.wallets.map((w) => {
+        const short = w.address.length > 20
+          ? `${w.address.slice(0, 10)}…${w.address.slice(-8)}` : w.address;
+        return `<span class="wallet-address-chip" title="${escapeHtml(w.address)}">
+          <span class="wallet-chain-label">${escapeHtml(w.chain_label)}</span>
+          <code class="wallet-addr-text">${escapeHtml(short)}</code>
+          <button class="wallet-copy-btn" data-address="${escapeHtml(w.address)}" title="コピー">⧉</button>
+        </span>`;
+      }).join("");
+      walletInfo.innerHTML = `<div class="wallet-info-row"><span class="wallet-info-label">ウォレットアドレス</span>${chips}</div>`;
+      walletInfo.classList.remove("hidden");
+      walletInfo.querySelectorAll(".wallet-copy-btn").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          navigator.clipboard.writeText(btn.dataset.address).then(() => {
+            const orig = btn.textContent;
+            btn.textContent = "✓";
+            setTimeout(() => { btn.textContent = orig; }, 1500);
+          });
+        });
+      });
+    }
     data.assets.forEach((a) => {
       const tr = document.createElement("tr");
       tr.innerHTML = `

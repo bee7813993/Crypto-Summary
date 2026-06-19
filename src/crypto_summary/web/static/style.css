@@ -656,3 +656,51 @@ tbody tr:hover { background: var(--bg-elev); }
   .controls-row { gap: 4px; }
   .main-content { padding: 16px; overflow-y: auto; }
 }
+
+/* ---- ウォレットアドレス表示（口座詳細） ---- */
+#account-wallet-info {
+  margin-bottom: 16px;
+}
+.wallet-info-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.wallet-info-label {
+  font-size: 12px;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+.wallet-address-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 12px;
+}
+.wallet-chain-label {
+  color: var(--accent);
+  font-weight: 600;
+  font-size: 11px;
+}
+.wallet-addr-text {
+  font-family: monospace;
+  color: var(--text);
+  letter-spacing: 0.02em;
+}
+.wallet-copy-btn {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  padding: 0 2px;
+  font-size: 13px;
+  line-height: 1;
+}
+.wallet-copy-btn:hover {
+  color: var(--accent);
+}

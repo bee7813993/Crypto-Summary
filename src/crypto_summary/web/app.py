@@ -257,12 +257,28 @@ def _account_assets(account: str, db_path: str, currency: str) -> dict:
         key=lambda a: (a["value"] is None, -(Decimal(a["value"]) if a["value"] else Decimal("0"))),
     )
 
+    store = SecretStore(db_path)
+    wallet_map = {w["source_id"]: w for w in store.list_wallets()}
+    account_wallets = [
+        {
+            "source_id": sid,
+            "address": wallet_map[sid]["address"],
+            "chain": wallet_map[sid]["chain"],
+            "chain_label": _WALLET_CHAIN_LABELS.get(
+                wallet_map[sid]["chain"], wallet_map[sid]["chain"]
+            ),
+        }
+        for sid in sorted(target_ids)
+        if sid in wallet_map
+    ]
+
     return {
         "currency": currency,
         "account": account,
         "assets": assets,
         "total_value": str(total),
         "warnings": warnings,
+        "wallets": account_wallets,
     }
 
 
