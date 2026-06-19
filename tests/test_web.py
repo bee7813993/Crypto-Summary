@@ -463,3 +463,62 @@ def test_wallet_sync_evm_calls_all_chains(client, monkeypatch):
     assert r.status_code == 200
     # 5 つの EVM チェーンすべてがスキャンされる
     assert len(scanned_chains) == len(es.CHAIN_IDS)
+
+
+# ---- スパムトークンフィルター ----
+
+@pytest.fixture
+def spam_client(tmp_path: Path, monkeypatch) -> TestClient:
+    """スパムトークン（価格なし・整数1単位）を含む DB のクライアント。"""
+    db = Ledger(tmp_path / "spam.db")
+    # 正規トークン
+    db.upsert(_deposit("wallet", "BTC", "0.5", 1))
+    # 価格なしだが小数残高 → スパムではない
+    db.upsert(_deposit("wallet", "SENTUSD", "806.1", 2))
+    # スパム：価格なし・整数1単位
+    for i, tok in enumerate(["CAT", "DOG", "SHIB", "REKT"], start=3):
+        db.upsert(_deposit("wallet", tok, "1", i))
+    # スパム境界：10単位ちょうど（スパム）
+    db.upsert(_deposit("wallet", "SPAM10", "10", 10))
+    # 非スパム：11単位（閾値超え）
+    db.upsert(_deposit("wallet", "LEGIT11", "11", 11))
+    db.close()
+
+    def fake_prices(assets, currency, warn=None):
+        return {"BTC": Decimal("60000")} if "BTC" in [a.upper() for a in assets] else {}
+
+    monkeypatch.setattr(web_app, "fetch_prices", fake_prices)
+    return TestClient(web_app.create_app(str(tmp_path / "spam.db")))
+
+
+def test_spam_tokens_hidden_from_summary(spam_client):
+    """スパムトークン（価格なし・整数≤10）は /api/summary から除外される。"""
+    d = spam_client.get("/api/summary?currency=USD").json()
+    asset_names = [a["asset"] for a in d["assets"]]
+    # スパム（CAT DOG SHIB REKT SPAM10）が含まれない
+    for spam in ("CAT", "DOG", "SHIB", "REKT", "SPAM10"):
+        assert spam not in asset_names, f"{spam} should be filtered as spam"
+    # 正規トークンは残る
+    assert "BTC" in asset_names
+    assert "SENTUSD" in asset_names   # 小数残高 → スパムではない
+    assert "LEGIT11" in asset_names   # 11単位 → 閾値超えでスパムでない
+    # unpriced リストにもスパムは出ない
+    assert not any(s in d["unpriced"] for s in ("CAT", "DOG", "SHIB", "REKT", "SPAM10"))
+
+
+def test_spam_tokens_hidden_from_account_assets(spam_client):
+    """スパムトークンは /api/account-assets からも除外される。"""
+    d = spam_client.get("/api/account-assets?account=Wallet&currency=USD").json()
+    asset_names = [a["asset"] for a in d["assets"]]
+    for spam in ("CAT", "DOG", "SHIB", "REKT", "SPAM10"):
+        assert spam not in asset_names
+    assert "BTC" in asset_names
+    assert "SENTUSD" in asset_names
+
+
+def test_spam_not_counted_in_sources_asset_count(spam_client):
+    """スパムトークンは /api/sources の asset_count に含まれない。"""
+    d = spam_client.get("/api/sources?currency=USD").json()
+    wallet_src = next(s for s in d["sources"] if "wallet" in s["source_ids"])
+    # BTC, SENTUSD, LEGIT11 の 3 つ（スパム 5 つは除外）
+    assert wallet_src["asset_count"] == 3

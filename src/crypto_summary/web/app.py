@@ -32,6 +32,17 @@ from ..sources.csv_import import EXCHANGE_SOURCES
 
 _STATIC_DIR = Path(__file__).parent / "static"
 _DUST = Decimal("0.00000001")
+# スパムエアドロップ判定：価格不明 ＋ 正の整数単位 ＋ 少量（≤10）
+_SPAM_MAX_UNITS = Decimal("10")
+
+
+def _is_spam_token(balance: Decimal, price: "Decimal | None") -> bool:
+    """価格不明かつ少量整数残高のトークンをスパムエアドロップと見なす。"""
+    if price is not None:
+        return False
+    if balance <= 0:
+        return False
+    return balance <= _SPAM_MAX_UNITS and balance == balance.to_integral_value()
 
 # デフォルトのグルーピング設定（設定ファイルが存在しない場合に使われる）。
 # ユーザーは Web UI から変更でき、DB と同じディレクトリの .accounts.json に保存される。
@@ -126,6 +137,12 @@ def _summary(db_path: str, currency: str) -> dict:
             "has_price": price is not None,
         })
 
+    # スパムエアドロップを除外
+    assets = [
+        a for a in assets
+        if not _is_spam_token(Decimal(a["balance"]), prices.get(a["asset"].upper()))
+    ]
+
     assets.sort(
         key=lambda a: (a["value"] is None, -(Decimal(a["value"]) if a["value"] else Decimal("0"))),
     )
@@ -182,7 +199,10 @@ def _sources(db_path: str, currency: str) -> dict:
 
     sources = []
     for name, bals in group_bals.items():
-        bals = {a: v for a, v in bals.items() if abs(v) >= _DUST}
+        bals = {
+            a: v for a, v in bals.items()
+            if abs(v) >= _DUST and not _is_spam_token(v, prices.get(a.upper()))
+        }
         total = Decimal("0")
         for asset, balance in bals.items():
             price = prices.get(asset.upper())
@@ -252,6 +272,12 @@ def _account_assets(account: str, db_path: str, currency: str) -> dict:
             "value": (str(value) if value is not None else None),
             "has_price": price is not None,
         })
+
+    # スパムエアドロップを除外
+    assets = [
+        a for a in assets
+        if not _is_spam_token(Decimal(a["balance"]), prices.get(a["asset"].upper()))
+    ]
 
     assets.sort(
         key=lambda a: (a["value"] is None, -(Decimal(a["value"]) if a["value"] else Decimal("0"))),
