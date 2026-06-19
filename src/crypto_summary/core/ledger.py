@@ -62,7 +62,14 @@ _COLS = [
 class Ledger:
     def __init__(self, db_path: str | Path = "ledger.db"):
         self.db_path = Path(db_path)
-        self._conn = sqlite3.connect(str(self.db_path))
+        # timeout: 書き込みロック待ちの最大秒数（既定 5s では大きなCSV取込中の
+        # 読み取りが "database is locked" になりやすい）。
+        self._conn = sqlite3.connect(str(self.db_path), timeout=30)
+        # WAL: 書き込み中でも読み取りを並行可能にする。Web UI で取込中に
+        # 別画面へ移動しても読み取りクエリが 500 にならないようにする。
+        self._conn.execute("PRAGMA journal_mode=WAL")
+        self._conn.execute("PRAGMA busy_timeout=30000")
+        self._conn.execute("PRAGMA synchronous=NORMAL")
         self._conn.executescript(_SCHEMA)
         self._conn.commit()
 
