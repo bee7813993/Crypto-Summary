@@ -1076,7 +1076,7 @@ def _portfolio_history(
             if price is not None:
                 total_value += balance * price
                 has_any_price = True
-            else:
+            elif not _is_spam_token(balance, None):
                 unpriced.add(asset)
 
         if has_any_price:
