@@ -110,6 +110,8 @@ def test_asset_scope(app_client):
     iso_5 = (date.today() - timedelta(days=5)).isoformat()
     assert iso_5 in pts
     assert Decimal(pts[iso_5]) == Decimal("45000")
+    # asset スコープでは各ポイントに保有数量(balance)が含まれる
+    assert all("balance" in p for p in data["points"])
 
 
 def test_account_scope(app_client):
@@ -119,6 +121,8 @@ def test_account_scope(app_client):
     assert data["scope"] == "account:bybit1"
     pts = data["points"]
     assert len(pts) > 0
+    # total/account スコープは複数資産が混在するため balance は付かない
+    assert all("balance" not in p for p in pts)
 
 
 def test_empty_ledger_returns_no_points(tmp_path, monkeypatch):

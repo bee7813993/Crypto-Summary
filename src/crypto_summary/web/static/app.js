@@ -196,7 +196,7 @@ function buildChartSlices(priced, total) {
     if (pct < 1) {
       otherValue += v;
     } else {
-      slices.push({ label: a.asset, value: v });
+      slices.push({ label: a.asset, value: v, balance: a.balance });
     }
   });
 
@@ -306,13 +306,17 @@ const centerTextPlugin = {
     const cur = chart.$currency;
     const total = chart.$total || 0;
 
-    let title, sub;
+    let title, sub, amount;
     const idx = chart.$activeIndex;
     if (idx != null && chart.data.labels[idx] != null) {
       const val = chart.data.datasets[0].data[idx];
       const pct = total > 0 ? ((val / total) * 100).toFixed(1) + "%" : "";
       title = chart.data.labels[idx];
       sub = fmtMoney(val, cur) + (pct ? `  (${pct})` : "");
+      const bal = (chart.$balances || [])[idx];
+      if (bal != null && bal !== "") {
+        amount = fmtAmount(bal) + " " + title;
+      }
     } else {
       title = "合計";
       sub = fmtMoney(total, cur);
@@ -321,12 +325,18 @@ const centerTextPlugin = {
     ctx.save();
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
+    const shift = amount ? 6 : 0;  // 残高表示があるときは上へ寄せる
     ctx.fillStyle = "#8b949e";
     ctx.font = "12px -apple-system, 'Noto Sans JP', sans-serif";
-    ctx.fillText(title, cx, cy - 11);
+    ctx.fillText(title, cx, cy - 11 - shift);
     ctx.fillStyle = "#e6edf3";
     ctx.font = "600 17px -apple-system, 'Noto Sans JP', sans-serif";
-    ctx.fillText(sub, cx, cy + 10);
+    ctx.fillText(sub, cx, cy + 10 - shift);
+    if (amount) {
+      ctx.fillStyle = "#8b949e";
+      ctx.font = "11px -apple-system, 'Noto Sans JP', sans-serif";
+      ctx.fillText(amount, cx, cy + 26 - shift);
+    }
     ctx.restore();
   },
 };
@@ -371,6 +381,7 @@ function renderChart(slices, currency, total) {
   allocChart.$currency = currency;
   allocChart.$total = total;
   allocChart.$activeIndex = null;
+  allocChart.$balances = slices.map((s) => s.balance);
 }
 
 function renderLegend(slices, currency, total) {
@@ -380,11 +391,14 @@ function renderLegend(slices, currency, total) {
     const pct = total > 0 ? (s.value / total) * 100 : 0;
     const row = document.createElement("div");
     row.className = "legend-item";
+    const balText = (s.balance != null && s.balance !== "")
+      ? `<span class="legend-balance">${fmtAmount(s.balance)} ${escapeHtml(s.label)}</span>`
+      : "";
     row.innerHTML = `
       <span class="legend-swatch" style="background:${s.color}"></span>
       <span class="legend-name">${escapeHtml(s.label)}</span>
       <span class="legend-pct">${pct.toFixed(1)}%</span>
-      <span class="legend-value">${fmtMoney(s.value, currency)}</span>
+      <span class="legend-value">${fmtMoney(s.value, currency)}${balText}</span>
     `;
     row.addEventListener("mouseenter", () => setChartActive(i));
     row.addEventListener("mouseleave", () => setChartActive(null));
@@ -419,6 +433,7 @@ function renderHistoryChart(canvasId, points, currency, existingChart) {
 
   const labels = points.map((p) => p.t);
   const values = points.map((p) => Number(p.value));
+  const balances = points.map((p) => (p.balance != null ? p.balance : null));
 
   return new Chart(canvas, {
     type: "line",
@@ -474,6 +489,10 @@ function renderHistoryChart(canvasId, points, currency, existingChart) {
           callbacks: {
             title: ([item]) => item.label,
             label: (item) => "  " + fmtMoney(item.parsed.y, currency),
+            afterLabel: (item) => {
+              const bal = balances[item.dataIndex];
+              return bal != null ? "  " + fmtAmount(bal) : undefined;
+            },
           },
         },
       },

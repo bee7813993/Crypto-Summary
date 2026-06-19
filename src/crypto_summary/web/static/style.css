@@ -176,7 +176,17 @@ select { flex: 1; }
 .legend-swatch { width: 11px; height: 11px; border-radius: 3px; }
 .legend-name { color: var(--text); font-weight: 500; }
 .legend-pct { color: var(--text-dim); font-variant-numeric: tabular-nums; text-align: right; min-width: 46px; }
-.legend-value { color: var(--text); font-variant-numeric: tabular-nums; text-align: right; min-width: 84px; }
+.legend-value {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  min-width: 84px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  line-height: 1.3;
+}
+.legend-balance { color: var(--text-dim); font-size: 11px; }
 .legend-item.dim { opacity: .45; }
 
 /* ---- Tables ---- */

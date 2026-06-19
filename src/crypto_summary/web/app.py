@@ -885,9 +885,12 @@ def _portfolio_history(
 
         total_value = Decimal("0")
         has_any_price = False
+        asset_balance = Decimal("0")  # asset スコープ用の保有数量
         for asset, balance in prev_snapshot.items():
             if asset_filter and asset != asset_filter:
                 continue
+            if asset_filter:
+                asset_balance += balance
             day_prices = price_hist.get(asset, {})
             price = day_prices.get(iso)
             if price is not None:
@@ -897,7 +900,10 @@ def _portfolio_history(
                 unpriced.add(asset)
 
         if has_any_price:
-            points.append({"t": iso, "value": str(total_value)})
+            point = {"t": iso, "value": str(total_value)}
+            if asset_filter:
+                point["balance"] = str(asset_balance)
+            points.append(point)
 
         d += timedelta(days=1)
 
