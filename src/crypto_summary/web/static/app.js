@@ -713,8 +713,8 @@ async function _fetchHistAndRender(scope, range, canvasId, loadingId, unpricedId
     );
     setRef(renderHistoryChart(canvasId, data.points, currency, getRef()));
     if (unpricedEl) {
-      if (data.unpriced && data.unpriced.length) {
-        unpricedEl.textContent = t("label.unpricedAssets") + data.unpriced.join(", ");
+      if (data.is_partial) {
+        unpricedEl.textContent = t("label.historyPartial");
         unpricedEl.classList.remove("hidden");
       } else {
         unpricedEl.classList.add("hidden");

@@ -23,7 +23,7 @@ from ..core.ledger import Ledger
 from ..core.models import CanonicalTx, TxType
 from ..core.portfolio import assets_in_range, daily_balances
 from ..core.price_history import fetch_price_history
-from ..core.prices import SUPPORTED_CURRENCIES, fetch_coin_icons, fetch_prices
+from ..core.prices import COINGECKO_IDS, SUPPORTED_CURRENCIES, fetch_coin_icons, fetch_prices
 from ..core.secrets import SecretStore, SecretStoreError
 from ..sinks.cryptact_csv import to_cryptact_csv_string
 from ..sinks.koinly_csv import to_koinly_csv_string
@@ -1138,12 +1138,18 @@ def _portfolio_history(
 
         d += timedelta(days=1)
 
+    # CoinGecko ID がない資産（スパム・未対応トークン）は unpriced から除外する。
+    # 残るのは「ID はあるが取得失敗」の資産のみ（一時的な取得不完全）。
+    unpriced_supported = sorted(a for a in unpriced if a.upper() in COINGECKO_IDS)
+    is_partial = bool(warnings) or bool(unpriced_supported)
+
     return {
         "currency": currency,
         "range": range_str,
         "scope": scope,
         "points": points,
-        "unpriced": sorted(unpriced),
+        "unpriced": unpriced_supported,
+        "is_partial": is_partial,
         "warnings": warnings,
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }

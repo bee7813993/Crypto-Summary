@@ -689,8 +689,12 @@ html.light .tx-type-transfer { background: #d1fae5; color: #065f46; }
 }
 .history-unpriced {
   margin-top: 8px;
-  font-size: 11px;
+  font-size: 13px;
   color: var(--text-dim);
+  padding: 6px 10px;
+  background: var(--bg-elev);
+  border-radius: 6px;
+  border-left: 3px solid var(--accent);
 }
 
 /* ---- Mobile: サイドバーを上部に折りたたむ ---- */
