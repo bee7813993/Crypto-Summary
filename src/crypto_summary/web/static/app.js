@@ -546,6 +546,7 @@ function renderLegend(slices, currency, total) {
       : "";
     row.innerHTML = `
       <span class="legend-swatch" style="background:${s.color}"></span>
+      ${coinIconHtml(s.label)}
       <span class="legend-name">${escapeHtml(s.label)}</span>
       <span class="legend-pct">${pct.toFixed(1)}%</span>
       <span class="legend-value">${fmtMoney(s.value, currency)}${balText}</span>

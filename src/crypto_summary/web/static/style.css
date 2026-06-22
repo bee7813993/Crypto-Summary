@@ -176,7 +176,7 @@ select { flex: 1; }
   border-top: 1px solid var(--border);
   padding-top: 12px;
   display: grid;
-  grid-template-columns: 14px 1fr auto auto;
+  grid-template-columns: 14px 22px 1fr auto auto;
   column-gap: 10px;
   row-gap: 2px;
 }
