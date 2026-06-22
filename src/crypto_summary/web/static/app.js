@@ -446,12 +446,13 @@ function renderSources(data) {
 // ---- チャート ----
 
 // Canvas 内に描画する画像のプリロードキャッシュ。
-// ロード完了時にチャートを再描画するため crossOrigin = "anonymous" が必要。
+// crossOrigin は付けない: CoinGecko CDN は CORS ヘッダーを返さないため、
+// anonymous 指定だと読み込み自体が失敗する。表示目的の drawImage は
+// canvas が汚染されても問題ない（ピクセル読み取りはしないため）。
 const _imgCache = new Map();
 function _getImg(url) {
   if (_imgCache.has(url)) return _imgCache.get(url);
   const img = new Image();
-  img.crossOrigin = "anonymous";
   img.onload = () => { if (allocChart) allocChart.draw(); };
   img.src = url;
   _imgCache.set(url, img);
