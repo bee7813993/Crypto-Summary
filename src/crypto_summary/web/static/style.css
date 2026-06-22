@@ -815,6 +815,15 @@ html.light .history-unpriced {
 .user-details { flex: 1; min-width: 0; }
 .user-name { font-size: 12px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .user-email { font-size: 11px; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* 金額マスクモードでは個人情報（名前・メール・アバター）もぼかす */
+.user-info.masked .user-name,
+.user-info.masked .user-email,
+.user-info.masked .user-avatar {
+  filter: blur(5px);
+  user-select: none;
+  transition: filter .15s;
+}
 .logout-btn {
   background: none; border: none; color: var(--text-dim);
   font-size: 16px; cursor: pointer; padding: 4px; flex-shrink: 0;

@@ -113,6 +113,14 @@ function _syncMaskBtn() {
   btn.title = maskAmounts ? t("toggle.maskOff") : t("toggle.maskOn");
 }
 
+// マスクモードのときはサイドバーのGoogleアカウント情報（名前・メール・
+// アバター）をぼかして個人情報を隠す。
+function _syncUserMask() {
+  const info = document.getElementById("user-info");
+  if (!info) return;
+  info.classList.toggle("masked", maskAmounts);
+}
+
 function _syncLangBtn() {
   const btn = document.getElementById("lang-toggle");
   if (!btn) return;
@@ -132,6 +140,7 @@ document.getElementById("mask-toggle").addEventListener("click", () => {
   maskAmounts = !maskAmounts;
   localStorage.setItem("cs_mask", maskAmounts ? "1" : "0");
   _syncMaskBtn();
+  _syncUserMask();
   // HTML の金額表示・グラフのテキストを再描画して一括で反映する。
   router();
 });
@@ -2182,6 +2191,7 @@ async function checkAuth() {
     }
     document.getElementById("user-name").textContent = me.name || "";
     document.getElementById("user-email").textContent = me.email || "";
+    _syncUserMask();
     return true;
   } catch (e) {
     return true; // ネットワークエラーは無視してアプリを表示
