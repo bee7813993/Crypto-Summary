@@ -53,17 +53,18 @@ function fmtJpy(value) {
   const man = Math.floor(manPart / 10_000);
   const yen = manPart % 10_000;
   let str = "";
-  if (oku > 0) str += oku.toLocaleString() + "億";
-  if (man > 0) str += man.toLocaleString() + "万";
-  if (yen > 0 || str === "") str += yen.toLocaleString() + "円";
+  if (oku > 0) str += oku + "億";
+  if (man > 0) str += man + "万";
+  if (yen > 0 || str === "") str += yen + "円";
   else str += "円";
   return str;
 }
 
 // 通貨セレクトのオプションに完全名を付与する
+const _CURRENCY_FLAGS = { USD: "🇺🇸", JPY: "🇯🇵", EUR: "🇪🇺", GBP: "🇬🇧" };
 const _CURRENCY_LABELS = {
-  ja: { USD: "USD　米ドル", JPY: "JPY　日本円", EUR: "EUR　ユーロ", GBP: "GBP　英ポンド" },
-  en: { USD: "USD  US Dollar", JPY: "JPY  Japanese Yen", EUR: "EUR  Euro", GBP: "GBP  Pound Sterling" },
+  ja: { USD: "🇺🇸　USD　米ドル", JPY: "🇯🇵　JPY　日本円", EUR: "🇪🇺　EUR　ユーロ", GBP: "🇬🇧　GBP　英ポンド" },
+  en: { USD: "🇺🇸  USD  US Dollar", JPY: "🇯🇵  JPY  Japanese Yen", EUR: "🇪🇺  EUR  Euro", GBP: "🇬🇧  GBP  Pound Sterling" },
 };
 function _syncCurrencyLabels() {
   const sel = document.getElementById("currency");
@@ -1128,7 +1129,14 @@ async function _updateAssetDropdown(account) {
 async function loadTransactionsPage(account, asset, since, until, page = 1) {
   await _ensureAccountOptions();
   ensureExportFormats();
-  initTaxExportPanel();
+  await initTaxExportPanel();
+
+  // 口座で絞り込まれている場合は確定申告用エクスポートの口座も合わせる
+  const taxAcct = document.getElementById("tax-account");
+  if (taxAcct) {
+    const want = account || "";
+    if ([...taxAcct.options].some((o) => o.value === want)) taxAcct.value = want;
+  }
 
   // フィルタUIを同期
   const selAccount = document.getElementById("tx-filter-account");
