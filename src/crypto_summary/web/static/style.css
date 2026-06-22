@@ -141,6 +141,7 @@ select { flex: 1; }
 }
 .hero-label { color: var(--text-dim); font-size: 14px; }
 .hero-value { font-size: 40px; font-weight: 700; letter-spacing: .5px; margin: 4px 0; }
+.hero-jpy { font-size: 15px; color: var(--text-dim); margin: -2px 0 4px; letter-spacing: .3px; }
 .hero-sub { color: var(--text-dim); font-size: 13px; }
 
 /* ---- Grid ---- */
@@ -830,3 +831,30 @@ html.light .history-unpriced {
   text-decoration: none;
 }
 .logout-btn:hover { color: var(--red); border: none; }
+
+/* ---- 確定申告用エクスポートパネル ---- */
+.tax-export-panel { padding: 16px 20px; margin-bottom: 16px; }
+.tax-export-panel h2 { margin-bottom: 12px; }
+.tax-export-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: flex-end;
+}
+.tax-year-btns { display: flex; gap: 4px; flex-wrap: wrap; }
+.tax-year-btn {
+  padding: 5px 10px;
+  font-size: 13px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg-elev);
+  color: var(--text-dim);
+  cursor: pointer;
+  line-height: 1;
+}
+.tax-year-btn:hover { border-color: var(--accent); color: var(--text); }
+.tax-year-btn.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}

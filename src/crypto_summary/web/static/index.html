@@ -83,6 +83,7 @@
         <section class="hero">
           <div class="hero-label" data-i18n="dash.totalValue">総資産評価額</div>
           <div class="hero-value" id="total-value">—</div>
+          <div id="total-jpy" class="hero-jpy hidden"></div>
           <div class="hero-sub" id="total-sub">読み込み中…</div>
         </section>
 
@@ -348,6 +349,30 @@
 
       <!-- 取引履歴ページ -->
       <div id="page-transactions" class="page hidden">
+
+        <!-- 確定申告用エクスポートパネル -->
+        <div class="card tax-export-panel">
+          <h2 data-i18n="label.taxExport">確定申告用エクスポート</h2>
+          <div class="tax-export-row">
+            <div class="filter-group">
+              <span class="filter-label" data-i18n="label.taxYear">年度</span>
+              <div class="tax-year-btns" id="tax-year-btns"></div>
+            </div>
+            <div class="filter-group">
+              <span class="filter-label" data-i18n="th.account">口座</span>
+              <select id="tax-account" class="filter-date">
+                <option value="" data-i18n="label.allAccounts">すべての口座</option>
+              </select>
+            </div>
+            <div class="filter-group">
+              <span class="filter-label" data-i18n="label.taxFormat">形式</span>
+              <select id="tax-format" class="filter-date"></select>
+            </div>
+            <button id="tax-export-btn" class="action-btn" data-i18n="btn.taxExport">⬇ 確定申告用 CSV</button>
+          </div>
+          <div id="tax-export-result" class="settings-result hidden"></div>
+        </div>
+
         <div class="tx-header">
           <h1 class="page-title" data-i18n="nav.transactions">取引履歴</h1>
           <button id="tx-add-btn" class="action-btn" data-i18n="btn.manualAdd">＋ 手動追加</button>

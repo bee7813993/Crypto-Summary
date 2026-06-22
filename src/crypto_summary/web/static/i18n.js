@@ -247,7 +247,13 @@ var TRANSLATIONS = {
     // Login screen
     "login.sub": "ポートフォリオトラッカー",
     "login.btn": "Google でログイン",
-    "login.logout": "ログアウト"
+    "login.logout": "ログアウト",
+
+    // Tax export panel
+    "label.taxExport": "確定申告用エクスポート",
+    "label.taxYear": "年度",
+    "label.taxFormat": "形式",
+    "btn.taxExport": "⬇ 確定申告用 CSV"
   },
 
   en: {
@@ -495,7 +501,13 @@ var TRANSLATIONS = {
     // Login screen
     "login.sub": "Portfolio Tracker",
     "login.btn": "Sign in with Google",
-    "login.logout": "Log out"
+    "login.logout": "Log out",
+
+    // Tax export panel
+    "label.taxExport": "Tax Filing Export",
+    "label.taxYear": "Year",
+    "label.taxFormat": "Format",
+    "btn.taxExport": "⬇ Export for Tax"
   }
 };
 

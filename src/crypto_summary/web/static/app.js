@@ -43,6 +43,37 @@ function fmtMoney(value, currency) {
   return sym + n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
+// JPY 専用: 億・万・円 単位のサブ表示用
+function fmtJpy(value) {
+  if (maskAmounts) return "¥●●●●●";
+  const n = Math.round(Number(value));
+  if (n === 0) return "0円";
+  const oku = Math.floor(n / 100_000_000);
+  const manPart = n % 100_000_000;
+  const man = Math.floor(manPart / 10_000);
+  const yen = manPart % 10_000;
+  let str = "";
+  if (oku > 0) str += oku.toLocaleString() + "億";
+  if (man > 0) str += man.toLocaleString() + "万";
+  if (yen > 0 || str === "") str += yen.toLocaleString() + "円";
+  else str += "円";
+  return str;
+}
+
+// 通貨セレクトのオプションに完全名を付与する
+const _CURRENCY_LABELS = {
+  ja: { USD: "USD　米ドル", JPY: "JPY　日本円", EUR: "EUR　ユーロ", GBP: "GBP　英ポンド" },
+  en: { USD: "USD  US Dollar", JPY: "JPY  Japanese Yen", EUR: "EUR  Euro", GBP: "GBP  Pound Sterling" },
+};
+function _syncCurrencyLabels() {
+  const sel = document.getElementById("currency");
+  if (!sel) return;
+  const labels = _CURRENCY_LABELS[_lang] || _CURRENCY_LABELS.ja;
+  [...sel.options].forEach((opt) => {
+    opt.textContent = labels[opt.value] || opt.value;
+  });
+}
+
 function fmtAmount(value) {
   if (maskAmounts) return "●●●●●";
   return Number(value).toLocaleString(undefined, { maximumFractionDigits: 8 });
@@ -133,6 +164,7 @@ document.getElementById("lang-toggle").addEventListener("click", () => {
   _syncThemeBtn();
   _syncMaskBtn();
   _syncLangBtn();
+  _syncCurrencyLabels();
   router();
 });
 
@@ -308,6 +340,15 @@ function renderSummary(data) {
   const total = Number(data.total_value) || 0;
 
   document.getElementById("total-value").textContent = fmtMoney(data.total_value, cur);
+  const jpyEl = document.getElementById("total-jpy");
+  if (jpyEl) {
+    if (cur === "JPY") {
+      jpyEl.textContent = fmtJpy(data.total_value);
+      jpyEl.classList.remove("hidden");
+    } else {
+      jpyEl.classList.add("hidden");
+    }
+  }
   document.getElementById("total-sub").textContent =
     t("dash.assetsSummary", { count: data.asset_count, priced: data.priced_count });
   document.getElementById("generated").textContent =
@@ -1087,6 +1128,7 @@ async function _updateAssetDropdown(account) {
 async function loadTransactionsPage(account, asset, since, until, page = 1) {
   await _ensureAccountOptions();
   ensureExportFormats();
+  initTaxExportPanel();
 
   // フィルタUIを同期
   const selAccount = document.getElementById("tx-filter-account");
@@ -1379,6 +1421,104 @@ document.getElementById("tx-export-btn").addEventListener("click", async () => {
     result.textContent = t("status.exportFail", { error: e.message });
     result.classList.remove("hidden");
   }
+});
+
+// ---- 確定申告用エクスポートパネル ----
+
+let _taxYear = null;
+let _taxPanelLoaded = false;
+
+async function initTaxExportPanel() {
+  if (_taxPanelLoaded) return;
+  _taxPanelLoaded = true;
+
+  // 年度ボタン（今年 + 過去3年）
+  const btns = document.getElementById("tax-year-btns");
+  if (btns) {
+    const cur = new Date().getFullYear();
+    for (let y = cur; y >= cur - 3; y--) {
+      const btn = document.createElement("button");
+      btn.className = "tax-year-btn";
+      btn.textContent = `${y}`;
+      btn.dataset.year = y;
+      btn.addEventListener("click", () => {
+        _taxYear = y;
+        btns.querySelectorAll(".tax-year-btn").forEach((b) => b.classList.remove("active"));
+        btn.classList.add("active");
+      });
+      btns.appendChild(btn);
+    }
+    // デフォルト: 前年を選択
+    _taxYear = cur - 1;
+    btns.querySelector(`[data-year="${cur - 1}"]`)?.classList.add("active");
+  }
+
+  // 口座リスト（API から取得して複製）
+  await _ensureAccountOptions();
+  const taxAcct = document.getElementById("tax-account");
+  const filterAcct = document.getElementById("tx-filter-account");
+  if (taxAcct && filterAcct) {
+    // すべての口座 option を残しつつ各口座を追加
+    [...filterAcct.options].forEach((opt) => {
+      if (!opt.value) return; // 「すべての口座」は既にある
+      const o = document.createElement("option");
+      o.value = opt.value;
+      o.textContent = opt.textContent;
+      taxAcct.appendChild(o);
+    });
+  }
+
+  // エクスポート形式
+  await ensureExportFormats();
+  const taxFmt = document.getElementById("tax-format");
+  const mainFmt = document.getElementById("tx-export-format");
+  if (taxFmt && mainFmt) {
+    taxFmt.innerHTML = mainFmt.innerHTML;
+  }
+}
+
+document.getElementById("tax-export-btn").addEventListener("click", async () => {
+  if (!_taxYear) return;
+  const result = document.getElementById("tax-export-result");
+  result.classList.add("hidden");
+
+  const format = document.getElementById("tax-format").value;
+  const account = document.getElementById("tax-account").value || null;
+  const since = `${_taxYear}-01-01`;
+  const until = `${_taxYear}-12-31`;
+
+  let url = `/api/export?format=${encodeURIComponent(format)}&since=${since}&until=${until}`;
+  if (account) url += `&account=${encodeURIComponent(account)}`;
+
+  result.className = "settings-result ok";
+  result.textContent = t("status.exportRunning");
+  result.classList.remove("hidden");
+
+  try {
+    const resp = await fetch(url);
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      throw new Error(err.detail || `HTTP ${resp.status}`);
+    }
+    const cd = resp.headers.get("Content-Disposition") || "";
+    const m = cd.match(/filename="?([^"]+)"?/);
+    const filename = m ? m[1] : `${format}.csv`;
+    const blob = await resp.blob();
+    const blobUrl = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = blobUrl;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(blobUrl);
+    result.className = "settings-result ok";
+    result.textContent = t("status.exportDoneFile", { filename });
+  } catch (e) {
+    result.className = "settings-result err";
+    result.textContent = t("status.exportFail", { error: e.message });
+  }
+  result.classList.remove("hidden");
 });
 
 // ---- 手動追加フォーム ----
@@ -2204,6 +2344,7 @@ async function checkAuth() {
   _syncThemeBtn();
   _syncMaskBtn();
   _syncLangBtn();
+  _syncCurrencyLabels();
   applyI18n();
   // 初期描画は現在の URL ハッシュから（直リンク・リロードで状態復元）。
   router();
