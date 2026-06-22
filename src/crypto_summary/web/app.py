@@ -23,7 +23,7 @@ from ..core.ledger import Ledger
 from ..core.models import CanonicalTx, TxType
 from ..core.portfolio import assets_in_range, daily_balances
 from ..core.price_history import fetch_price_history
-from ..core.prices import SUPPORTED_CURRENCIES, fetch_prices
+from ..core.prices import SUPPORTED_CURRENCIES, fetch_coin_icons, fetch_prices
 from ..core.secrets import SecretStore, SecretStoreError
 from ..sinks.cryptact_csv import to_cryptact_csv_string
 from ..sinks.koinly_csv import to_koinly_csv_string
@@ -1378,6 +1378,10 @@ def create_app(
         db: str = Depends(get_db_path),
     ) -> dict:
         return _portfolio_history(db, currency, range, scope)
+
+    @app.get("/api/coin-icons")
+    def coin_icons() -> dict:
+        return fetch_coin_icons()
 
     @app.get("/api/meta")
     def meta() -> dict:

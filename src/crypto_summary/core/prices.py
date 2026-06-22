@@ -122,6 +122,59 @@ def _fiat_rates(warn: WarnFn | None = None) -> dict[str, Decimal]:
     return out
 
 
+_ICON_CACHE_TTL = 86400  # 24時間（アイコンURLは変わらないため長めに設定）
+
+
+def _icon_cache_path() -> Path:
+    return Path.home() / ".crypto_summary_icons.json"
+
+
+def fetch_coin_icons() -> dict[str, str]:
+    """既知の暗号資産のアイコンURL（thumb）を返す。
+
+    CoinGecko の /coins/markets エンドポイントからアイコン画像URLを取得して
+    ファイルキャッシュする（24時間TTL）。
+    返り値: {"BTC": "https://...", "ETH": "https://...", ...}
+    """
+    import httpx
+
+    cache_path = _icon_cache_path()
+    try:
+        cached = json.loads(cache_path.read_text())
+        if time.time() - cached.get("ts", 0) < _ICON_CACHE_TTL:
+            return cached.get("icons", {})
+    except (OSError, json.JSONDecodeError, KeyError):
+        pass
+
+    ids_str = ",".join(COINGECKO_IDS.values())
+    url = (
+        f"https://api.coingecko.com/api/v3/coins/markets"
+        f"?vs_currency=usd&ids={ids_str}&per_page=250&sparkline=false"
+    )
+
+    id_to_symbol = {v: k for k, v in COINGECKO_IDS.items()}
+    icons: dict[str, str] = {}
+    try:
+        _throttle()
+        resp = httpx.get(url, timeout=15)
+        resp.raise_for_status()
+        for coin in resp.json():
+            sym = id_to_symbol.get(coin.get("id", ""))
+            img = coin.get("image") or coin.get("thumb")
+            if sym and img:
+                # thumb サイズに変換（large→thumb で軽量化）
+                icons[sym] = img.replace("/large/", "/thumb/")
+    except Exception:  # noqa: BLE001
+        return {}
+
+    try:
+        cache_path.write_text(json.dumps({"ts": time.time(), "icons": icons}))
+    except OSError:
+        pass
+
+    return icons
+
+
 def fetch_prices(
     assets: list[str],
     currency: str,

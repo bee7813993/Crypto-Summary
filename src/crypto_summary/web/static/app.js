@@ -25,6 +25,14 @@ let showSmall = false;
 let maskAmounts = localStorage.getItem("cs_mask") === "1";
 
 // 推移グラフのインスタンスと状態
+// 暗号資産アイコンURL（/api/coin-icons から取得してキャッシュ）
+let _coinIcons = {};
+async function _loadCoinIcons() {
+  try {
+    _coinIcons = await fetchJSON("/api/coin-icons");
+  } catch (_) { /* ネットワーク失敗時はアイコンなしで続行 */ }
+}
+
 let _histChart = null;
 let _acctHistChart = null;
 let _assetHistChart = null;
@@ -73,6 +81,16 @@ function _syncCurrencyLabels() {
   [...sel.options].forEach((opt) => {
     opt.textContent = labels[opt.value] || opt.value;
   });
+}
+
+function coinIconHtml(symbol) {
+  const url = _coinIcons[symbol.toUpperCase()];
+  if (!url) return `<span class="coin-icon-fallback">${escapeHtml(symbol.charAt(0))}</span>`;
+  return `<img class="coin-icon" src="${escapeHtml(url)}" alt="${escapeHtml(symbol)}" loading="lazy">`;
+}
+
+function assetNameHtml(symbol, swatchHtml = "") {
+  return `<span class="asset-name">${swatchHtml}${coinIconHtml(symbol)}<span class="asset-label">${escapeHtml(symbol)}</span></span>`;
 }
 
 function fmtAmount(value) {
@@ -367,9 +385,7 @@ function renderSummary(data) {
     const tr = document.createElement("tr");
     tr.innerHTML = `
       <td class="clickable-cell" data-action="asset-detail">
-        <span class="asset-name">
-          <span class="swatch" style="background:${color}"></span>${escapeHtml(a.asset)}
-        </span>
+        ${assetNameHtml(a.asset, `<span class="swatch" style="background:${color}"></span>`)}
       </td>
       <td class="num">${fmtAmount(a.balance)}</td>
       <td class="num">${a.price ? fmtMoney(a.price, cur) : '<span class="muted">-</span>'}</td>
@@ -798,7 +814,7 @@ async function loadAccountDetail(name) {
     data.assets.forEach((a) => {
       const tr = document.createElement("tr");
       tr.innerHTML = `
-        <td>${escapeHtml(a.asset)}</td>
+        <td>${assetNameHtml(a.asset)}</td>
         <td class="num">${fmtAmount(a.balance)}</td>
         <td class="num">${a.price ? fmtMoney(a.price, currency) : '<span class="muted">-</span>'}</td>
         <td class="num">${a.value ? fmtMoney(a.value, currency) : '<span class="muted">-</span>'}</td>
@@ -995,7 +1011,7 @@ function renderAllAssets(data, currency) {
     const tr = document.createElement("tr");
     tr.innerHTML = `
       <td class="clickable-cell" data-action="asset-detail">
-        ${escapeHtml(a.asset)} <span class="row-arrow">›</span>
+        ${assetNameHtml(a.asset)} <span class="row-arrow">›</span>
       </td>
       <td class="num">${fmtAmount(a.balance)}</td>
       <td class="num">${a.price ? fmtMoney(a.price, currency) : '<span class="muted">-</span>'}</td>
@@ -2354,6 +2370,8 @@ async function checkAuth() {
   _syncLangBtn();
   _syncCurrencyLabels();
   applyI18n();
+  // アイコンをバックグラウンドで取得してから初期描画する（遅延許容）。
+  await _loadCoinIcons();
   // 初期描画は現在の URL ハッシュから（直リンク・リロードで状態復元）。
   router();
 })();
