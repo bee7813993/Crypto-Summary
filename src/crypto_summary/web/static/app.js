@@ -445,6 +445,30 @@ function renderSources(data) {
 
 // ---- チャート ----
 
+// Canvas 内に描画する画像のプリロードキャッシュ。
+// ロード完了時にチャートを再描画するため crossOrigin = "anonymous" が必要。
+const _imgCache = new Map();
+function _getImg(url) {
+  if (_imgCache.has(url)) return _imgCache.get(url);
+  const img = new Image();
+  img.crossOrigin = "anonymous";
+  img.onload = () => { if (allocChart) allocChart.draw(); };
+  img.src = url;
+  _imgCache.set(url, img);
+  return img;
+}
+
+// 円形クリップしてアイコン画像を Canvas に描画するヘルパー。
+function _drawCircleIcon(ctx, img, cx, cy, r) {
+  if (!img.complete || !img.naturalWidth) return;
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  ctx.clip();
+  ctx.drawImage(img, cx - r, cy - r, r * 2, r * 2);
+  ctx.restore();
+}
+
 const centerTextPlugin = {
   id: "centerText",
   afterDraw(chart) {
@@ -454,8 +478,10 @@ const centerTextPlugin = {
     const cy = (chartArea.top + chartArea.bottom) / 2;
     const cur = chart.$currency;
     const total = chart.$total || 0;
+    const FONT = "-apple-system, 'Noto Sans JP', sans-serif";
+    const ICON_R = 14; // アイコン半径 px
 
-    let title, sub, amount;
+    let title, sub, amount, iconUrl;
     const idx = chart.$activeIndex;
     if (idx != null && chart.data.labels[idx] != null) {
       const val = chart.data.datasets[0].data[idx];
@@ -463,30 +489,46 @@ const centerTextPlugin = {
       title = chart.data.labels[idx];
       sub = fmtMoney(val, cur) + (pct ? `  (${pct})` : "");
       const bal = (chart.$balances || [])[idx];
-      if (bal != null && bal !== "") {
-        amount = fmtAmount(bal) + " " + title;
-      }
+      if (bal != null && bal !== "") amount = fmtAmount(bal) + " " + title;
+      iconUrl = _coinIcons[title.toUpperCase()];
     } else {
       title = t("label.total");
       sub = fmtMoney(total, cur);
     }
 
+    const hasIcon = !!iconUrl;
+    // アイコンあり: icon → title → sub → amount の4段レイアウト
+    // アイコンなし: title → sub (→ amount) の2/3段レイアウト
+    const blockH = hasIcon ? (ICON_R * 2 + 4 + 17 + 6 + 19 + (amount ? 18 : 0)) : (17 + 6 + 19 + (amount ? 18 : 0));
+    let top = cy - blockH / 2;
+
     ctx.save();
     ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
+    ctx.textBaseline = "top";
     const th = chartTheme();
-    const shift = amount ? 6 : 0;  // 残高表示があるときは上へ寄せる
+
+    if (hasIcon) {
+      const img = _getImg(iconUrl);
+      _drawCircleIcon(ctx, img, cx, top + ICON_R, ICON_R);
+      top += ICON_R * 2 + 4;
+    }
+
     ctx.fillStyle = th.tick;
-    ctx.font = "12px -apple-system, 'Noto Sans JP', sans-serif";
-    ctx.fillText(title, cx, cy - 11 - shift);
+    ctx.font = `600 15px ${FONT}`;
+    ctx.fillText(title, cx, top);
+    top += 17 + 6;
+
     ctx.fillStyle = th.tooltipTitle;
-    ctx.font = "600 17px -apple-system, 'Noto Sans JP', sans-serif";
-    ctx.fillText(sub, cx, cy + 10 - shift);
+    ctx.font = `700 17px ${FONT}`;
+    ctx.fillText(sub, cx, top);
+    top += 19;
+
     if (amount) {
       ctx.fillStyle = th.tick;
-      ctx.font = "11px -apple-system, 'Noto Sans JP', sans-serif";
-      ctx.fillText(amount, cx, cy + 26 - shift);
+      ctx.font = `11px ${FONT}`;
+      ctx.fillText(amount, cx, top);
     }
+
     ctx.restore();
   },
 };
