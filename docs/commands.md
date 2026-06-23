@@ -40,8 +40,8 @@ crypto-summary --help
 
 | 指定 | 含まれるもの | 用途 |
 |---|---|---|
-| `pip install -e ".[dev]"` | 本体 + テスト（pytest）+ Web UI（fastapi/uvicorn） | 開発・シングルユーザー動作確認（推奨） |
-| `pip install -e ".[web]"` | 本体 + Web UI + マルチユーザー認証（authlib 等） | Docker / マルチユーザー運用 |
+| `pip install -e ".[dev]"` | 本体 + テスト（pytest）+ Web UI + 認証ライブラリ | 開発・動作確認（推奨） |
+| `pip install -e ".[web]"` | 本体 + Web UI + 認証ライブラリ（テストツールなし） | Docker / 本番運用 |
 | `pip install -e .` | 本体（CLI）のみ | CLI だけ使う場合 |
 
 ---
