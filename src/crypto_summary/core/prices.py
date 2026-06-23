@@ -9,6 +9,7 @@ CLI と Web UI の両方から使う共通ロジック。
 from __future__ import annotations
 
 import json
+import os
 import time
 from decimal import Decimal
 from pathlib import Path
@@ -32,9 +33,24 @@ SUPPORTED_CURRENCIES = ("USD", "JPY", "EUR", "GBP")
 
 _PRICE_CACHE_TTL = 300  # 秒。連続実行時の 429 を避けるためのキャッシュ有効期間。
 
+# CoinGecko Demo API キー（無料）。Google Cloud ではなく CoinGecko のダッシュボードで発行。
+# 設定すると x-cg-demo-api-key ヘッダーを付与し、レート制限が 30 req/分に緩和される。
+# 未設定ならキーなし（より厳しい制限）で従来どおり動作する＝後方互換。
+COINGECKO_API_KEY = os.environ.get("COINGECKO_API_KEY", "").strip()
+
+
+def _request_headers() -> dict[str, str]:
+    """CoinGecko リクエスト用の共通ヘッダー。Demo キーがあれば付与する。"""
+    if COINGECKO_API_KEY:
+        return {"x-cg-demo-api-key": COINGECKO_API_KEY}
+    return {}
+
+
 # CoinGecko へのリクエスト間に空ける最小間隔（秒）。
 # 通貨切替直後など、履歴価格を資産ごとに連続取得する際のバースト（429）を防ぐ。
-_MIN_REQUEST_INTERVAL = 1.5
+# Demo キーあり: 30 req/分 ＝ 2.0 秒間隔（429 を出さず安定取得、キーなしより高スループット）。
+# キーなし: 公開枠は実測でさらに厳しいため、従来どおり 1.5 秒に据え置く。
+_MIN_REQUEST_INTERVAL = 2.0 if COINGECKO_API_KEY else 1.5
 _last_request_ts = 0.0
 
 WarnFn = Callable[[str], None]
@@ -103,7 +119,9 @@ def _fiat_rates(warn: WarnFn | None = None) -> dict[str, Decimal]:
     try:
         _throttle()
         resp = httpx.get(
-            "https://api.coingecko.com/api/v3/exchange_rates", timeout=10
+            "https://api.coingecko.com/api/v3/exchange_rates",
+            headers=_request_headers(),
+            timeout=10,
         )
         resp.raise_for_status()
         rates = resp.json().get("rates", {})
@@ -156,7 +174,7 @@ def fetch_coin_icons() -> dict[str, str]:
     icons: dict[str, str] = {}
     try:
         _throttle()
-        resp = httpx.get(url, timeout=15)
+        resp = httpx.get(url, headers=_request_headers(), timeout=15)
         resp.raise_for_status()
         for coin in resp.json():
             sym = id_to_symbol.get(coin.get("id", ""))
@@ -238,7 +256,7 @@ def fetch_prices(
     for attempt in range(3):
         try:
             _throttle()
-            response = httpx.get(url, timeout=10)
+            response = httpx.get(url, headers=_request_headers(), timeout=10)
             if response.status_code == 429:
                 if attempt < 2:
                     time.sleep(3 * (attempt + 1))  # 3s, 6s
