@@ -15,6 +15,7 @@
 """
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import json
 import time
 from datetime import date, datetime, timedelta, timezone
@@ -121,6 +122,35 @@ def _fetch_coin_range(
     return _bucket_daily(data.get("prices") or [])
 
 
+def _fetch_all_coins_parallel(
+    asset_coin_map: dict[str, tuple[str, date, date]],
+    currency: str,
+    warn: WarnFn | None,
+) -> dict[str, dict[str, Decimal]]:
+    """複数コインを並列取得（スレッド並列数は 5 制限）。
+
+    asset_coin_map: {coin_id: (asset_symbol, fetch_start, end)}
+    返り値: {coin_id: {date_str: price}}
+    """
+    fetched_by_coin: dict[str, dict[str, Decimal]] = {}
+
+    def fetch_one(coin_id: str, fetch_start: date, end: date) -> tuple[str, dict[str, Decimal]]:
+        return (coin_id, _fetch_coin_range(coin_id, currency, fetch_start, end, warn))
+
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        futures = [
+            executor.submit(fetch_one, coin_id, start, end)
+            for coin_id, (_, start, end) in asset_coin_map.items()
+        ]
+        for future in futures:
+            try:
+                coin_id, data = future.result()
+                fetched_by_coin[coin_id] = data
+            except Exception:  # noqa: BLE001
+                fetched_by_coin[coin_id] = {}
+    return fetched_by_coin
+
+
 def fetch_price_history(
     assets: list[str],
     currency: str,
@@ -154,6 +184,10 @@ def fetch_price_history(
     # 1回のバッチ呼び出し（fetch_prices、5分キャッシュ付き）でまとめて取得する。
     today_only_assets: list[str] = []
 
+    # 個別取得が必要な資産を集める
+    asset_coin_map: dict[str, tuple[str, date, date]] = {}
+    asset_series: dict[str, dict[str, Decimal]] = {}
+
     for asset in {a.upper() for a in assets}:
         # 法定通貨: 対象通貨と一致すれば 1.0。異なる法定通貨は未対応（欠落）。
         if asset in FIAT_ASSETS:
@@ -180,12 +214,29 @@ def fetch_price_history(
 
         if missing:
             fetch_start = date.fromisoformat(min(missing))
-            fetched = _fetch_coin_range(coin_id, currency, fetch_start, end, warn)
+            asset_coin_map[coin_id] = (asset, fetch_start, end)
+        asset_series[coin_id] = series
+
+    # 個別取得が必要な資産を並列で一括取得
+    if asset_coin_map:
+        fetched_by_coin = _fetch_all_coins_parallel(asset_coin_map, currency, warn)
+        for coin_id, fetched in fetched_by_coin.items():
             if fetched:
+                series = asset_series[coin_id]
                 series.update(fetched)
                 cur_cache[coin_id] = {k: str(v) for k, v in series.items()}
                 changed = True
 
+    # 結果に追加（個別取得が必要だった・不要だった全資産）
+    for coin_id, series in asset_series.items():
+        # asset_coin_map にあるもの（個別取得が必要だった）はそこから asset を取得
+        # ないもの（キャッシュで完全に揃っていた）は COINGECKO_IDS の逆引きで asset を取得
+        if coin_id in asset_coin_map:
+            asset = asset_coin_map[coin_id][0]
+        else:
+            asset = next((a for a, cid in COINGECKO_IDS.items() if cid == coin_id), None)
+            if not asset:
+                continue
         sub = {d: series[d] for d in req_dates if d in series}
         if sub:
             result[asset] = sub
