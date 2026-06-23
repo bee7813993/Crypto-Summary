@@ -69,10 +69,9 @@ function fmtJpy(value) {
 }
 
 // 通貨セレクトのオプションに完全名を付与する
-const _CURRENCY_FLAGS = { USD: "🇺🇸", JPY: "🇯🇵", EUR: "🇪🇺", GBP: "🇬🇧" };
 const _CURRENCY_LABELS = {
-  ja: { USD: "🇺🇸　USD　米ドル", JPY: "🇯🇵　JPY　日本円", EUR: "🇪🇺　EUR　ユーロ", GBP: "🇬🇧　GBP　英ポンド" },
-  en: { USD: "🇺🇸  USD  US Dollar", JPY: "🇯🇵  JPY  Japanese Yen", EUR: "🇪🇺  EUR  Euro", GBP: "🇬🇧  GBP  Pound Sterling" },
+  ja: { USD: "USD　米ドル", JPY: "JPY　日本円", EUR: "EUR　ユーロ", GBP: "GBP　英ポンド" },
+  en: { USD: "USD  US Dollar", JPY: "JPY  Japanese Yen", EUR: "EUR  Euro", GBP: "GBP  Pound Sterling" },
 };
 function _syncCurrencyLabels() {
   const sel = document.getElementById("currency");
