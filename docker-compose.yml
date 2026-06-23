@@ -9,6 +9,7 @@ services:
       - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
       - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
       - SECRET_KEY=${SECRET_KEY}
+      - CS_SECRET_KEY=${CS_SECRET_KEY}
       - BASE_URL=${BASE_URL:-http://localhost:8000}
       - DATA_DIR=/data
       - COINGECKO_API_KEY=${COINGECKO_API_KEY:-}

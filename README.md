@@ -152,8 +152,11 @@ cp .env.example .env
 |---|---|
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | Google OAuth 認証 |
 | `SECRET_KEY` | セッション署名キー（`python -c "import secrets; print(secrets.token_hex(32))"` で生成） |
+| `CS_SECRET_KEY` | API キー暗号化マスター鍵（`crypto-summary account gen-key` で生成）。Web 画面からのキー登録に必要 |
 | `BASE_URL` | アプリの公開 URL |
 | `COINGECKO_API_KEY` | CoinGecko Demo キー（任意・レート制限緩和） |
+
+> 取引所・ウォレットの API キーは Web の「インポート」画面から登録でき（暗号化保存）、テキスト編集は不要です。詳細は [`docs/api-keys.md`](./docs/api-keys.md) を参照。
 
 ### 2. 起動
 

@@ -2,7 +2,48 @@
 
 Crypto-Summary は外部サービスからデータを取得するために、いくつかの API キーを使います。すべて **読み取り専用** で動作し、出金・送付の権限は一切不要です。
 
-キーは `.env` ファイル（または OS 環境変数）に設定します。`.env.example` をコピーして使ってください。
+API キーの登録方法は2通りあります。
+
+| 方法 | 保存先 | 向いている用途 |
+|---|---|---|
+| **Web の設定画面から登録**（推奨） | 暗号化してユーザーごとに保存 | Web 利用・マルチユーザー |
+| `.env` ファイルに記載 | 全体共通の環境変数 | CLI 利用・シングルユーザー |
+
+> 取引所・ウォレットの API キーは利用者ごとに異なるため、**Web 画面からの登録を推奨**します。`.env` への記載は CLI 利用時やシングルユーザーでの全体共通キーとしてのフォールバックです。
+
+---
+
+## Web の設定画面から登録する（推奨）
+
+サイドバーの **「インポート」** ページに、キーを登録するタブがあります。入力したキーは**暗号化**されてユーザーごとに保存され、テキストファイルの編集は不要です。
+
+- **「API連携」タブ** — 取引所（bitFlyer / Bybit）のキーを登録
+  1. 取引所・ソースID（口座の表示名）・API キー・シークレットを入力
+  2. 「登録して暗号化保存」を押す
+  3. 登録済み一覧の「同期」ボタンでいつでも取得できる
+- **「ウォレットアドレス」タブ** — EVM / Solana ウォレットを登録
+  1. ウォレットアドレスを入力（秘密鍵は不要・絶対に入力しないこと）
+  2. 必要なら Etherscan キー / Helius キーをここで入力（任意。未入力なら `.env` の環境変数を使用）
+  3. 「登録」を押す
+
+### 前提：暗号化マスター鍵 `CS_SECRET_KEY`
+
+Web 画面から登録したキーは `CS_SECRET_KEY`（暗号化マスター鍵）で暗号化されます。サーバー側で一度だけ設定してください。
+
+```bash
+# マスター鍵を生成
+crypto-summary account gen-key
+```
+
+表示された鍵を `.env` の `CS_SECRET_KEY` に設定します（Docker の場合は `docker compose down && docker compose up -d` で反映）。
+
+> ⚠️ `CS_SECRET_KEY` を紛失すると、登録済みのキーを復号できなくなり再登録が必要です。`CS_SECRET_KEY` が未設定だと Web からの登録時に「マスター鍵が未設定です」エラーになります。
+
+---
+
+## `.env` ファイルに記載する（CLI / シングルユーザー）
+
+`.env` をコピーして使ってください。
 
 ```bash
 cp .env.example .env
@@ -18,13 +59,15 @@ cp .env.example .env
 
 | 用途 | 環境変数 | 必須？ | 発行元 |
 |---|---|---|---|
-| EVM ウォレット取得 | `ETHERSCAN_API_KEY` | EVM ウォレットを使うなら必須 | Etherscan |
-| Solana ウォレット取得 | `HELIUS_API_KEY` | Solana ウォレットを使うなら必須 | Helius |
-| bitFlyer API 取得 | `BITFLYER_API_KEY` / `BITFLYER_API_SECRET` | bitFlyer を API 連携するなら | bitFlyer |
-| Bybit API 取得 | `BYBIT_API_KEY` / `BYBIT_API_SECRET` | Bybit を API 連携するなら | Bybit |
+| Web からのキー暗号化 | `CS_SECRET_KEY` | Web からキー登録するなら必須 | `account gen-key` で生成 |
+| EVM ウォレット取得 | `ETHERSCAN_API_KEY` | EVM ウォレットを使うなら（Web 登録なら不要） | Etherscan |
+| Solana ウォレット取得 | `HELIUS_API_KEY` | Solana ウォレットを使うなら（Web 登録なら不要） | Helius |
+| bitFlyer API 取得 | `BITFLYER_API_KEY` / `BITFLYER_API_SECRET` | bitFlyer を使うなら（Web 登録なら不要） | bitFlyer |
+| Bybit API 取得 | `BYBIT_API_KEY` / `BYBIT_API_SECRET` | Bybit を使うなら（Web 登録なら不要） | Bybit |
 | 価格取得の高速化 | `COINGECKO_API_KEY` | 任意（推奨） | CoinGecko |
 
 > CSV インポートだけを使う場合は、API キーは不要です（CoinGecko キーも任意）。
+> 取引所・ウォレットキーを Web 画面から登録する場合、`.env` に必要なのは `CS_SECRET_KEY` だけです。
 
 ---
 
