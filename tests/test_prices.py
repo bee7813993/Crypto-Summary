@@ -87,3 +87,24 @@ def test_warn_called_on_error(monkeypatch):
     p = prices.fetch_prices(["BTC"], "USD", warn=msgs.append)
     assert p == {}
     assert msgs and "失敗" in msgs[0]
+
+
+def test_coingecko_key_read_dynamically(monkeypatch):
+    """COINGECKO_API_KEY は呼び出しごとに env から読まれる（Web 設定の即時反映）。"""
+    monkeypatch.setenv("COINGECKO_API_KEY", "REALKEY")
+    assert prices._coingecko_api_key() == "REALKEY"
+    assert prices._request_headers() == {"x-cg-demo-api-key": "REALKEY"}
+
+
+def test_coingecko_placeholder_key_ignored(monkeypatch):
+    """.env.example のプレースホルダ値は未設定として無視される（401 回避）。"""
+    monkeypatch.setenv("COINGECKO_API_KEY", "your-coingecko-demo-api-key")
+    assert prices._coingecko_api_key() == ""
+    assert prices._request_headers() == {}
+
+
+def test_coingecko_no_key_no_header(monkeypatch):
+    """キー未設定ならヘッダーは付かない（無料枠で動作）。"""
+    monkeypatch.delenv("COINGECKO_API_KEY", raising=False)
+    assert prices._coingecko_api_key() == ""
+    assert prices._request_headers() == {}
