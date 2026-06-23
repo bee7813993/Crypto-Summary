@@ -1,5 +1,51 @@
 # crypto-summary コマンドリファレンス
 
+## 事前準備（セットアップ）
+
+`crypto-summary` コマンドを使う前に、仮想環境を作って本パッケージをインストールします。**Python 3.11 以上**が必要です。
+
+### Windows（PowerShell）
+
+```powershell
+# 1. 仮想環境を作成
+python -m venv .venv
+
+# 2. 仮想環境を有効化
+.venv\Scripts\Activate.ps1
+
+# 3. 編集可能モードでインストール（dev には Web UI 依存も含まれる）
+pip install -e ".[dev]"
+```
+
+> `Activate.ps1` の実行がポリシーで拒否される場合は、PowerShell で次を一度実行してください：
+> `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`
+
+### macOS / Linux
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev]"
+```
+
+### インストールの確認
+
+```bash
+crypto-summary --help
+```
+
+> **次回以降**：新しいターミナルを開いたら、まず仮想環境を有効化（`.venv\Scripts\Activate.ps1` または `source .venv/bin/activate`）してから `crypto-summary` を実行します。インストールは初回だけで済みます。
+
+### extras（インストールオプション）の違い
+
+| 指定 | 含まれるもの | 用途 |
+|---|---|---|
+| `pip install -e ".[dev]"` | 本体 + テスト（pytest）+ Web UI（fastapi/uvicorn） | 開発・シングルユーザー動作確認（推奨） |
+| `pip install -e ".[web]"` | 本体 + Web UI + マルチユーザー認証（authlib 等） | Docker / マルチユーザー運用 |
+| `pip install -e .` | 本体（CLI）のみ | CLI だけ使う場合 |
+
+---
+
 ## グローバルオプション
 
 すべてのコマンドに共通して使えます。
