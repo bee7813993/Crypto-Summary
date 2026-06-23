@@ -98,15 +98,19 @@ crypto-summary web [--host HOST] [--port PORT] [--lan] [--reload]
 # 基本（ローカルのみ）
 crypto-summary web
 
-# 別のDBファイルを使う
-crypto-summary --db my.db web
-
 # スマホなど同じLANの端末から見る
 crypto-summary web --lan
 
 # ポート変更
-crypto-summary web --port 8080
+crypto-summary web --port 80
+
+# 別のDBファイルを使う（--db はサブコマンドの前に置く）
+crypto-summary --db .\data\data.db web --port 80
 ```
+
+> **注意**：`--db` はグローバルオプションのため、`web` などのサブコマンドより**前**に書く必要があります。
+> ✅ `crypto-summary --db .\data\data.db web --port 80`
+> ❌ `crypto-summary web --port 80 --db .\data\data.db`
 
 ---
 
