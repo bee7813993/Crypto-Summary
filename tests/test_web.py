@@ -2,6 +2,7 @@
 
 価格取得をモンキーパッチして決定的に検証する。
 """
+import os
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -646,6 +647,27 @@ def test_system_keys_admin_gated_in_multi_user(tmp_path, monkeypatch):
 
 # ---- 初回セットアップウィザード ----
 
+# do_setup は os.environ を直接書き換えるため、各セットアップ系テストの
+# 前後でブートストラップ系の環境変数を退避・復元してテスト間の汚染を防ぐ。
+_SETUP_ENV_VARS = (
+    "CS_SECRET_KEY", "ADMIN_EMAILS",
+    "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "BASE_URL",
+)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_setup_env():
+    saved = {k: os.environ.get(k) for k in _SETUP_ENV_VARS}
+    try:
+        yield
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
 @pytest.fixture
 def fresh_client(tmp_path: Path, monkeypatch) -> TestClient:
     """CS_SECRET_KEY が未設定・設定ファイルなしの新規環境。"""
@@ -721,3 +743,78 @@ def test_meta_needs_setup_field(fresh_client, monkeypatch):
     d = fresh_client.get("/api/meta").json()
     assert "needs_setup" in d
     assert d["needs_setup"] is True
+
+
+# ---- セットアップウィザードでの OAuth 設定（マルチユーザー）----
+
+def _clear_oauth_env(monkeypatch):
+    for k in ("CS_SECRET_KEY", "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET",
+              "BASE_URL", "ADMIN_EMAILS"):
+        monkeypatch.delenv(k, raising=False)
+
+
+def test_setup_status_multi_user_oauth_missing(tmp_path, monkeypatch):
+    """マルチユーザーで OAuth 未設定なら oauth_in_env=False。"""
+    _clear_oauth_env(monkeypatch)
+    c = TestClient(web_app.create_app(data_dir=str(tmp_path / "d")))
+    d = c.get("/api/setup-status").json()
+    assert d["needs_setup"] is True
+    assert d["multi_user"] is True
+    assert d["oauth_in_env"] is False
+
+
+def test_setup_multi_user_requires_oauth(tmp_path, monkeypatch):
+    """マルチユーザーで OAuth 未入力だと 422。"""
+    _clear_oauth_env(monkeypatch)
+    from crypto_summary.core.secrets import generate_master_key
+    c = TestClient(web_app.create_app(data_dir=str(tmp_path / "d")))
+    r = c.post("/api/setup", json={"cs_secret_key": generate_master_key()})
+    assert r.status_code == 422
+
+
+def test_setup_multi_user_cannot_skip(tmp_path, monkeypatch):
+    """マルチユーザーで OAuth 未設定ならスキップ不可（422）。"""
+    _clear_oauth_env(monkeypatch)
+    c = TestClient(web_app.create_app(data_dir=str(tmp_path / "d")))
+    r = c.post("/api/setup", json={"skipped": True})
+    assert r.status_code == 422
+
+
+def test_setup_multi_user_saves_oauth(tmp_path, monkeypatch):
+    """OAuth 一式を入力するとセットアップ完了し、env と設定ファイルに反映される。"""
+    _clear_oauth_env(monkeypatch)
+    from crypto_summary.core.secrets import generate_master_key
+    data_dir = tmp_path / "d"
+    c = TestClient(web_app.create_app(data_dir=str(data_dir)))
+    r = c.post("/api/setup", json={
+        "cs_secret_key": generate_master_key(),
+        "google_client_id": "myid.apps.googleusercontent.com",
+        "google_client_secret": "mysecret",
+        "base_url": "https://example.com/",
+        "admin_emails": "admin@example.com",
+    })
+    assert r.status_code == 200
+    # 即座に env に反映される
+    assert os.environ["GOOGLE_CLIENT_ID"] == "myid.apps.googleusercontent.com"
+    assert os.environ["BASE_URL"] == "https://example.com"  # 末尾スラッシュ除去
+    # 設定ファイルに永続化される
+    import json as _json
+    cfg = _json.loads((data_dir / "_server_config.json").read_text())
+    assert cfg["google_client_secret"] == "mysecret"
+    assert cfg["admin_emails"] == "admin@example.com"
+    # 再セットアップはロック
+    assert c.post("/api/setup", json={"skipped": True}).status_code == 403
+
+
+def test_apply_server_config_skips_empty_env(tmp_path, monkeypatch):
+    """env が空文字でも設定ファイルの値が反映される（Docker の空文字対策）。"""
+    _clear_oauth_env(monkeypatch)
+    monkeypatch.setenv("GOOGLE_CLIENT_ID", "")  # Docker の未設定時を再現
+    data_dir = tmp_path / "d"
+    data_dir.mkdir()
+    import json as _json
+    (data_dir / "_server_config.json").write_text(
+        _json.dumps({"google_client_id": "fromfile"})
+    )
+    web_app._apply_server_config(str(data_dir))
+    assert os.environ["GOOGLE_CLIENT_ID"] == "fromfile"

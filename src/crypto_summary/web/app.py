@@ -881,14 +881,21 @@ def _apply_server_config(base_dir: str) -> None:
 
     この関数を create_app の冒頭で呼ぶことで、
     SecretStore など既存のコードは変更なしに設定ファイルの値を使える。
+    Docker では未設定の変数も空文字で渡るため、空文字は「未設定」として扱う。
     """
     cfg = _load_server_config(base_dir)
-    key = cfg.get("cs_secret_key", "")
-    if key and not os.environ.get("CS_SECRET_KEY"):
-        os.environ["CS_SECRET_KEY"] = key
-    admin = cfg.get("admin_emails", "")
-    if admin and not os.environ.get("ADMIN_EMAILS"):
-        os.environ["ADMIN_EMAILS"] = admin
+    # 設定ファイルのキー → 反映先の環境変数名
+    mapping = {
+        "cs_secret_key": "CS_SECRET_KEY",
+        "admin_emails": "ADMIN_EMAILS",
+        "google_client_id": "GOOGLE_CLIENT_ID",
+        "google_client_secret": "GOOGLE_CLIENT_SECRET",
+        "base_url": "BASE_URL",
+    }
+    for cfg_key, env_name in mapping.items():
+        val = cfg.get(cfg_key, "")
+        if val and not os.environ.get(env_name):
+            os.environ[env_name] = val
 
 
 # ---------------------------------------------------------------------------
@@ -1557,11 +1564,20 @@ def create_app(
     # 初回セットアップ（認証不要・設定完了後はロック）
     # ------------------------------------------------------------------
 
+    def _oauth_in_env() -> bool:
+        return bool(
+            os.environ.get("GOOGLE_CLIENT_ID")
+            and os.environ.get("GOOGLE_CLIENT_SECRET")
+        )
+
     @app.get("/api/setup-status")
     def setup_status() -> dict:
         return {
             "needs_setup": _needs_first_run_setup(_base_dir),
             "multi_user": multi_user,
+            # マルチユーザーで OAuth が未設定なら、ウィザードで入力が必要。
+            "oauth_in_env": _oauth_in_env(),
+            "base_url_in_env": bool(os.environ.get("BASE_URL")),
         }
 
     @app.get("/api/generate-key")
@@ -1572,8 +1588,10 @@ def create_app(
 
     @app.post("/api/setup")
     def do_setup(body: dict[str, Any]) -> dict:
-        """初回セットアップ: CS_SECRET_KEY と ADMIN_EMAILS を設定ファイルに保存する。
+        """初回セットアップ: 各種設定を設定ファイルに保存する。
 
+        マルチユーザーで OAuth が env 未設定の場合は、
+        GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET / BASE_URL の入力が必須。
         セットアップ完了後（ファイルが存在する状態）はこのエンドポイントは 403 を返す。
         """
         if not _needs_first_run_setup(_base_dir):
@@ -1581,7 +1599,25 @@ def create_app(
 
         cs_key = (body.get("cs_secret_key") or "").strip()
         admin_emails = (body.get("admin_emails") or "").strip()
+        google_client_id = (body.get("google_client_id") or "").strip()
+        google_client_secret = (body.get("google_client_secret") or "").strip()
+        base_url = (body.get("base_url") or "").strip().rstrip("/")
         skipped = bool(body.get("skipped"))
+
+        # マルチユーザーで OAuth が未設定の場合は、ログイン不能になるのを防ぐため
+        # OAuth 情報を必須とし、スキップを禁止する。
+        oauth_required = multi_user and not _oauth_in_env()
+        if oauth_required:
+            if skipped:
+                raise HTTPException(
+                    status_code=422,
+                    detail="マルチユーザーモードでは Google OAuth の設定が必要です（スキップできません）。",
+                )
+            if not (google_client_id and google_client_secret and base_url):
+                raise HTTPException(
+                    status_code=422,
+                    detail="GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET / BASE_URL をすべて入力してください。",
+                )
 
         if cs_key:
             from cryptography.fernet import Fernet
@@ -1598,8 +1634,28 @@ def create_app(
             cfg["admin_emails"] = admin_emails
             if not os.environ.get("ADMIN_EMAILS"):
                 os.environ["ADMIN_EMAILS"] = admin_emails
+        if google_client_id:
+            cfg["google_client_id"] = google_client_id
+            if not os.environ.get("GOOGLE_CLIENT_ID"):
+                os.environ["GOOGLE_CLIENT_ID"] = google_client_id
+        if google_client_secret:
+            cfg["google_client_secret"] = google_client_secret
+            if not os.environ.get("GOOGLE_CLIENT_SECRET"):
+                os.environ["GOOGLE_CLIENT_SECRET"] = google_client_secret
+        if base_url:
+            cfg["base_url"] = base_url
+            if not os.environ.get("BASE_URL"):
+                os.environ["BASE_URL"] = base_url
         if skipped:
             cfg["setup_skipped"] = True
+
+        # OAuth 設定を変更したので、キャッシュ済みクライアントを破棄する。
+        if multi_user and (google_client_id or google_client_secret):
+            try:
+                from .auth import reset_oauth_client
+                reset_oauth_client()
+            except Exception:  # noqa: BLE001
+                pass
 
         _save_server_config(_base_dir, cfg)
         return {"ok": True, "key_set": bool(cs_key)}

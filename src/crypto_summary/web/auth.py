@@ -14,7 +14,8 @@ router = APIRouter()
 
 
 def _base_url() -> str:
-    return os.environ.get("BASE_URL", "http://localhost:8000").rstrip("/")
+    # 空文字（Docker で未設定時に渡る）も既定値にフォールバックする。
+    return (os.environ.get("BASE_URL") or "http://localhost:8000").rstrip("/")
 
 
 def _get_oauth():
@@ -40,6 +41,16 @@ def _oauth_client():
     if _oauth is None:
         _oauth = _get_oauth()
     return _oauth.google
+
+
+def reset_oauth_client() -> None:
+    """キャッシュ済み OAuth クライアントを破棄する。
+
+    初回セットアップで GOOGLE_CLIENT_ID/SECRET を変更した後に呼び、
+    次回ログイン時に新しい資格情報で再初期化させる。
+    """
+    global _oauth
+    _oauth = None
 
 
 @router.get("/auth/login")

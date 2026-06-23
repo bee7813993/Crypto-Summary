@@ -2484,6 +2484,16 @@ async function runSetupIfNeeded() {
     document.getElementById("setup-admin-section").classList.remove("hidden");
   }
 
+  // マルチユーザーで OAuth が env 未設定なら OAuth 欄を表示・必須にし、スキップを無効化
+  const oauthRequired = status.multi_user && !status.oauth_in_env;
+  if (oauthRequired) {
+    document.getElementById("setup-oauth-section").classList.remove("hidden");
+    const skipBtn = document.getElementById("setup-skip-btn");
+    const skipHint = document.querySelector("[data-i18n='setup.skipHint']");
+    if (skipBtn) skipBtn.classList.add("hidden");
+    if (skipHint) skipHint.classList.add("hidden");
+  }
+
   // 生成ボタン
   document.getElementById("setup-generate-btn").addEventListener("click", async () => {
     try {
@@ -2500,10 +2510,19 @@ async function runSetupIfNeeded() {
     result.classList.add("hidden");
     const csKey = document.getElementById("setup-cs-key").value.trim();
     const adminEmails = document.getElementById("setup-admin-emails")?.value.trim() || "";
+    const baseUrl = document.getElementById("setup-base-url")?.value.trim() || "";
+    const googleId = document.getElementById("setup-google-id")?.value.trim() || "";
+    const googleSecret = document.getElementById("setup-google-secret")?.value.trim() || "";
 
     if (!csKey) {
       result.className = "settings-result err";
       result.textContent = t("setup.keyRequired");
+      result.classList.remove("hidden");
+      return;
+    }
+    if (oauthRequired && !(baseUrl && googleId && googleSecret)) {
+      result.className = "settings-result err";
+      result.textContent = t("setup.oauthRequired");
       result.classList.remove("hidden");
       return;
     }
@@ -2512,7 +2531,13 @@ async function runSetupIfNeeded() {
       const resp = await fetch("/api/setup", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ cs_secret_key: csKey, admin_emails: adminEmails }),
+        body: JSON.stringify({
+          cs_secret_key: csKey,
+          admin_emails: adminEmails,
+          base_url: baseUrl,
+          google_client_id: googleId,
+          google_client_secret: googleSecret,
+        }),
       });
       const d = await resp.json();
       if (!resp.ok) throw new Error(d.detail || `HTTP ${resp.status}`);

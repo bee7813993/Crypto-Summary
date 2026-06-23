@@ -6,11 +6,16 @@ services:
     volumes:
       - ./data:/data
     environment:
-      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
-      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
+      # 起動時に必須なのは SECRET_KEY と DATA_DIR のみ。
+      # 下記の OAuth / CS_SECRET_KEY / ADMIN_EMAILS / BASE_URL は
+      # 初回セットアップウィザード（ログイン前に表示）からも設定でき、
+      # 未設定（空）でも起動する。
       - SECRET_KEY=${SECRET_KEY}
-      - CS_SECRET_KEY=${CS_SECRET_KEY}
-      - BASE_URL=${BASE_URL:-http://localhost:8000}
       - DATA_DIR=/data
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET:-}
+      - CS_SECRET_KEY=${CS_SECRET_KEY:-}
+      - ADMIN_EMAILS=${ADMIN_EMAILS:-}
+      - BASE_URL=${BASE_URL:-}
       - COINGECKO_API_KEY=${COINGECKO_API_KEY:-}
     restart: unless-stopped

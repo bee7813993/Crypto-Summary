@@ -16,6 +16,18 @@
       <p class="login-sub" data-i18n="setup.subtitle">初回セットアップ</p>
       <p class="setup-intro" data-i18n="setup.intro">API キーを Web 画面から登録するために必要な<br>暗号化マスター鍵を設定します。</p>
 
+      <!-- Google OAuth（マルチユーザーで env 未設定のときのみ表示）-->
+      <div id="setup-oauth-section" class="setup-field hidden">
+        <label class="setup-label" data-i18n="setup.oauthTitle">Google OAuth（ログインに必須）</label>
+        <p class="settings-hint" data-i18n="setup.oauthHint">Google Cloud Console で発行した OAuth クライアントの値を入力してください。リダイレクトURI には「BASE_URL + /auth/callback」を登録します。</p>
+        <input id="setup-base-url" class="settings-input" type="text" style="margin-bottom:8px"
+          data-i18n-placeholder="setup.baseUrlPlaceholder" placeholder="BASE_URL（例: https://your-domain.example.com）" />
+        <input id="setup-google-id" class="settings-input" type="text" style="margin-bottom:8px;font-family:monospace;font-size:11px"
+          data-i18n-placeholder="setup.googleIdPlaceholder" placeholder="GOOGLE_CLIENT_ID（...apps.googleusercontent.com）" />
+        <input id="setup-google-secret" class="settings-input" type="password" style="font-family:monospace;font-size:11px"
+          data-i18n-placeholder="setup.googleSecretPlaceholder" placeholder="GOOGLE_CLIENT_SECRET" autocomplete="off" />
+      </div>
+
       <div class="setup-field">
         <label class="setup-label" data-i18n="setup.masterKey">CS_SECRET_KEY（暗号化マスター鍵）</label>
         <div class="setup-key-row">
