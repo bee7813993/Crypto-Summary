@@ -252,3 +252,59 @@ class SecretStore:
         del wallets[key]
         self._save(data)
         return True
+
+    # -- プロバイダー API キー（ユーザー単位の共通スキャンキー）------------
+    #
+    # Etherscan / Helius のキーはウォレット個別ではなくユーザー単位で1つ持つ。
+    # 暗号化して保存し、ウォレット同期時の解決順は
+    #   ウォレット個別キー → プロバイダーキー → 環境変数
+    # とする。
+
+    def set_provider_key(
+        self, provider: str, key: str, *, user_id: str = _DEFAULT_USER
+    ) -> None:
+        """プロバイダー（etherscan/helius 等）のキーを暗号化保存する。
+
+        空文字を渡すと削除する（鍵なしでも削除可能）。
+        """
+        data = self._load()
+        providers = data.setdefault("providers", {})
+        pkey = _acct_key(user_id, provider)
+        if not key:
+            providers.pop(pkey, None)
+            self._save(data)
+            return
+        f = self._fernet_or_raise()
+        providers[pkey] = {
+            "user_id": user_id,
+            "provider": provider,
+            "key_enc": f.encrypt(key.encode()).decode("ascii"),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        self._save(data)
+
+    def get_provider_key(
+        self, provider: str, *, user_id: str = _DEFAULT_USER
+    ) -> str | None:
+        """プロバイダーキーを復号して返す。未登録なら None。"""
+        rec = self._load().get("providers", {}).get(_acct_key(user_id, provider))
+        if not rec:
+            return None
+        f = self._fernet_or_raise()
+        try:
+            return f.decrypt(rec["key_enc"].encode()).decode()
+        except (InvalidToken, KeyError) as e:
+            raise SecretStoreError(
+                "プロバイダーキーの復号に失敗しました。マスター鍵が登録時と異なる可能性があります。"
+            ) from e
+
+    def list_provider_keys(self, *, user_id: str = _DEFAULT_USER) -> dict[str, bool]:
+        """設定済みプロバイダーキーの有無を返す（値は含まない）。"""
+        out: dict[str, bool] = {}
+        for rec in self._load().get("providers", {}).values():
+            if rec.get("user_id") != user_id:
+                continue
+            prov = rec.get("provider")
+            if prov:
+                out[prov] = True
+        return out

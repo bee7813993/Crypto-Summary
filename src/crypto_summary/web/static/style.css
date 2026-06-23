@@ -454,6 +454,19 @@ html.light .tx-type-transfer { background: #d1fae5; color: #065f46; }
   font-size: 12px;
   color: var(--text-dim);
 }
+.settings-subpanel {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+  margin-bottom: 20px;
+}
+.settings-subtitle {
+  margin: 0 0 4px;
+  font-size: 14px;
+}
+.key-set { color: var(--accent); font-weight: 600; }
+.key-unset { color: var(--text-dim); }
 .source-ids-wrap {
   display: flex;
   flex-wrap: wrap;

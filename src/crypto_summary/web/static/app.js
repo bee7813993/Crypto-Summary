@@ -1855,6 +1855,26 @@ async function loadImportPage() {
   loadImportBatches();
   loadApiAccountsTable();
   loadWalletsTable();
+  loadProviderKeys();
+}
+
+// プロバイダー（Etherscan/Helius）キーの設定状態を読み込んで表示する。
+async function loadProviderKeys() {
+  try {
+    const data = await fetchJSON("/api/provider-keys");
+    const p = data.providers || {};
+    const set = (id, ok) => {
+      const el = document.getElementById(id);
+      if (el) {
+        el.textContent = ok ? t("label.keySet") : t("label.keyNotSet");
+        el.className = "settings-hint " + (ok ? "key-set" : "key-unset");
+      }
+    };
+    set("provider-etherscan-status", p.etherscan);
+    set("provider-helius-status", p.helius);
+  } catch (e) {
+    console.warn("[crypto-summary] provider keys load failed:", e);
+  }
 }
 
 function setupImportTabs() {
@@ -2210,6 +2230,49 @@ async function loadWalletsTable() {
   }
 }
 
+// スキャン用 API キー（プロバイダーキー）保存ボタン
+document.getElementById("provider-keys-save-btn").addEventListener("click", async () => {
+  const result = document.getElementById("provider-keys-result");
+  result.classList.add("hidden");
+
+  const etherscan = document.getElementById("provider-etherscan").value.trim();
+  const helius = document.getElementById("provider-helius").value.trim();
+
+  // 空欄のフィールドは送らない（＝変更なし）
+  const body = {};
+  if (etherscan) body.etherscan = etherscan;
+  if (helius) body.helius = helius;
+
+  if (Object.keys(body).length === 0) {
+    result.className = "settings-result err";
+    result.textContent = t("status.providerKeysEmpty");
+    result.classList.remove("hidden");
+    return;
+  }
+
+  try {
+    const resp = await fetch("/api/provider-keys", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const d = await resp.json();
+    if (!resp.ok) throw new Error(d.detail || `HTTP ${resp.status}`);
+
+    result.className = "settings-result ok";
+    result.textContent = t("status.providerKeysDone");
+    result.classList.remove("hidden");
+
+    document.getElementById("provider-etherscan").value = "";
+    document.getElementById("provider-helius").value = "";
+    loadProviderKeys();
+  } catch (e) {
+    result.className = "settings-result err";
+    result.textContent = t("status.providerKeysFail", { error: e.message });
+    result.classList.remove("hidden");
+  }
+});
+
 // ウォレット登録ボタン
 document.getElementById("import-wallet-btn").addEventListener("click", async () => {
   const result = document.getElementById("import-wallet-result");
@@ -2217,8 +2280,6 @@ document.getElementById("import-wallet-btn").addEventListener("click", async () 
 
   const address = document.getElementById("import-wallet-address").value.trim();
   const sourceId = document.getElementById("import-wallet-name").value.trim();
-  const etherscanKey = document.getElementById("import-wallet-etherscan").value.trim();
-  const heliusKey = document.getElementById("import-wallet-helius").value.trim();
 
   if (!address) {
     result.className = "settings-result err";
@@ -2234,8 +2295,6 @@ document.getElementById("import-wallet-btn").addEventListener("click", async () 
       body: JSON.stringify({
         address,
         source_id: sourceId || null,
-        api_key: etherscanKey || null,
-        helius_key: heliusKey || null,
       }),
     });
     const d = await resp.json();
@@ -2248,8 +2307,6 @@ document.getElementById("import-wallet-btn").addEventListener("click", async () 
     // フォームをクリア
     document.getElementById("import-wallet-address").value = "";
     document.getElementById("import-wallet-name").value = "";
-    document.getElementById("import-wallet-etherscan").value = "";
-    document.getElementById("import-wallet-helius").value = "";
 
     loadWalletsTable();
   } catch (e) {

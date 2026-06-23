@@ -588,6 +588,28 @@
               ウォレットアドレスは公開情報のため平文で保存されます（秘密鍵は不要・絶対に入力しないこと）。<br>
               スキャン用 API キーは読み取り専用です（出金権限の概念はありません）。
             </div>
+
+            <!-- スキャン用 API キー（全ウォレット共通・一度だけ設定）-->
+            <div class="settings-subpanel">
+              <h3 class="settings-subtitle" data-i18n="import.providerKeysTitle">🔑 スキャン用 API キー（全ウォレット共通）</h3>
+              <p class="settings-hint" data-i18n="import.providerKeysHint">一度設定すれば、すべてのウォレットの同期で使われます。ウォレットごとの入力は不要です。</p>
+              <div class="settings-row">
+                <label class="settings-label" data-i18n="import.etherscanKey">Etherscan API Key（EVM 用）</label>
+                <input id="provider-etherscan" class="settings-input" type="password"
+                  data-i18n-placeholder="import.providerKeyPlaceholder" placeholder="キーを入力（空欄で変更なし）" style="max-width:300px" autocomplete="off" />
+                <span id="provider-etherscan-status" class="settings-hint"></span>
+              </div>
+              <div class="settings-row">
+                <label class="settings-label" data-i18n="import.heliusKey">Helius API Key（Solana 用）</label>
+                <input id="provider-helius" class="settings-input" type="password"
+                  data-i18n-placeholder="import.providerKeyPlaceholder" placeholder="キーを入力（空欄で変更なし）" style="max-width:300px" autocomplete="off" />
+                <span id="provider-helius-status" class="settings-hint"></span>
+              </div>
+              <div class="settings-actions">
+                <button id="provider-keys-save-btn" class="settings-save-btn" data-i18n="btn.saveKeys">キーを保存</button>
+              </div>
+              <div id="provider-keys-result" class="settings-result hidden"></div>
+            </div>
             <div class="settings-row">
               <label class="settings-label" data-i18n="import.walletAddress">ウォレットアドレス *</label>
               <input id="import-wallet-address" class="settings-input" type="text"
@@ -604,16 +626,6 @@
               <span data-i18n="import.chainEvmHint">EVM（0x...）: Ethereum / Arbitrum / Polygon / Base / Optimism を全スキャンしてマージ</span><br>
               <span data-i18n="import.chainSolanaHint">Solana: Helius API でスキャン</span><br>
               <span data-i18n="import.chainNoTxHint">取引のないチェーンは履歴に含みません。</span>
-            </div>
-            <div class="settings-row">
-              <label class="settings-label" data-i18n="import.etherscanKey">Etherscan API Key（EVM 用・任意）</label>
-              <input id="import-wallet-etherscan" class="settings-input" type="password"
-                data-i18n-placeholder="import.etherscanKeyHint" placeholder="環境変数 ETHERSCAN_API_KEY でも可" style="max-width:300px" autocomplete="off" />
-            </div>
-            <div class="settings-row">
-              <label class="settings-label" data-i18n="import.heliusKey">Helius API Key（Solana 用・任意）</label>
-              <input id="import-wallet-helius" class="settings-input" type="password"
-                data-i18n-placeholder="import.heliusKeyHint" placeholder="環境変数 HELIUS_API_KEY でも可" style="max-width:300px" autocomplete="off" />
             </div>
             <div class="settings-actions">
               <button id="import-wallet-btn" class="settings-save-btn" data-i18n="btn.register">登録</button>

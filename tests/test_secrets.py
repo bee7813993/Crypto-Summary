@@ -155,3 +155,32 @@ def test_wallet_and_account_coexist(tmp_path: Path, key: str):
     store.set_wallet("w1", "0xABC", "evm")
     assert len(store.list_accounts()) == 1
     assert len(store.list_wallets()) == 1
+
+
+def test_provider_key_roundtrip_and_encrypted(tmp_path: Path, key: str):
+    """プロバイダーキーは暗号化保存され、復号して取得できる。"""
+    store = SecretStore(tmp_path / "x.db", master_key=key)
+    assert store.list_provider_keys() == {}
+    store.set_provider_key("etherscan", "ETHKEY123")
+    raw = (tmp_path / "x.secrets.json").read_text(encoding="utf-8")
+    assert "ETHKEY123" not in raw  # 平文では残らない
+    assert store.get_provider_key("etherscan") == "ETHKEY123"
+    assert store.get_provider_key("helius") is None
+    assert store.list_provider_keys() == {"etherscan": True}
+
+
+def test_provider_key_clear(tmp_path: Path, key: str):
+    """空文字を渡すと削除され、削除はマスター鍵なしでも可能。"""
+    store = SecretStore(tmp_path / "x.db", master_key=key)
+    store.set_provider_key("helius", "HKEY")
+    assert store.list_provider_keys() == {"helius": True}
+    # マスター鍵なしのストアでも削除できる
+    SecretStore(tmp_path / "x.db", master_key=None).set_provider_key("helius", "")
+    assert store.list_provider_keys() == {}
+
+
+def test_provider_key_requires_master_key_to_set(tmp_path: Path):
+    """非空キーの保存にはマスター鍵が必要。"""
+    store = SecretStore(tmp_path / "x.db", master_key=None)
+    with pytest.raises(SecretStoreError):
+        store.set_provider_key("etherscan", "ETHKEY")
