@@ -589,6 +589,33 @@
               スキャン用 API キーは読み取り専用です（出金権限の概念はありません）。
             </div>
 
+            <!-- システム設定（管理者のみ・全ユーザー共通のスキャン用キー）-->
+            <div id="system-keys-panel" class="settings-subpanel hidden">
+              <h3 class="settings-subtitle" data-i18n="system.title">⚙ システム設定（管理者）</h3>
+              <p class="settings-hint" data-i18n="system.hint">全ユーザー共通のスキャン用 API キーです。環境変数より優先されます。</p>
+              <div class="settings-row">
+                <label class="settings-label" data-i18n="import.etherscanKey">Etherscan API Key（EVM 用）</label>
+                <input id="system-etherscan" class="settings-input" type="password"
+                  data-i18n-placeholder="system.keyPlaceholder" placeholder="キーを入力（空欄で変更なし）" style="max-width:300px" autocomplete="off" />
+                <span id="system-etherscan-status" class="settings-hint"></span>
+              </div>
+              <div class="settings-row">
+                <label class="settings-label" data-i18n="import.heliusKey">Helius API Key（Solana 用）</label>
+                <input id="system-helius" class="settings-input" type="password"
+                  data-i18n-placeholder="system.keyPlaceholder" placeholder="キーを入力（空欄で変更なし）" style="max-width:300px" autocomplete="off" />
+                <span id="system-helius-status" class="settings-hint"></span>
+              </div>
+              <div class="settings-row">
+                <label class="settings-label" data-i18n="system.masterKey">暗号化マスター鍵</label>
+                <span id="system-cs-secret-status" class="settings-hint"></span>
+                <p class="settings-hint" data-i18n="system.masterKeyHint">CS_SECRET_KEY は安全上 Web からは設定できません。サーバーの環境変数で設定してください。</p>
+              </div>
+              <div class="settings-actions">
+                <button id="system-keys-save-btn" class="settings-save-btn" data-i18n="btn.saveKeys">キーを保存</button>
+              </div>
+              <div id="system-keys-result" class="settings-result hidden"></div>
+            </div>
+
             <div class="settings-row">
               <label class="settings-label" data-i18n="import.walletAddress">ウォレットアドレス *</label>
               <input id="import-wallet-address" class="settings-input" type="text"

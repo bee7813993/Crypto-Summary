@@ -1855,6 +1855,47 @@ async function loadImportPage() {
   loadImportBatches();
   loadApiAccountsTable();
   loadWalletsTable();
+  loadSystemKeys();
+}
+
+// システム設定（管理者のみ）: スキャン用キー・マスター鍵の状態を読み込んで表示する。
+async function loadSystemKeys() {
+  const panel = document.getElementById("system-keys-panel");
+  if (!panel) return;
+  if (!window._isAdmin) {
+    panel.classList.add("hidden");
+    return;
+  }
+  try {
+    const data = await fetchJSON("/api/system-keys");
+    panel.classList.remove("hidden");
+    const p = data.providers || {};
+    const setKey = (id, info) => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      info = info || {};
+      if (info.stored) {
+        el.textContent = t("label.keySet");
+        el.className = "settings-hint key-set";
+      } else if (info.env) {
+        el.textContent = t("system.fromEnv");
+        el.className = "settings-hint key-set";
+      } else {
+        el.textContent = t("label.keyNotSet");
+        el.className = "settings-hint key-unset";
+      }
+    };
+    setKey("system-etherscan-status", p.etherscan);
+    setKey("system-helius-status", p.helius);
+    const cs = document.getElementById("system-cs-secret-status");
+    if (cs) {
+      cs.textContent = data.cs_secret_key ? t("label.keySet") : t("label.keyNotSet");
+      cs.className = "settings-hint " + (data.cs_secret_key ? "key-set" : "key-unset");
+    }
+  } catch (e) {
+    // 管理者でない場合は 403。パネルは隠したままにする。
+    panel.classList.add("hidden");
+  }
 }
 
 
@@ -2211,6 +2252,52 @@ async function loadWalletsTable() {
   }
 }
 
+// システム設定: スキャン用キー保存ボタン（管理者のみ）
+const _systemKeysSaveBtn = document.getElementById("system-keys-save-btn");
+if (_systemKeysSaveBtn) {
+  _systemKeysSaveBtn.addEventListener("click", async () => {
+    const result = document.getElementById("system-keys-result");
+    result.classList.add("hidden");
+
+    const etherscan = document.getElementById("system-etherscan").value.trim();
+    const helius = document.getElementById("system-helius").value.trim();
+
+    // 空欄のフィールドは送らない（＝変更なし）
+    const body = {};
+    if (etherscan) body.etherscan = etherscan;
+    if (helius) body.helius = helius;
+
+    if (Object.keys(body).length === 0) {
+      result.className = "settings-result err";
+      result.textContent = t("status.systemKeysEmpty");
+      result.classList.remove("hidden");
+      return;
+    }
+
+    try {
+      const resp = await fetch("/api/system-keys", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const d = await resp.json();
+      if (!resp.ok) throw new Error(d.detail || `HTTP ${resp.status}`);
+
+      result.className = "settings-result ok";
+      result.textContent = t("status.systemKeysDone");
+      result.classList.remove("hidden");
+
+      document.getElementById("system-etherscan").value = "";
+      document.getElementById("system-helius").value = "";
+      loadSystemKeys();
+    } catch (e) {
+      result.className = "settings-result err";
+      result.textContent = t("status.systemKeysFail", { error: e.message });
+      result.classList.remove("hidden");
+    }
+  });
+}
+
 // ウォレット登録ボタン
 document.getElementById("import-wallet-btn").addEventListener("click", async () => {
   const result = document.getElementById("import-wallet-result");
@@ -2400,9 +2487,20 @@ async function checkAuth() {
   }
 }
 
+// アプリ全体のメタ情報（対応通貨・管理者判定など）を読み込む。
+async function loadMeta() {
+  try {
+    const meta = await fetchJSON("/api/meta");
+    window._isAdmin = !!meta.is_admin;
+  } catch (e) {
+    window._isAdmin = false;
+  }
+}
+
 (async () => {
   const ok = await checkAuth();
   if (!ok) return;
+  await loadMeta();
   _syncThemeBtn();
   _syncMaskBtn();
   _syncLangBtn();

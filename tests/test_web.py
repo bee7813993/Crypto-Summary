@@ -586,3 +586,59 @@ def test_spam_not_counted_in_sources_asset_count(spam_client):
     wallet_src = next(s for s in d["sources"] if "wallet" in s["source_ids"])
     # BTC, SENTUSD, LEGIT11 の 3 つ（スパム 5 つは除外）
     assert wallet_src["asset_count"] == 3
+
+
+# ---- システムキー（管理者設定） ----
+
+def test_meta_is_admin_single_user(client):
+    """シングルユーザーでは常に管理者扱い。"""
+    d = client.get("/api/meta").json()
+    assert d["multi_user"] is False
+    assert d["is_admin"] is True
+
+
+def test_system_keys_status_single_user(client, monkeypatch):
+    """シングルユーザーではシステムキーの状態を誰でも取得できる。"""
+    monkeypatch.delenv("ETHERSCAN_API_KEY", raising=False)
+    monkeypatch.delenv("HELIUS_API_KEY", raising=False)
+    monkeypatch.delenv("CS_SECRET_KEY", raising=False)
+    d = client.get("/api/system-keys").json()
+    assert d["providers"]["etherscan"] == {"stored": False, "env": False}
+    assert d["providers"]["helius"] == {"stored": False, "env": False}
+    assert d["cs_secret_key"] is False
+
+
+def test_system_keys_status_reflects_env(client, monkeypatch):
+    monkeypatch.setenv("ETHERSCAN_API_KEY", "ENVKEY")
+    monkeypatch.setenv("CS_SECRET_KEY", "x")
+    d = client.get("/api/system-keys").json()
+    assert d["providers"]["etherscan"]["env"] is True
+    assert d["cs_secret_key"] is True
+
+
+def test_system_keys_set_and_persist(client, monkeypatch):
+    """マスター鍵があればシステムキーを暗号化保存でき、状態に反映される。"""
+    from crypto_summary.core.secrets import generate_master_key
+
+    monkeypatch.setenv("CS_SECRET_KEY", generate_master_key())
+    r = client.post("/api/system-keys", json={"etherscan": "MYETHKEY"})
+    assert r.status_code == 200
+    assert r.json()["updated"] == ["etherscan"]
+
+    d = client.get("/api/system-keys").json()
+    assert d["providers"]["etherscan"]["stored"] is True
+    assert d["providers"]["helius"]["stored"] is False
+
+
+def test_system_keys_set_without_master_key_fails(client, monkeypatch):
+    monkeypatch.delenv("CS_SECRET_KEY", raising=False)
+    r = client.post("/api/system-keys", json={"etherscan": "MYETHKEY"})
+    assert r.status_code == 500
+
+
+def test_system_keys_admin_gated_in_multi_user(tmp_path, monkeypatch):
+    """マルチユーザーで未認証ならシステムキーAPIは 401。"""
+    monkeypatch.setenv("ADMIN_EMAILS", "admin@example.com")
+    mu = TestClient(web_app.create_app(data_dir=str(tmp_path / "data")))
+    assert mu.get("/api/system-keys").status_code == 401
+    assert mu.get("/api/meta").json()["is_admin"] is False

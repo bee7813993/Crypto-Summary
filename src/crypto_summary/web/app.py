@@ -845,6 +845,60 @@ _WALLET_CHAIN_LABELS: dict[str, str] = {
 }
 
 
+# システム共通のスキャン用キー（管理者がWebまたはenvで設定するインフラキー）
+_SYSTEM_PROVIDER_KEYS: dict[str, str] = {
+    "etherscan": "ETHERSCAN_API_KEY",
+    "helius": "HELIUS_API_KEY",
+}
+
+
+def _system_key_or_env(system_db: str, provider: str, env_name: str) -> str | None:
+    """システム保存キー（暗号化）→ 環境変数 の順で解決する。
+
+    マスター鍵未設定などで復号できない場合は環境変数にフォールバックする。
+    """
+    try:
+        key = SecretStore(system_db).get_provider_key(provider)
+    except SecretStoreError:
+        key = None
+    return key or os.environ.get(env_name)
+
+
+def _system_key_status(system_db: str) -> dict:
+    """システムキーの状態（Web保存済みか / env設定済みか）を返す（値は含まない）。"""
+    try:
+        stored = SecretStore(system_db).list_provider_keys()
+    except SecretStoreError:
+        stored = {}
+    return {
+        provider: {
+            "stored": bool(stored.get(provider)),
+            "env": bool(os.environ.get(env_name)),
+        }
+        for provider, env_name in _SYSTEM_PROVIDER_KEYS.items()
+    }
+
+
+def _set_system_keys(system_db: str, body: dict[str, Any]) -> dict:
+    """システムキーを暗号化保存する。
+
+    body に含まれるキーのみ更新する。値が空文字なら削除する。
+    body に無いプロバイダーは変更しない。
+    """
+    store = SecretStore(system_db)
+    updated: list[str] = []
+    for provider in _SYSTEM_PROVIDER_KEYS:
+        if provider not in body:
+            continue
+        val = (body.get(provider) or "").strip()
+        try:
+            store.set_provider_key(provider, val)
+        except SecretStoreError as e:
+            raise HTTPException(status_code=500, detail=str(e))
+        updated.append(provider)
+    return {"ok": True, "updated": updated}
+
+
 def _detect_wallet_chain(address: str) -> str:
     """アドレス形式からチェーン種別を判定する（"evm" / "solana"）。
 
@@ -902,8 +956,8 @@ def _delete_wallet(db_path: str, source_id: str) -> dict:
     return {"ok": True}
 
 
-def _sync_wallet(db_path: str, source_id: str) -> dict:
-    import os
+def _sync_wallet(db_path: str, source_id: str, system_db: str | None = None) -> dict:
+    sys_db = system_db or db_path
 
     store = SecretStore(db_path)
     try:
@@ -920,11 +974,11 @@ def _sync_wallet(db_path: str, source_id: str) -> dict:
     if chain == "solana":
         from ..sources.solana.helius import HeliusApiSource
 
-        key = wallet.get("helius_key") or os.environ.get("HELIUS_API_KEY")
+        key = wallet.get("helius_key") or _system_key_or_env(sys_db, "helius", "HELIUS_API_KEY")
         if not key:
             raise HTTPException(
                 status_code=422,
-                detail="Solana には Helius APIキーが必要です。環境変数 HELIUS_API_KEY を設定してください。",
+                detail="Solana には Helius APIキーが必要です。設定画面の「システム設定」で登録するか、環境変数 HELIUS_API_KEY を設定してください。",
             )
         try:
             txs = HeliusApiSource(source_id, address, key).fetch_all(record_gas=True)
@@ -933,11 +987,11 @@ def _sync_wallet(db_path: str, source_id: str) -> dict:
     else:  # evm — 全 EVM チェーンをスキャンしてマージ
         from ..sources.api.etherscan import CHAIN_IDS, EtherscanApiSource
 
-        key = wallet.get("api_key") or os.environ.get("ETHERSCAN_API_KEY")
+        key = wallet.get("api_key") or _system_key_or_env(sys_db, "etherscan", "ETHERSCAN_API_KEY")
         if not key:
             raise HTTPException(
                 status_code=422,
-                detail="EVM には Etherscan V2 APIキーが必要です。環境変数 ETHERSCAN_API_KEY を設定してください。",
+                detail="EVM には Etherscan V2 APIキーが必要です。設定画面の「システム設定」で登録するか、環境変数 ETHERSCAN_API_KEY を設定してください。",
             )
         errors: list[str] = []
         for chain_name, chain_id in CHAIN_IDS.items():
@@ -972,7 +1026,7 @@ def _sync_wallet(db_path: str, source_id: str) -> dict:
     }
 
 
-def _sync_all(db_path: str) -> dict:
+def _sync_all(db_path: str, system_db: str | None = None) -> dict:
     """登録済みの全 API 口座・全ウォレットを順に同期する。
 
     1件の失敗で全体を止めず、各ソースの結果（成功/失敗）を集約して返す。
@@ -982,7 +1036,7 @@ def _sync_all(db_path: str) -> dict:
 
     def _run(source_id: str, kind: str, fn) -> None:
         try:
-            r = fn(db_path, source_id)
+            r = fn(source_id)
             results.append({
                 "source_id": source_id,
                 "kind": kind,
@@ -1002,9 +1056,10 @@ def _sync_all(db_path: str) -> dict:
             })
 
     for acct in store.list_accounts():
-        _run(acct["source_id"], "api", _sync_account_api)
+        _run(acct["source_id"], "api", lambda sid: _sync_account_api(db_path, sid))
     for wallet in store.list_wallets():
-        _run(wallet["source_id"], "wallet", _sync_wallet)
+        _run(wallet["source_id"], "wallet",
+             lambda sid: _sync_wallet(db_path, sid, system_db=system_db))
 
     succeeded = [r for r in results if r["ok"]]
     failed = [r for r in results if not r["ok"]]
@@ -1190,6 +1245,10 @@ def create_app(
 
     multi_user = data_dir is not None
 
+    def _admin_emails() -> set[str]:
+        raw = os.environ.get("ADMIN_EMAILS", "")
+        return {e.strip().lower() for e in raw.split(",") if e.strip()}
+
     if multi_user:
         # Google OAuth セッション + ルート
         from starlette.middleware.sessions import SessionMiddleware
@@ -1207,12 +1266,37 @@ def create_app(
         def get_db_path(user: dict = Depends(require_user)) -> str:
             return str(_data_dir / f"{user['sub']}.db")
 
+        # システム共通シークレットは data_dir 内の専用ストアに保存する。
+        _system_db = str(_data_dir / "_system.db")
+
+        def system_store_path() -> str:
+            return _system_db
+
+        def is_admin_user(user: dict | None) -> bool:
+            admins = _admin_emails()
+            return bool(user and admins and user.get("email", "").lower() in admins)
+
+        def require_admin(user: dict = Depends(require_user)) -> dict:
+            if not is_admin_user(user):
+                raise HTTPException(status_code=403, detail="管理者権限が必要です")
+            return user
+
     else:
         # シングルユーザー: 固定 db_path、認証不要
         _fixed_db = db_path
 
         def get_db_path() -> str:  # type: ignore[misc]
             return _fixed_db
+
+        # シングルユーザーではシステムキーもユーザーDBに保存し、所有者が管理者。
+        def system_store_path() -> str:
+            return _fixed_db
+
+        def is_admin_user(user: dict | None) -> bool:
+            return True
+
+        def require_admin() -> dict:  # type: ignore[misc]
+            return {"email": ""}
 
     # ------------------------------------------------------------------
     # API ルート（すべて get_db_path 依存で db パスを取得する）
@@ -1355,11 +1439,26 @@ def create_app(
 
     @app.post("/api/wallets/{source_id}/sync")
     def sync_wallet(source_id: str, db: str = Depends(get_db_path)) -> dict:
-        return _sync_wallet(db, source_id)
+        return _sync_wallet(db, source_id, system_db=system_store_path())
 
     @app.post("/api/sync-all")
     def sync_all(db: str = Depends(get_db_path)) -> dict:
-        return _sync_all(db)
+        return _sync_all(db, system_db=system_store_path())
+
+    @app.get("/api/system-keys")
+    def get_system_keys(admin: dict = Depends(require_admin)) -> dict:
+        return {
+            "providers": _system_key_status(system_store_path()),
+            "cs_secret_key": bool(os.environ.get("CS_SECRET_KEY")),
+            "multi_user": multi_user,
+            "admin_configured": (not multi_user) or bool(_admin_emails()),
+        }
+
+    @app.post("/api/system-keys")
+    def set_system_keys(
+        body: dict[str, Any], admin: dict = Depends(require_admin)
+    ) -> dict:
+        return _set_system_keys(system_store_path(), body)
 
     @app.get("/api/account-groups")
     def get_account_groups(db: str = Depends(get_db_path)) -> dict:
@@ -1390,10 +1489,16 @@ def create_app(
         return fetch_coin_icons()
 
     @app.get("/api/meta")
-    def meta() -> dict:
+    def meta(request: Request) -> dict:
+        if multi_user:
+            user = request.session.get("user")
+            admin = is_admin_user(user)
+        else:
+            admin = True
         return {
             "currencies": list(SUPPORTED_CURRENCIES),
             "multi_user": multi_user,
+            "is_admin": admin,
         }
 
     @app.get("/")
