@@ -119,6 +119,8 @@ crypto-summary fetch-wallet --chain arbitrum --wallet 0xABC...123
 crypto-summary fetch-wallet --chain solana --wallet YOURWALLET...
 ```
 
+> API 直接取得には各サービスの API キーが必要です。取得・設定方法は [`docs/api-keys.md`](./docs/api-keys.md) を参照してください。
+
 ---
 
 ## エクスポート形式
@@ -195,3 +197,4 @@ pytest --cov=crypto_summary
 
 - プロジェクト設計: [`DESIGN.md`](./DESIGN.md)
 - コマンドリファレンス: [`docs/commands.md`](./docs/commands.md)
+- API キーのセットアップ: [`docs/api-keys.md`](./docs/api-keys.md)
