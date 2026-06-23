@@ -845,51 +845,6 @@ _WALLET_CHAIN_LABELS: dict[str, str] = {
 }
 
 
-# 設定画面で登録できるプロバイダーキー（ユーザー単位の共通スキャンキー）
-_PROVIDER_KEYS = ("etherscan", "helius")
-
-
-def _provider_key_or_env(store: SecretStore, provider: str, env_name: str) -> str | None:
-    """プロバイダーキー（暗号化保存）→ 環境変数 の順で解決する。
-
-    マスター鍵未設定などで復号できない場合は環境変数にフォールバックする。
-    """
-    import os
-
-    try:
-        key = store.get_provider_key(provider)
-    except SecretStoreError:
-        key = None
-    return key or os.environ.get(env_name)
-
-
-def _list_provider_keys(db_path: str) -> dict:
-    """登録済みプロバイダーキーの有無を返す（値は含まない）。"""
-    store = SecretStore(db_path)
-    status = store.list_provider_keys()
-    return {"providers": {p: bool(status.get(p)) for p in _PROVIDER_KEYS}}
-
-
-def _set_provider_keys(db_path: str, body: dict[str, Any]) -> dict:
-    """プロバイダーキーを暗号化保存する。
-
-    body に含まれるキーのみ更新する。値が空文字なら削除する。
-    body に無いプロバイダーは変更しない。
-    """
-    store = SecretStore(db_path)
-    updated: list[str] = []
-    for p in _PROVIDER_KEYS:
-        if p not in body:
-            continue
-        val = (body.get(p) or "").strip()
-        try:
-            store.set_provider_key(p, val)
-        except SecretStoreError as e:
-            raise HTTPException(status_code=500, detail=str(e))
-        updated.append(p)
-    return {"ok": True, "updated": updated}
-
-
 def _detect_wallet_chain(address: str) -> str:
     """アドレス形式からチェーン種別を判定する（"evm" / "solana"）。
 
@@ -965,11 +920,11 @@ def _sync_wallet(db_path: str, source_id: str) -> dict:
     if chain == "solana":
         from ..sources.solana.helius import HeliusApiSource
 
-        key = wallet.get("helius_key") or _provider_key_or_env(store, "helius", "HELIUS_API_KEY")
+        key = wallet.get("helius_key") or os.environ.get("HELIUS_API_KEY")
         if not key:
             raise HTTPException(
                 status_code=422,
-                detail="Solana には Helius APIキーが必要です。設定画面の「スキャン用 API キー」で登録するか、環境変数 HELIUS_API_KEY を設定してください。",
+                detail="Solana には Helius APIキーが必要です。環境変数 HELIUS_API_KEY を設定してください。",
             )
         try:
             txs = HeliusApiSource(source_id, address, key).fetch_all(record_gas=True)
@@ -978,11 +933,11 @@ def _sync_wallet(db_path: str, source_id: str) -> dict:
     else:  # evm — 全 EVM チェーンをスキャンしてマージ
         from ..sources.api.etherscan import CHAIN_IDS, EtherscanApiSource
 
-        key = wallet.get("api_key") or _provider_key_or_env(store, "etherscan", "ETHERSCAN_API_KEY")
+        key = wallet.get("api_key") or os.environ.get("ETHERSCAN_API_KEY")
         if not key:
             raise HTTPException(
                 status_code=422,
-                detail="EVM には Etherscan V2 APIキーが必要です。設定画面の「スキャン用 API キー」で登録するか、環境変数 ETHERSCAN_API_KEY を設定してください。",
+                detail="EVM には Etherscan V2 APIキーが必要です。環境変数 ETHERSCAN_API_KEY を設定してください。",
             )
         errors: list[str] = []
         for chain_name, chain_id in CHAIN_IDS.items():
@@ -1385,14 +1340,6 @@ def create_app(
     @app.post("/api/account-apis/{source_id}/sync")
     def sync_account_api(source_id: str, db: str = Depends(get_db_path)) -> dict:
         return _sync_account_api(db, source_id)
-
-    @app.get("/api/provider-keys")
-    def list_provider_keys(db: str = Depends(get_db_path)) -> dict:
-        return _list_provider_keys(db)
-
-    @app.post("/api/provider-keys")
-    def set_provider_keys(body: dict[str, Any], db: str = Depends(get_db_path)) -> dict:
-        return _set_provider_keys(db, body)
 
     @app.get("/api/wallets")
     def list_wallets(db: str = Depends(get_db_path)) -> dict:
