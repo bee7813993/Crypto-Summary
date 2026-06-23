@@ -835,6 +835,63 @@ def _sync_account_api(db_path: str, source_id: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# サーバー設定ファイル（初回セットアップ用）
+# ---------------------------------------------------------------------------
+# data_dir/_server_config.json（マルチユーザー）または
+# <db_dir>/_server_config.json（シングルユーザー）に保存する。
+# CS_SECRET_KEY や ADMIN_EMAILS を Web セットアップ画面から設定した場合に使う。
+# env 変数が設定されている場合は常に env が優先される。
+
+_SERVER_CONFIG_FILE = "_server_config.json"
+
+
+def _server_config_path(base_dir: str) -> Path:
+    return Path(base_dir) / _SERVER_CONFIG_FILE
+
+
+def _load_server_config(base_dir: str) -> dict:
+    try:
+        return json.loads(_server_config_path(base_dir).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _save_server_config(base_dir: str, data: dict) -> None:
+    path = _server_config_path(base_dir)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+
+
+def _needs_first_run_setup(base_dir: str) -> bool:
+    """初回セットアップが必要かどうかを返す。
+
+    CS_SECRET_KEY が env になく、かつ設定ファイルが未存在の場合 True。
+    セットアップ完了（キー設定またはスキップ）後はファイルが存在するため False になる。
+    """
+    if os.environ.get("CS_SECRET_KEY"):
+        return False
+    return not _server_config_path(base_dir).exists()
+
+
+def _apply_server_config(base_dir: str) -> None:
+    """設定ファイルの値を環境変数に反映する（env が設定済みの場合はスキップ）。
+
+    この関数を create_app の冒頭で呼ぶことで、
+    SecretStore など既存のコードは変更なしに設定ファイルの値を使える。
+    """
+    cfg = _load_server_config(base_dir)
+    key = cfg.get("cs_secret_key", "")
+    if key and not os.environ.get("CS_SECRET_KEY"):
+        os.environ["CS_SECRET_KEY"] = key
+    admin = cfg.get("admin_emails", "")
+    if admin and not os.environ.get("ADMIN_EMAILS"):
+        os.environ["ADMIN_EMAILS"] = admin
+
+
+# ---------------------------------------------------------------------------
 # ウォレットアドレス連携
 # ---------------------------------------------------------------------------
 
@@ -1245,6 +1302,17 @@ def create_app(
 
     multi_user = data_dir is not None
 
+    # base_dir: サーバー設定ファイルの置き場所
+    if multi_user:
+        _data_dir_path = Path(data_dir).expanduser()
+        _data_dir_path.mkdir(parents=True, exist_ok=True)
+        _base_dir = str(_data_dir_path)
+    else:
+        _base_dir = str(Path(db_path).resolve().parent)
+
+    # 設定ファイルの値を env に反映（env 優先）
+    _apply_server_config(_base_dir)
+
     def _admin_emails() -> set[str]:
         raw = os.environ.get("ADMIN_EMAILS", "")
         return {e.strip().lower() for e in raw.split(",") if e.strip()}
@@ -1252,9 +1320,6 @@ def create_app(
     if multi_user:
         # Google OAuth セッション + ルート
         from starlette.middleware.sessions import SessionMiddleware
-
-        _data_dir = Path(data_dir).expanduser()
-        _data_dir.mkdir(parents=True, exist_ok=True)
 
         secret_key = os.environ.get("SECRET_KEY", "dev-secret-change-me-in-production")
         app.add_middleware(SessionMiddleware, secret_key=secret_key, https_only=False)
@@ -1264,10 +1329,10 @@ def create_app(
         app.include_router(auth_router)
 
         def get_db_path(user: dict = Depends(require_user)) -> str:
-            return str(_data_dir / f"{user['sub']}.db")
+            return str(_data_dir_path / f"{user['sub']}.db")
 
         # システム共通シークレットは data_dir 内の専用ストアに保存する。
-        _system_db = str(_data_dir / "_system.db")
+        _system_db = str(_data_dir_path / "_system.db")
 
         def system_store_path() -> str:
             return _system_db
@@ -1488,6 +1553,57 @@ def create_app(
     def coin_icons() -> dict:
         return fetch_coin_icons()
 
+    # ------------------------------------------------------------------
+    # 初回セットアップ（認証不要・設定完了後はロック）
+    # ------------------------------------------------------------------
+
+    @app.get("/api/setup-status")
+    def setup_status() -> dict:
+        return {
+            "needs_setup": _needs_first_run_setup(_base_dir),
+            "multi_user": multi_user,
+        }
+
+    @app.get("/api/generate-key")
+    def generate_key() -> dict:
+        """新しい Fernet キーを生成して返す（セットアップ画面用）。"""
+        from ..core.secrets import generate_master_key
+        return {"key": generate_master_key()}
+
+    @app.post("/api/setup")
+    def do_setup(body: dict[str, Any]) -> dict:
+        """初回セットアップ: CS_SECRET_KEY と ADMIN_EMAILS を設定ファイルに保存する。
+
+        セットアップ完了後（ファイルが存在する状態）はこのエンドポイントは 403 を返す。
+        """
+        if not _needs_first_run_setup(_base_dir):
+            raise HTTPException(status_code=403, detail="セットアップは既に完了しています")
+
+        cs_key = (body.get("cs_secret_key") or "").strip()
+        admin_emails = (body.get("admin_emails") or "").strip()
+        skipped = bool(body.get("skipped"))
+
+        if cs_key:
+            from cryptography.fernet import Fernet
+            try:
+                Fernet(cs_key.encode("ascii"))
+            except Exception:
+                raise HTTPException(status_code=422, detail="CS_SECRET_KEY の形式が正しくありません。「生成する」ボタンで生成したキーを使ってください。")
+
+        cfg: dict[str, Any] = {}
+        if cs_key:
+            cfg["cs_secret_key"] = cs_key
+            os.environ["CS_SECRET_KEY"] = cs_key  # 再起動なしに即反映
+        if admin_emails:
+            cfg["admin_emails"] = admin_emails
+            if not os.environ.get("ADMIN_EMAILS"):
+                os.environ["ADMIN_EMAILS"] = admin_emails
+        if skipped:
+            cfg["setup_skipped"] = True
+
+        _save_server_config(_base_dir, cfg)
+        return {"ok": True, "key_set": bool(cs_key)}
+
     @app.get("/api/meta")
     def meta(request: Request) -> dict:
         if multi_user:
@@ -1499,6 +1615,7 @@ def create_app(
             "currencies": list(SUPPORTED_CURRENCIES),
             "multi_user": multi_user,
             "is_admin": admin,
+            "needs_setup": _needs_first_run_setup(_base_dir),
         }
 
     @app.get("/")

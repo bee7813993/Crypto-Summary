@@ -2462,6 +2462,88 @@ document.getElementById("asset-range-tabs").querySelectorAll(".range-tab").forEa
 const saved = localStorage.getItem("cs_currency");
 if (saved) document.getElementById("currency").value = saved;
 
+// ---- 初回セットアップウィザード ----
+
+async function runSetupIfNeeded() {
+  let status;
+  try {
+    status = await fetchJSON("/api/setup-status");
+  } catch (e) {
+    return; // ネットワークエラーは無視してアプリを表示
+  }
+  if (!status.needs_setup) return;
+
+  // セットアップ画面を表示
+  const screen = document.getElementById("setup-screen");
+  screen.classList.remove("hidden");
+  document.querySelector(".layout").classList.add("hidden");
+  document.getElementById("login-screen").classList.add("hidden");
+
+  // マルチユーザーの場合のみ ADMIN_EMAILS フィールドを表示
+  if (status.multi_user) {
+    document.getElementById("setup-admin-section").classList.remove("hidden");
+  }
+
+  // 生成ボタン
+  document.getElementById("setup-generate-btn").addEventListener("click", async () => {
+    try {
+      const d = await fetchJSON("/api/generate-key");
+      document.getElementById("setup-cs-key").value = d.key;
+    } catch (e) {
+      document.getElementById("setup-cs-key").value = t("status.error") + e.message;
+    }
+  });
+
+  // 提出ボタン
+  document.getElementById("setup-submit-btn").addEventListener("click", async () => {
+    const result = document.getElementById("setup-result");
+    result.classList.add("hidden");
+    const csKey = document.getElementById("setup-cs-key").value.trim();
+    const adminEmails = document.getElementById("setup-admin-emails")?.value.trim() || "";
+
+    if (!csKey) {
+      result.className = "settings-result err";
+      result.textContent = t("setup.keyRequired");
+      result.classList.remove("hidden");
+      return;
+    }
+
+    try {
+      const resp = await fetch("/api/setup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cs_secret_key: csKey, admin_emails: adminEmails }),
+      });
+      const d = await resp.json();
+      if (!resp.ok) throw new Error(d.detail || `HTTP ${resp.status}`);
+
+      result.className = "settings-result ok";
+      result.textContent = t("setup.done");
+      result.classList.remove("hidden");
+      setTimeout(() => location.reload(), 1200);
+    } catch (e) {
+      result.className = "settings-result err";
+      result.textContent = t("setup.failed", { error: e.message });
+      result.classList.remove("hidden");
+    }
+  });
+
+  // スキップボタン
+  document.getElementById("setup-skip-btn").addEventListener("click", async () => {
+    try {
+      await fetch("/api/setup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ skipped: true }),
+      });
+    } catch (e) { /* ignore */ }
+    location.reload();
+  });
+
+  // セットアップ中は他の初期化をブロック
+  throw new Error("__setup__");
+}
+
 // ---- 認証チェック ----
 async function checkAuth() {
   try {
@@ -2498,6 +2580,12 @@ async function loadMeta() {
 }
 
 (async () => {
+  try {
+    await runSetupIfNeeded();
+  } catch (e) {
+    if (e.message === "__setup__") return; // セットアップ画面を表示中
+    // その他のエラーは無視して続行
+  }
   const ok = await checkAuth();
   if (!ok) return;
   await loadMeta();

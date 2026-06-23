@@ -642,3 +642,82 @@ def test_system_keys_admin_gated_in_multi_user(tmp_path, monkeypatch):
     mu = TestClient(web_app.create_app(data_dir=str(tmp_path / "data")))
     assert mu.get("/api/system-keys").status_code == 401
     assert mu.get("/api/meta").json()["is_admin"] is False
+
+
+# ---- 初回セットアップウィザード ----
+
+@pytest.fixture
+def fresh_client(tmp_path: Path, monkeypatch) -> TestClient:
+    """CS_SECRET_KEY が未設定・設定ファイルなしの新規環境。"""
+    monkeypatch.delenv("CS_SECRET_KEY", raising=False)
+    return TestClient(web_app.create_app(db_path=str(tmp_path / "fresh.db")))
+
+
+def test_setup_status_needs_setup(fresh_client, monkeypatch):
+    """新規環境では needs_setup=True。"""
+    monkeypatch.delenv("CS_SECRET_KEY", raising=False)
+    d = fresh_client.get("/api/setup-status").json()
+    assert d["needs_setup"] is True
+    assert d["multi_user"] is False
+
+
+def test_setup_status_not_needed_when_env_set(tmp_path: Path, monkeypatch):
+    """CS_SECRET_KEY が env にある場合は needs_setup=False。"""
+    monkeypatch.setenv("CS_SECRET_KEY", "SOMEKEY")
+    c = TestClient(web_app.create_app(db_path=str(tmp_path / "x.db")))
+    assert c.get("/api/setup-status").json()["needs_setup"] is False
+
+
+def test_generate_key_returns_valid_fernet_key(fresh_client):
+    """/api/generate-key は有効な Fernet キーを返す。"""
+    from cryptography.fernet import Fernet
+    d = fresh_client.get("/api/generate-key").json()
+    assert "key" in d
+    Fernet(d["key"].encode("ascii"))  # 形式チェック（例外なし）
+
+
+def test_setup_sets_key_and_locks(tmp_path: Path, monkeypatch):
+    """セットアップ後は鍵が保存され、再度セットアップはできない。"""
+    monkeypatch.delenv("CS_SECRET_KEY", raising=False)
+    from crypto_summary.core.secrets import generate_master_key
+    c = TestClient(web_app.create_app(db_path=str(tmp_path / "s.db")))
+
+    # セットアップ前
+    assert c.get("/api/setup-status").json()["needs_setup"] is True
+
+    key = generate_master_key()
+    r = c.post("/api/setup", json={"cs_secret_key": key})
+    assert r.status_code == 200
+    assert r.json()["ok"] is True
+
+    # セットアップ後はロック
+    r2 = c.post("/api/setup", json={"cs_secret_key": generate_master_key()})
+    assert r2.status_code == 403
+
+
+def test_setup_skip_locks_wizard(tmp_path: Path, monkeypatch):
+    """スキップ後も needs_setup=False になりセットアップは開けない。"""
+    monkeypatch.delenv("CS_SECRET_KEY", raising=False)
+    c = TestClient(web_app.create_app(db_path=str(tmp_path / "skip.db")))
+
+    r = c.post("/api/setup", json={"skipped": True})
+    assert r.status_code == 200
+    assert c.get("/api/setup-status").json()["needs_setup"] is False
+    # 再セットアップは 403
+    assert c.post("/api/setup", json={"skipped": True}).status_code == 403
+
+
+def test_setup_invalid_key_rejected(tmp_path: Path, monkeypatch):
+    """不正な Fernet キーは 422。"""
+    monkeypatch.delenv("CS_SECRET_KEY", raising=False)
+    c = TestClient(web_app.create_app(db_path=str(tmp_path / "bad.db")))
+    r = c.post("/api/setup", json={"cs_secret_key": "not-a-fernet-key"})
+    assert r.status_code == 422
+
+
+def test_meta_needs_setup_field(fresh_client, monkeypatch):
+    """/api/meta に needs_setup フィールドが含まれる。"""
+    monkeypatch.delenv("CS_SECRET_KEY", raising=False)
+    d = fresh_client.get("/api/meta").json()
+    assert "needs_setup" in d
+    assert d["needs_setup"] is True

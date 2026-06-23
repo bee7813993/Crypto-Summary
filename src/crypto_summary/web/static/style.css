@@ -830,6 +830,12 @@ html.light .history-unpriced {
 }
 .login-btn:hover { border-color: var(--accent); }
 
+/* ---- セットアップ画面 ---- */
+.setup-intro { font-size: 13px; color: var(--text-dim); margin-bottom: 24px; line-height: 1.6; }
+.setup-field { text-align: left; margin-bottom: 16px; }
+.setup-label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px; }
+.setup-key-row { display: flex; gap: 8px; align-items: center; }
+
 /* ---- サイドバー ユーザー情報 ---- */
 .user-info {
   display: flex; align-items: center; gap: 8px;

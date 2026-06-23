@@ -8,6 +8,40 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 </head>
 <body>
+  <!-- 初回セットアップ画面 (JS で表示制御) -->
+  <div id="setup-screen" class="login-screen hidden">
+    <div class="login-card">
+      <div class="login-logo">◈</div>
+      <h1 class="login-title">Crypto-Summary</h1>
+      <p class="login-sub" data-i18n="setup.subtitle">初回セットアップ</p>
+      <p class="setup-intro" data-i18n="setup.intro">API キーを Web 画面から登録するために必要な<br>暗号化マスター鍵を設定します。</p>
+
+      <div class="setup-field">
+        <label class="setup-label" data-i18n="setup.masterKey">CS_SECRET_KEY（暗号化マスター鍵）</label>
+        <div class="setup-key-row">
+          <input id="setup-cs-key" class="settings-input" type="text"
+            style="font-family:monospace;font-size:11px;flex:1"
+            data-i18n-placeholder="setup.keyPlaceholder" placeholder="ここに生成されたキーが表示されます" readonly />
+          <button id="setup-generate-btn" class="action-btn" data-i18n="setup.generate">生成する</button>
+        </div>
+        <p class="settings-hint" data-i18n="setup.keyHint">このキーで取引所・ウォレットの API キーを暗号化します。安全な場所にバックアップしてください。</p>
+      </div>
+
+      <div id="setup-admin-section" class="setup-field hidden">
+        <label class="setup-label" data-i18n="setup.adminEmails">管理者メールアドレス <span style="font-weight:normal;font-size:12px" data-i18n="setup.optional">（任意）</span></label>
+        <input id="setup-admin-emails" class="settings-input" type="text"
+          placeholder="admin@example.com（カンマ区切りで複数可）" />
+        <p class="settings-hint" data-i18n="setup.adminHint">指定したアカウントだけが、Web からシステム設定（Etherscan/Helius キー）を編集できます。未設定でも後から .env で変更できます。</p>
+      </div>
+
+      <div id="setup-result" class="settings-result hidden"></div>
+
+      <button id="setup-submit-btn" class="login-btn" style="margin-top:16px" data-i18n="setup.submit">セットアップ完了</button>
+      <button id="setup-skip-btn" class="link-btn" style="margin-top:12px;display:block;text-align:center" data-i18n="setup.skip">後で設定する（スキップ）</button>
+      <p class="settings-hint" style="margin-top:8px;text-align:center" data-i18n="setup.skipHint">スキップすると、Web 画面から API キーを登録する機能が使えません。</p>
+    </div>
+  </div>
+
   <!-- ログイン画面 (JS で表示制御) -->
   <div id="login-screen" class="login-screen hidden">
     <div class="login-card">
@@ -608,7 +642,7 @@
               <div class="settings-row">
                 <label class="settings-label" data-i18n="system.masterKey">暗号化マスター鍵</label>
                 <span id="system-cs-secret-status" class="settings-hint"></span>
-                <p class="settings-hint" data-i18n="system.masterKeyHint">CS_SECRET_KEY は安全上 Web からは設定できません。サーバーの環境変数で設定してください。</p>
+                <p class="settings-hint" data-i18n="system.masterKeyHint">CS_SECRET_KEY は初回セットアップ時にのみ Web から設定できます。以降の変更はサーバーの設定ファイルか環境変数で行ってください。</p>
               </div>
               <div class="settings-actions">
                 <button id="system-keys-save-btn" class="settings-save-btn" data-i18n="btn.saveKeys">キーを保存</button>
