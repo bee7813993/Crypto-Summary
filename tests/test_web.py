@@ -818,3 +818,60 @@ def test_apply_server_config_skips_empty_env(tmp_path, monkeypatch):
     )
     web_app._apply_server_config(str(data_dir))
     assert os.environ["GOOGLE_CLIENT_ID"] == "fromfile"
+
+
+# ---- 管理者設定 API (/api/admin-config) ----
+
+def test_admin_config_get_single_user(tmp_path, monkeypatch):
+    """/api/admin-config GET はシングルユーザーで multi_user=False を返す。"""
+    monkeypatch.setenv("CS_SECRET_KEY", "")
+    c = TestClient(web_app.create_app(db_path=str(tmp_path / "a.db")))
+    r = c.get("/api/admin-config")
+    assert r.status_code == 200
+    d = r.json()
+    assert d["multi_user"] is False
+    assert "cs_secret_key_set" in d
+    assert "coingecko_api_key_set" in d
+    assert "providers" in d
+
+
+def test_admin_config_set_coingecko(tmp_path, monkeypatch):
+    """/api/admin-config POST で COINGECKO_API_KEY を保存できる。"""
+    monkeypatch.delenv("COINGECKO_API_KEY", raising=False)
+    c = TestClient(web_app.create_app(db_path=str(tmp_path / "a.db")))
+    r = c.post("/api/admin-config", json={"coingecko_api_key": "CGKEY"})
+    assert r.status_code == 200
+    assert "coingecko_api_key" in r.json()["updated"]
+    # env に即座に反映される
+    assert os.environ.get("COINGECKO_API_KEY") == "CGKEY"
+
+
+def test_admin_config_set_admin_emails(tmp_path, monkeypatch):
+    """/api/admin-config POST で ADMIN_EMAILS を更新できる。"""
+    monkeypatch.delenv("ADMIN_EMAILS", raising=False)
+    c = TestClient(web_app.create_app(db_path=str(tmp_path / "a.db")))
+    r = c.post("/api/admin-config", json={"admin_emails": "a@x.com,b@x.com"})
+    assert r.status_code == 200
+    assert os.environ.get("ADMIN_EMAILS") == "a@x.com,b@x.com"
+
+
+def test_admin_config_gated_in_multi_user(tmp_path, monkeypatch):
+    """マルチユーザーで未認証なら /api/admin-config は 401。"""
+    monkeypatch.setenv("ADMIN_EMAILS", "admin@example.com")
+    mu = TestClient(web_app.create_app(data_dir=str(tmp_path / "data")))
+    assert mu.get("/api/admin-config").status_code == 401
+    assert mu.post("/api/admin-config", json={}).status_code == 401
+
+
+def test_admin_config_coingecko_applied_via_server_config(tmp_path, monkeypatch):
+    """coingecko_api_key が _server_config.json に保存され、起動時に env に反映される。"""
+    monkeypatch.delenv("COINGECKO_API_KEY", raising=False)
+    db = str(tmp_path / "a.db")
+    c = TestClient(web_app.create_app(db_path=db))
+    r = c.post("/api/admin-config", json={"coingecko_api_key": "MYGECKO"})
+    assert r.status_code == 200
+    # 設定ファイルに保存される
+    import json as _json
+    base_dir = str(Path(db).parent)
+    cfg = _json.loads(web_app._server_config_path(base_dir).read_text())
+    assert cfg.get("coingecko_api_key") == "MYGECKO"

@@ -100,6 +100,9 @@
         <a class="nav-link" data-page="import" href="#import">
           <span class="nav-icon">↑</span><span data-i18n="nav.import">インポート</span>
         </a>
+        <a class="nav-link hidden" id="nav-admin" data-page="admin" href="#admin">
+          <span class="nav-icon">⚙</span><span data-i18n="nav.admin">管理者設定</span>
+        </a>
       </nav>
 
       <div class="sidebar-controls">
@@ -632,34 +635,8 @@
             <div class="import-note" style="margin-bottom:12px">
               <strong>📖 公開アドレスから取引履歴を取得します</strong><br>
               ウォレットアドレスは公開情報のため平文で保存されます（秘密鍵は不要・絶対に入力しないこと）。<br>
-              スキャン用 API キーは読み取り専用です（出金権限の概念はありません）。
-            </div>
-
-            <!-- システム設定（管理者のみ・全ユーザー共通のスキャン用キー）-->
-            <div id="system-keys-panel" class="settings-subpanel hidden">
-              <h3 class="settings-subtitle" data-i18n="system.title">⚙ システム設定（管理者）</h3>
-              <p class="settings-hint" data-i18n="system.hint">全ユーザー共通のスキャン用 API キーです。環境変数より優先されます。</p>
-              <div class="settings-row">
-                <label class="settings-label" data-i18n="import.etherscanKey">Etherscan API Key（EVM 用）</label>
-                <input id="system-etherscan" class="settings-input" type="password"
-                  data-i18n-placeholder="system.keyPlaceholder" placeholder="キーを入力（空欄で変更なし）" style="max-width:300px" autocomplete="off" />
-                <span id="system-etherscan-status" class="settings-hint"></span>
-              </div>
-              <div class="settings-row">
-                <label class="settings-label" data-i18n="import.heliusKey">Helius API Key（Solana 用）</label>
-                <input id="system-helius" class="settings-input" type="password"
-                  data-i18n-placeholder="system.keyPlaceholder" placeholder="キーを入力（空欄で変更なし）" style="max-width:300px" autocomplete="off" />
-                <span id="system-helius-status" class="settings-hint"></span>
-              </div>
-              <div class="settings-row">
-                <label class="settings-label" data-i18n="system.masterKey">暗号化マスター鍵</label>
-                <span id="system-cs-secret-status" class="settings-hint"></span>
-                <p class="settings-hint" data-i18n="system.masterKeyHint">CS_SECRET_KEY は初回セットアップ時にのみ Web から設定できます。以降の変更はサーバーの設定ファイルか環境変数で行ってください。</p>
-              </div>
-              <div class="settings-actions">
-                <button id="system-keys-save-btn" class="settings-save-btn" data-i18n="btn.saveKeys">キーを保存</button>
-              </div>
-              <div id="system-keys-result" class="settings-result hidden"></div>
+              スキャン用 API キーは読み取り専用です（出金権限の概念はありません）。<br>
+              <span data-i18n="import.systemKeyHint">スキャン用 API キー（Etherscan / Helius）は「管理者設定」から登録してください。</span>
             </div>
 
             <div class="settings-row">
@@ -740,6 +717,112 @@
               <tbody></tbody>
             </table>
           </div>
+        </section>
+      </div>
+
+      <!-- 管理者設定ページ -->
+      <div id="page-admin" class="page hidden">
+        <h1 class="page-title" data-i18n="nav.admin">管理者設定</h1>
+
+        <!-- Google OAuth（マルチユーザーのみ表示）-->
+        <section class="card import-section" id="admin-oauth-section">
+          <h2 data-i18n="admin.oauthSection">Google OAuth（ログイン設定）</h2>
+          <p class="card-hint" data-i18n="admin.oauthHint">マルチユーザーモードでのログインに使用する Google OAuth 設定です。リダイレクト URI には「BASE_URL + /auth/callback」を登録してください。</p>
+          <div class="settings-row">
+            <label class="settings-label" data-i18n="admin.baseUrl">BASE_URL</label>
+            <input id="admin-base-url" class="settings-input" type="text"
+              placeholder="https://your-domain.example.com" style="max-width:400px" />
+          </div>
+          <div class="settings-row">
+            <label class="settings-label" data-i18n="admin.googleClientId">GOOGLE_CLIENT_ID</label>
+            <input id="admin-google-id" class="settings-input" type="text"
+              placeholder="...apps.googleusercontent.com" style="max-width:400px;font-family:monospace;font-size:11px" autocomplete="off" />
+          </div>
+          <div class="settings-row">
+            <label class="settings-label" data-i18n="admin.googleClientSecret">GOOGLE_CLIENT_SECRET</label>
+            <div style="display:flex;align-items:center;gap:8px">
+              <input id="admin-google-secret" class="settings-input" type="password"
+                data-i18n-placeholder="system.keyPlaceholder" placeholder="キーを入力（空欄で変更なし）"
+                style="max-width:300px;font-family:monospace;font-size:11px" autocomplete="off" />
+              <span id="admin-google-secret-status" class="settings-hint"></span>
+            </div>
+          </div>
+          <div class="settings-actions">
+            <button id="admin-oauth-save-btn" class="settings-save-btn" data-i18n="btn.save">保存</button>
+          </div>
+          <div id="admin-oauth-result" class="settings-result hidden"></div>
+        </section>
+
+        <!-- 暗号化マスター鍵（ステータス表示のみ）-->
+        <section class="card import-section">
+          <h2 data-i18n="admin.masterKeySection">暗号化マスター鍵（CS_SECRET_KEY）</h2>
+          <div class="settings-row">
+            <label class="settings-label" data-i18n="system.masterKey">CS_SECRET_KEY</label>
+            <span id="admin-cs-secret-status" class="settings-hint"></span>
+          </div>
+          <p class="settings-hint" data-i18n="system.masterKeyHint">CS_SECRET_KEY は初回セットアップ時にのみ Web から設定できます。以降の変更はサーバーの設定ファイルか環境変数で行ってください。</p>
+        </section>
+
+        <!-- 管理者メールアドレス（マルチユーザーのみ表示）-->
+        <section class="card import-section" id="admin-emails-section">
+          <h2 data-i18n="admin.adminEmailsSection">管理者メールアドレス（ADMIN_EMAILS）</h2>
+          <p class="card-hint" data-i18n="admin.adminEmailsHint">この管理者設定画面へのアクセス権を持つ Google アカウントのメールアドレスです。カンマ区切りで複数指定できます。</p>
+          <div class="settings-row">
+            <label class="settings-label">ADMIN_EMAILS</label>
+            <input id="admin-emails-input" class="settings-input" type="text"
+              placeholder="admin@example.com, admin2@example.com" style="max-width:400px" />
+          </div>
+          <div class="settings-actions">
+            <button id="admin-emails-save-btn" class="settings-save-btn" data-i18n="btn.save">保存</button>
+          </div>
+          <div id="admin-emails-result" class="settings-result hidden"></div>
+        </section>
+
+        <!-- スキャン用APIキー（Etherscan / Helius）-->
+        <section class="card import-section">
+          <h2 data-i18n="admin.scanKeysSection">スキャン用 API キー</h2>
+          <p class="card-hint" data-i18n="system.hint">全ユーザー共通のスキャン用 API キーです。ウォレットアドレスの同期に使用します。環境変数より優先されます。</p>
+          <div class="settings-row">
+            <label class="settings-label" data-i18n="import.etherscanKey">Etherscan API Key（EVM 用）</label>
+            <div style="display:flex;align-items:center;gap:8px">
+              <input id="system-etherscan" class="settings-input" type="password"
+                data-i18n-placeholder="system.keyPlaceholder" placeholder="キーを入力（空欄で変更なし）"
+                style="max-width:300px" autocomplete="off" />
+              <span id="system-etherscan-status" class="settings-hint"></span>
+            </div>
+          </div>
+          <div class="settings-row">
+            <label class="settings-label" data-i18n="import.heliusKey">Helius API Key（Solana 用）</label>
+            <div style="display:flex;align-items:center;gap:8px">
+              <input id="system-helius" class="settings-input" type="password"
+                data-i18n-placeholder="system.keyPlaceholder" placeholder="キーを入力（空欄で変更なし）"
+                style="max-width:300px" autocomplete="off" />
+              <span id="system-helius-status" class="settings-hint"></span>
+            </div>
+          </div>
+          <div class="settings-actions">
+            <button id="system-keys-save-btn" class="settings-save-btn" data-i18n="btn.saveKeys">キーを保存</button>
+          </div>
+          <div id="system-keys-result" class="settings-result hidden"></div>
+        </section>
+
+        <!-- CoinGecko API Key -->
+        <section class="card import-section">
+          <h2 data-i18n="admin.coingeckoSection">CoinGecko API Key</h2>
+          <p class="card-hint" data-i18n="admin.coingeckoHint">価格・推移グラフの取得に使用します。無料の Demo プランで取得できます。設定するとレート制限が緩和されます（任意）。</p>
+          <div class="settings-row">
+            <label class="settings-label">COINGECKO_API_KEY</label>
+            <div style="display:flex;align-items:center;gap:8px">
+              <input id="admin-coingecko-input" class="settings-input" type="password"
+                data-i18n-placeholder="system.keyPlaceholder" placeholder="キーを入力（空欄で変更なし）"
+                style="max-width:300px;font-family:monospace;font-size:11px" autocomplete="off" />
+              <span id="admin-coingecko-status" class="settings-hint"></span>
+            </div>
+          </div>
+          <div class="settings-actions">
+            <button id="admin-coingecko-save-btn" class="settings-save-btn" data-i18n="btn.save">保存</button>
+          </div>
+          <div id="admin-coingecko-result" class="settings-result hidden"></div>
         </section>
       </div>
 

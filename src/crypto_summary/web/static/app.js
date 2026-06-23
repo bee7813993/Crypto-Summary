@@ -197,7 +197,7 @@ document.getElementById("mask-toggle").addEventListener("click", () => {
 
 // ---- ページナビゲーション ----
 
-const PAGES = ["dashboard", "accounts", "assets", "transactions", "import"];
+const PAGES = ["dashboard", "accounts", "assets", "transactions", "import", "admin"];
 
 // ---- ハッシュルーター ----
 // URL ハッシュに状態を全て持たせ、リロード・ブックマーク・進む/戻るで復元可能にする。
@@ -266,6 +266,8 @@ function router() {
     );
   } else if (page === "import") {
     loadImportPage();
+  } else if (page === "admin") {
+    loadAdminPage();
   }
 }
 
@@ -1855,49 +1857,155 @@ async function loadImportPage() {
   loadImportBatches();
   loadApiAccountsTable();
   loadWalletsTable();
-  loadSystemKeys();
 }
 
-// システム設定（管理者のみ）: スキャン用キー・マスター鍵の状態を読み込んで表示する。
+// 管理者設定ページ: スキャン用キーのステータスを管理者設定ページに反映する。
 async function loadSystemKeys() {
-  const panel = document.getElementById("system-keys-panel");
-  if (!panel) return;
-  if (!window._isAdmin) {
-    panel.classList.add("hidden");
-    return;
+  function _setKeyStatus(id, info) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    info = info || {};
+    if (info.stored) {
+      el.textContent = t("label.keySet");
+      el.className = "settings-hint key-set";
+    } else if (info.env) {
+      el.textContent = t("system.fromEnv");
+      el.className = "settings-hint key-set";
+    } else {
+      el.textContent = t("label.keyNotSet");
+      el.className = "settings-hint key-unset";
+    }
   }
   try {
     const data = await fetchJSON("/api/system-keys");
-    panel.classList.remove("hidden");
     const p = data.providers || {};
-    const setKey = (id, info) => {
-      const el = document.getElementById(id);
-      if (!el) return;
-      info = info || {};
-      if (info.stored) {
-        el.textContent = t("label.keySet");
-        el.className = "settings-hint key-set";
-      } else if (info.env) {
-        el.textContent = t("system.fromEnv");
-        el.className = "settings-hint key-set";
-      } else {
-        el.textContent = t("label.keyNotSet");
-        el.className = "settings-hint key-unset";
-      }
-    };
-    setKey("system-etherscan-status", p.etherscan);
-    setKey("system-helius-status", p.helius);
-    const cs = document.getElementById("system-cs-secret-status");
-    if (cs) {
-      cs.textContent = data.cs_secret_key ? t("label.keySet") : t("label.keyNotSet");
-      cs.className = "settings-hint " + (data.cs_secret_key ? "key-set" : "key-unset");
-    }
+    _setKeyStatus("system-etherscan-status", p.etherscan);
+    _setKeyStatus("system-helius-status", p.helius);
   } catch (e) {
-    // 管理者でない場合は 403。パネルは隠したままにする。
-    panel.classList.add("hidden");
+    // 管理者でない場合は 403 — 無視
   }
 }
 
+
+// 管理者設定ページ全体を初期化・データ取得する。
+async function loadAdminPage() {
+  await loadSystemKeys();
+  try {
+    const cfg = await fetchJSON("/api/admin-config");
+
+    const setStatus = (id, isSet) => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.textContent = isSet ? t("label.keySet") : t("label.keyNotSet");
+      el.className = "settings-hint " + (isSet ? "key-set" : "key-unset");
+    };
+
+    // OAuth セクション（マルチユーザーのみ表示）
+    const oauthSection = document.getElementById("admin-oauth-section");
+    if (oauthSection) oauthSection.classList.toggle("hidden", !cfg.multi_user);
+    const emailsSection = document.getElementById("admin-emails-section");
+    if (emailsSection) emailsSection.classList.toggle("hidden", !cfg.multi_user);
+
+    // フォーム値を設定
+    const baseUrlEl = document.getElementById("admin-base-url");
+    if (baseUrlEl) baseUrlEl.value = cfg.base_url || "";
+
+    const googleIdEl = document.getElementById("admin-google-id");
+    if (googleIdEl) googleIdEl.value = cfg.google_client_id || "";
+
+    setStatus("admin-google-secret-status", cfg.google_client_secret_set);
+    setStatus("admin-cs-secret-status", cfg.cs_secret_key_set);
+    setStatus("admin-coingecko-status", cfg.coingecko_api_key_set);
+
+    const emailsEl = document.getElementById("admin-emails-input");
+    if (emailsEl) emailsEl.value = cfg.admin_emails || "";
+
+    // スキャンキーのステータスは loadSystemKeys() が設定済み
+  } catch (e) {
+    console.warn("[crypto-summary] admin config load:", e);
+  }
+}
+
+// 管理者設定: OAuth 保存ボタン
+document.getElementById("admin-oauth-save-btn")?.addEventListener("click", async () => {
+  const result = document.getElementById("admin-oauth-result");
+  result.classList.add("hidden");
+  const baseUrl = (document.getElementById("admin-base-url")?.value || "").trim().replace(/\/$/, "");
+  const googleId = (document.getElementById("admin-google-id")?.value || "").trim();
+  const googleSecret = (document.getElementById("admin-google-secret")?.value || "").trim();
+  try {
+    const resp = await fetch("/api/admin-config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ base_url: baseUrl, google_client_id: googleId, google_client_secret: googleSecret }),
+    });
+    const d = await resp.json();
+    if (!resp.ok) throw new Error(d.detail || `HTTP ${resp.status}`);
+    result.className = "settings-result ok";
+    result.textContent = t("status.settingsSaved");
+    result.classList.remove("hidden");
+    document.getElementById("admin-google-secret").value = "";
+    loadAdminPage();
+  } catch (e) {
+    result.className = "settings-result err";
+    result.textContent = t("status.settingsSaveFail", { error: e.message });
+    result.classList.remove("hidden");
+  }
+});
+
+// 管理者設定: ADMIN_EMAILS 保存ボタン
+document.getElementById("admin-emails-save-btn")?.addEventListener("click", async () => {
+  const result = document.getElementById("admin-emails-result");
+  result.classList.add("hidden");
+  const emails = (document.getElementById("admin-emails-input")?.value || "").trim();
+  try {
+    const resp = await fetch("/api/admin-config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ admin_emails: emails }),
+    });
+    const d = await resp.json();
+    if (!resp.ok) throw new Error(d.detail || `HTTP ${resp.status}`);
+    result.className = "settings-result ok";
+    result.textContent = t("status.settingsSaved");
+    result.classList.remove("hidden");
+  } catch (e) {
+    result.className = "settings-result err";
+    result.textContent = t("status.settingsSaveFail", { error: e.message });
+    result.classList.remove("hidden");
+  }
+});
+
+// 管理者設定: CoinGecko API Key 保存ボタン
+document.getElementById("admin-coingecko-save-btn")?.addEventListener("click", async () => {
+  const result = document.getElementById("admin-coingecko-result");
+  result.classList.add("hidden");
+  const key = (document.getElementById("admin-coingecko-input")?.value || "").trim();
+  if (!key) {
+    result.className = "settings-result err";
+    result.textContent = t("status.systemKeysEmpty");
+    result.classList.remove("hidden");
+    return;
+  }
+  try {
+    const resp = await fetch("/api/admin-config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ coingecko_api_key: key }),
+    });
+    const d = await resp.json();
+    if (!resp.ok) throw new Error(d.detail || `HTTP ${resp.status}`);
+    result.className = "settings-result ok";
+    result.textContent = t("status.settingsSaved");
+    result.classList.remove("hidden");
+    document.getElementById("admin-coingecko-input").value = "";
+    loadAdminPage();
+  } catch (e) {
+    result.className = "settings-result err";
+    result.textContent = t("status.settingsSaveFail", { error: e.message });
+    result.classList.remove("hidden");
+  }
+});
 
 function setupImportTabs() {
   if (_importTabsReady) return;
@@ -2599,6 +2707,9 @@ async function loadMeta() {
   try {
     const meta = await fetchJSON("/api/meta");
     window._isAdmin = !!meta.is_admin;
+    // 管理者のみ管理者設定ナビを表示する。
+    const adminNav = document.getElementById("nav-admin");
+    if (adminNav && window._isAdmin) adminNav.classList.remove("hidden");
   } catch (e) {
     window._isAdmin = false;
   }

@@ -891,6 +891,7 @@ def _apply_server_config(base_dir: str) -> None:
         "google_client_id": "GOOGLE_CLIENT_ID",
         "google_client_secret": "GOOGLE_CLIENT_SECRET",
         "base_url": "BASE_URL",
+        "coingecko_api_key": "COINGECKO_API_KEY",
     }
     for cfg_key, env_name in mapping.items():
         val = cfg.get(cfg_key, "")
@@ -1531,6 +1532,80 @@ def create_app(
         body: dict[str, Any], admin: dict = Depends(require_admin)
     ) -> dict:
         return _set_system_keys(system_store_path(), body)
+
+    @app.get("/api/admin-config")
+    def get_admin_config(admin: dict = Depends(require_admin)) -> dict:
+        """管理者設定の現在値を返す（シークレット類は設定済みかどうかのみ）。"""
+        cfg = _load_server_config(_base_dir)
+        return {
+            "multi_user": multi_user,
+            "base_url": os.environ.get("BASE_URL") or cfg.get("base_url") or "",
+            "admin_emails": os.environ.get("ADMIN_EMAILS") or cfg.get("admin_emails") or "",
+            "google_client_id": os.environ.get("GOOGLE_CLIENT_ID") or cfg.get("google_client_id") or "",
+            "google_client_id_set": bool(
+                os.environ.get("GOOGLE_CLIENT_ID") or cfg.get("google_client_id")
+            ),
+            "google_client_secret_set": bool(
+                os.environ.get("GOOGLE_CLIENT_SECRET") or cfg.get("google_client_secret")
+            ),
+            "cs_secret_key_set": bool(os.environ.get("CS_SECRET_KEY")),
+            "coingecko_api_key_set": bool(os.environ.get("COINGECKO_API_KEY")),
+            "providers": _system_key_status(system_store_path()),
+        }
+
+    @app.post("/api/admin-config")
+    def set_admin_config(
+        body: dict[str, Any], admin: dict = Depends(require_admin)
+    ) -> dict:
+        """管理者設定を保存する（SECRET_KEY / DATA_DIR 以外の全設定が対象）。"""
+        cfg = _load_server_config(_base_dir)
+        updated: list[str] = []
+        oauth_changed = False
+
+        if "admin_emails" in body:
+            val = (body["admin_emails"] or "").strip()
+            cfg["admin_emails"] = val
+            os.environ["ADMIN_EMAILS"] = val
+            updated.append("admin_emails")
+
+        if "base_url" in body:
+            val = (body["base_url"] or "").strip().rstrip("/")
+            cfg["base_url"] = val
+            os.environ["BASE_URL"] = val
+            updated.append("base_url")
+            oauth_changed = True
+
+        if "google_client_id" in body:
+            val = (body["google_client_id"] or "").strip()
+            if val:
+                cfg["google_client_id"] = val
+                os.environ["GOOGLE_CLIENT_ID"] = val
+                updated.append("google_client_id")
+                oauth_changed = True
+
+        if "google_client_secret" in body:
+            val = (body["google_client_secret"] or "").strip()
+            if val:
+                cfg["google_client_secret"] = val
+                os.environ["GOOGLE_CLIENT_SECRET"] = val
+                updated.append("google_client_secret")
+                oauth_changed = True
+
+        if "coingecko_api_key" in body:
+            val = (body["coingecko_api_key"] or "").strip()
+            cfg["coingecko_api_key"] = val
+            os.environ["COINGECKO_API_KEY"] = val
+            updated.append("coingecko_api_key")
+
+        if multi_user and oauth_changed:
+            try:
+                from .auth import reset_oauth_client
+                reset_oauth_client()
+            except Exception:  # noqa: BLE001
+                pass
+
+        _save_server_config(_base_dir, cfg)
+        return {"ok": True, "updated": updated}
 
     @app.get("/api/account-groups")
     def get_account_groups(db: str = Depends(get_db_path)) -> dict:

@@ -9,6 +9,7 @@ var TRANSLATIONS = {
     "nav.assets": "資産別",
     "nav.transactions": "取引履歴",
     "nav.import": "インポート",
+    "nav.admin": "管理者設定",
 
     // Dashboard
     "dash.totalValue": "総資産評価額",
@@ -166,6 +167,19 @@ var TRANSLATIONS = {
     "import.chainNoTxHint": "取引のないチェーンは履歴に含みません。",
     "import.etherscanKey": "Etherscan API Key（EVM 用）",
     "import.heliusKey": "Helius API Key（Solana 用）",
+    // Admin settings page
+    "admin.oauthSection": "Google OAuth（ログイン設定）",
+    "admin.oauthHint": "マルチユーザーモードでのログインに使用する Google OAuth 設定です。リダイレクト URI には「BASE_URL + /auth/callback」を登録してください。",
+    "admin.baseUrl": "BASE_URL（アプリの公開 URL）",
+    "admin.googleClientId": "GOOGLE_CLIENT_ID",
+    "admin.googleClientSecret": "GOOGLE_CLIENT_SECRET",
+    "admin.masterKeySection": "暗号化マスター鍵（CS_SECRET_KEY）",
+    "admin.adminEmailsSection": "管理者メールアドレス（ADMIN_EMAILS）",
+    "admin.adminEmailsHint": "この管理者設定画面にアクセスできる Google アカウントのメールアドレスです。カンマ区切りで複数指定できます。",
+    "admin.scanKeysSection": "スキャン用 API キー",
+    "admin.coingeckoSection": "CoinGecko API Key",
+    "admin.coingeckoHint": "価格・推移グラフの取得に使用します。無料の Demo プランで取得できます。設定するとレート制限が緩和されます（任意）。",
+    "import.systemKeyHint": "スキャン用 API キー（Etherscan / Helius）は「管理者設定」から登録してください。",
     // System settings (admin)
     "system.title": "⚙ システム設定（管理者）",
     "system.hint": "全ユーザー共通のスキャン用 API キーです。環境変数より優先されます。",
@@ -296,6 +310,7 @@ var TRANSLATIONS = {
     "nav.assets": "Assets",
     "nav.transactions": "Transactions",
     "nav.import": "Import",
+    "nav.admin": "Admin Settings",
 
     // Dashboard
     "dash.totalValue": "Total Portfolio Value",
@@ -453,6 +468,19 @@ var TRANSLATIONS = {
     "import.chainNoTxHint": "Chains with no transactions are excluded.",
     "import.etherscanKey": "Etherscan API Key (EVM)",
     "import.heliusKey": "Helius API Key (Solana)",
+    // Admin settings page
+    "admin.oauthSection": "Google OAuth (Login Settings)",
+    "admin.oauthHint": "Google OAuth settings for multi-user login. Register \"BASE_URL + /auth/callback\" as the redirect URI in Google Cloud Console.",
+    "admin.baseUrl": "BASE_URL (App public URL)",
+    "admin.googleClientId": "GOOGLE_CLIENT_ID",
+    "admin.googleClientSecret": "GOOGLE_CLIENT_SECRET",
+    "admin.masterKeySection": "Encryption Master Key (CS_SECRET_KEY)",
+    "admin.adminEmailsSection": "Admin Email Addresses (ADMIN_EMAILS)",
+    "admin.adminEmailsHint": "Google account emails with access to this admin settings page. Comma-separated.",
+    "admin.scanKeysSection": "Scan API Keys",
+    "admin.coingeckoSection": "CoinGecko API Key",
+    "admin.coingeckoHint": "Used for price and history chart data. Free Demo plan available. Setting this key relaxes rate limits (optional).",
+    "import.systemKeyHint": "Register Etherscan / Helius scan API keys in \"Admin Settings\".",
     // System settings (admin)
     "system.title": "⚙ System Settings (Admin)",
     "system.hint": "Scan API keys shared by all users. These take precedence over environment variables.",
