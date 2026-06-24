@@ -125,11 +125,13 @@ crypto-summary fetch-wallet --chain solana --wallet YOURWALLET...
 
 ## エクスポート形式
 
-| 形式 | 用途 |
+各形式は対応サービスへのインポート用 CSV です。Cryptact・Koinly・SUMM はいずれも海外資産の損益計算と国内確定申告の資料作成に対応しています。
+
+| 形式 | 対応サービス |
 |---|---|
-| **Cryptact** | 国内確定申告（カスタムファイル） |
-| **Koinly** | 海外対応の損益計算 |
-| **SUMM** | 国内税制向け |
+| **Cryptact** | [Cryptact](https://www.cryptact.com/)（カスタムファイル） |
+| **Koinly** | [Koinly](https://koinly.io/)（Universal CSV） |
+| **SUMM** | [SUMM](https://summ.app/)（カスタム CSV） |
 
 Web UI の「取引履歴」ページから、年・口座・形式を指定してワンクリックでダウンロードできます。CLI では `crypto-summary export --sink koinly` を使用します。
 
