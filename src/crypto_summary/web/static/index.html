@@ -131,8 +131,10 @@
       <div id="page-dashboard" class="page">
         <section class="hero">
           <div class="hero-label" data-i18n="dash.totalValue">総資産評価額</div>
-          <div class="hero-value" id="total-value">—</div>
-          <div id="total-jpy" class="hero-jpy hidden"></div>
+          <div class="hero-main">
+            <span class="hero-value" id="total-value">—</span>
+            <span id="total-jpy" class="hero-jpy hidden"></span>
+          </div>
           <div class="hero-sub" id="total-sub">読み込み中…</div>
         </section>
 
@@ -164,7 +166,27 @@
             <div class="chart-wrap">
               <canvas id="alloc-chart"></canvas>
             </div>
-            <div id="chart-legend" class="chart-legend"></div>
+            <div class="chart-card-detail">
+              <div class="table-wrap">
+                <table id="assets-table">
+                  <thead>
+                    <tr>
+                      <th data-i18n="th.asset">資産</th>
+                      <th class="num" data-i18n="th.balance">残高</th>
+                      <th class="num" data-i18n="th.price">単価</th>
+                      <th class="num" data-i18n="th.value">評価額</th>
+                      <th class="num" data-i18n="th.alloc">構成比</th>
+                      <th></th>
+                      <th class="detail-toggle-cell"></th>
+                    </tr>
+                  </thead>
+                  <tbody></tbody>
+                </table>
+              </div>
+              <div class="card-footer">
+                <button class="card-link" id="assets-more" data-nav="assets">すべての資産を表示 →</button>
+              </div>
+            </div>
           </section>
 
           <section class="card">
@@ -188,30 +210,6 @@
             </div>
           </section>
         </div>
-
-        <section class="card">
-          <h2 data-i18n="dash.topAssets">主な資産</h2>
-          <p class="card-hint" data-i18n="dash.topAssetsHint">評価額の大きい順・上位のみ（クリックで内訳 / 履歴）</p>
-          <div class="table-wrap">
-            <table id="assets-table">
-              <thead>
-                <tr>
-                  <th data-i18n="th.asset">資産</th>
-                  <th class="num" data-i18n="th.balance">残高</th>
-                  <th class="num" data-i18n="th.price">単価</th>
-                  <th class="num" data-i18n="th.value">評価額</th>
-                  <th class="num" data-i18n="th.alloc">構成比</th>
-                  <th></th>
-                  <th class="detail-toggle-cell"></th>
-                </tr>
-              </thead>
-              <tbody></tbody>
-            </table>
-          </div>
-          <div class="card-footer">
-            <button class="card-link" id="assets-more" data-nav="assets">すべての資産を表示 →</button>
-          </div>
-        </section>
 
         <footer class="footer">
           <span id="generated">—</span>

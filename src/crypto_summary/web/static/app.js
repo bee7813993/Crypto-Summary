@@ -462,7 +462,6 @@ function renderSummary(data) {
   }
 
   renderChart(slices, cur, total);
-  renderLegend(slices, cur, total);
   renderWarnings(data.warnings);
 }
 
@@ -632,6 +631,7 @@ function renderChart(slices, currency, total) {
 
 function renderLegend(slices, currency, total) {
   const el = document.getElementById("chart-legend");
+  if (!el) return;
   el.innerHTML = "";
   slices.forEach((s, i) => {
     const pct = total > 0 ? (s.value / total) * 100 : 0;
