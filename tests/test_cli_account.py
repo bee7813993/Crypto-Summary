@@ -59,3 +59,30 @@ def test_fetch_requires_exchange_or_source(tmp_path):
     res = _run(tmp_path / "t.db", None, "fetch")
     assert res.exit_code != 0
     assert "--exchange" in res.output
+
+
+def test_env_api_value_filters_placeholder(monkeypatch):
+    """.env.example のプレースホルダ値は未設定として扱う（誤った認証を防ぐ）。"""
+    from crypto_summary.cli import _env_api_value
+
+    monkeypatch.setenv("BITFLYER_API_KEY", "your_api_key_here")
+    assert _env_api_value("BITFLYER_API_KEY") is None
+
+    monkeypatch.setenv("BITFLYER_API_SECRET", "your_api_secret_here")
+    assert _env_api_value("BITFLYER_API_SECRET") is None
+
+
+def test_env_api_value_returns_real_key(monkeypatch):
+    """実キーはそのまま返す（前後空白は除去）。"""
+    from crypto_summary.cli import _env_api_value
+
+    monkeypatch.setenv("BITFLYER_API_KEY", "  REALKEY  ")
+    assert _env_api_value("BITFLYER_API_KEY") == "REALKEY"
+
+
+def test_env_api_value_unset(monkeypatch):
+    """未設定は None。"""
+    from crypto_summary.cli import _env_api_value
+
+    monkeypatch.delenv("BITFLYER_API_KEY", raising=False)
+    assert _env_api_value("BITFLYER_API_KEY") is None

@@ -1004,6 +1004,25 @@ _API_ENV: dict[str, tuple[str, str]] = {
     "bybit": ("BYBIT_API_KEY", "BYBIT_API_SECRET"),
 }
 
+# .env.example のプレースホルダ値（コピーしたまま起動した場合の誤認識を防ぐ）。
+_API_KEY_PLACEHOLDERS = frozenset({
+    "your_api_key_here",
+    "your_api_secret_here",
+    "your_api_key",
+    "your_api_secret",
+    "changeme",
+})
+
+
+def _env_api_value(env_name: str) -> str | None:
+    """環境変数から取引所キーを取得する（プレースホルダは未設定扱い）。"""
+    import os
+
+    val = os.environ.get(env_name, "").strip()
+    if not val or val.lower() in _API_KEY_PLACEHOLDERS:
+        return None
+    return val
+
 
 @cli.command("fetch")
 @click.option(
@@ -1070,8 +1089,8 @@ def fetch_cmd(
             category = creds.get("category", "spot")
         elif exchange:
             key_env, secret_env = _API_ENV[exchange]
-            api_key = os.environ.get(key_env)
-            api_secret = os.environ.get(secret_env)
+            api_key = _env_api_value(key_env)
+            api_secret = _env_api_value(secret_env)
 
     if not api_key or not api_secret:
         hint = ""

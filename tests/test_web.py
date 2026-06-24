@@ -617,6 +617,15 @@ def test_system_keys_status_reflects_env(client, monkeypatch):
     assert d["cs_secret_key"] is True
 
 
+def test_system_keys_status_ignores_placeholder(client, monkeypatch):
+    """.env.example のダミー値は「未設定」として扱う（誤って設定済み表示しない）。"""
+    monkeypatch.setenv("ETHERSCAN_API_KEY", "your_etherscan_api_key_here")
+    monkeypatch.setenv("HELIUS_API_KEY", "your_helius_api_key_here")
+    d = client.get("/api/system-keys").json()
+    assert d["providers"]["etherscan"]["env"] is False
+    assert d["providers"]["helius"]["env"] is False
+
+
 def test_system_keys_set_and_persist(client, monkeypatch):
     """マスター鍵があればシステムキーを暗号化保存でき、状態に反映される。"""
     from crypto_summary.core.secrets import generate_master_key
