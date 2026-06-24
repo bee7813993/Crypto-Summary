@@ -104,6 +104,40 @@ function fmtDate(iso) {
   });
 }
 
+/**
+ * モバイルで折りたたまれた列の詳細を展開するトグルセルを行末に追加する。
+ * details: [{label: string, value: string (HTML可)}]
+ */
+function _appendDetailToggle(tr, details) {
+  const td = document.createElement("td");
+  td.className = "detail-toggle-cell";
+  const btn = document.createElement("button");
+  btn.className = "detail-toggle-btn";
+  btn.textContent = "▶";
+  btn.setAttribute("aria-expanded", "false");
+  btn.addEventListener("click", () => {
+    const expanded = btn.getAttribute("aria-expanded") === "true";
+    btn.setAttribute("aria-expanded", String(!expanded));
+    btn.textContent = expanded ? "▶" : "▼";
+    const next = tr.nextElementSibling;
+    if (next && next.classList.contains("detail-row")) {
+      next.remove();
+    } else {
+      const dtr = document.createElement("tr");
+      dtr.className = "detail-row";
+      const dtd = document.createElement("td");
+      dtd.colSpan = 99;
+      dtd.innerHTML = `<dl>${details.map((d) =>
+        `<dt>${d.label}</dt><dd>${d.value}</dd>`
+      ).join("")}</dl>`;
+      dtr.appendChild(dtd);
+      tr.after(dtr);
+    }
+  });
+  td.appendChild(btn);
+  tr.appendChild(td);
+}
+
 // 年月日のみ（取引期間の表示用）。
 function fmtDateOnly(iso) {
   return new Date(iso).toLocaleDateString("ja-JP", {
@@ -413,6 +447,11 @@ function renderSummary(data) {
       e.stopPropagation();
       navigateToTransactions({ asset: a.asset });
     });
+    _appendDetailToggle(tr, [
+      { label: t("th.balance"), value: `${fmtAmount(a.balance)} ${escapeHtml(a.asset)}` },
+      { label: t("th.price"),   value: a.price ? fmtMoney(a.price, cur) : "-" },
+      { label: t("th.alloc"),   value: pct !== null ? pct.toFixed(1) + "%" : "-" },
+    ]);
     tbody.appendChild(tr);
   });
 
@@ -1323,6 +1362,13 @@ async function loadTransactionsPage(account, asset, since, until, page = 1) {
           });
         });
 
+        _appendDetailToggle(tr, [
+          { label: t("th.account"),      value: escapeHtml(tx.account) },
+          { label: t("th.sent"),         value: sent },
+          { label: t("th.fee"),          value: fee },
+          { label: t("th.afterBalance"), value: balHtml },
+        ]);
+
         tbody.appendChild(tr);
       });
     }
@@ -2086,6 +2132,10 @@ async function loadImportAccountsTable() {
         _openDeleteDialog(t("status.accountClearConfirmTitle"),
           t("status.accountClearConfirmBody", { account: s.source, ids: s.source_ids.join(", "), count: s.tx_count }));
       });
+      _appendDetailToggle(tr, [
+        { label: t("th.sourceId"), value: `<code>${escapeHtml(s.source_ids.join(", "))}</code>` },
+        { label: t("th.txCount"),  value: String(s.tx_count) },
+      ]);
       tbody.appendChild(tr);
     });
   } catch (e) {
@@ -2123,6 +2173,12 @@ async function loadImportBatches() {
         const desc = `${b.exchange_label} / ${b.filename || "-"}（${t("filter.count", { count: b.existing_count })}）`;
         showBatchDeleteDialog(b.id, desc);
       });
+      _appendDetailToggle(tr, [
+        { label: t("th.importedAt"), value: fmtDate(b.imported_at + "Z") },
+        { label: t("th.exchange"),   value: escapeHtml(b.exchange_label) },
+        { label: t("th.file"),       value: `<span class="muted" style="font-size:12px">${escapeHtml(b.filename || "-")}</span>` },
+        { label: t("th.txCount"),    value: countLabel },
+      ]);
       tbody.appendChild(tr);
     });
   } catch (e) {

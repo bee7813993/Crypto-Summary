@@ -729,6 +729,64 @@ html.light .tx-type-transfer { background: #d1fae5; color: #065f46; }
   .main-content { padding: 16px; overflow-y: auto; }
 }
 
+/* ---- Mobile: テーブル列の折りたたみ ---- */
+/* デスクトップでは detail toggle 列を非表示 */
+.detail-toggle-cell { display: none; }
+
+/* detail 展開行（共通） */
+.detail-row > td {
+  padding: 0 12px 10px;
+  background: var(--bg-elev);
+}
+.detail-row dl {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 5px 14px;
+  margin: 4px 0 0;
+  font-size: 12px;
+}
+.detail-row dt { color: var(--text-dim); white-space: nowrap; }
+.detail-row dd { margin: 0; word-break: break-all; }
+
+.detail-toggle-btn {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  border-radius: 6px;
+  padding: 2px 7px;
+  font-size: 11px;
+  cursor: pointer;
+  line-height: 1.4;
+  transition: border-color .15s, color .15s;
+}
+.detail-toggle-btn[aria-expanded="true"] { border-color: var(--accent); color: var(--accent); }
+
+@media (max-width: 640px) {
+  /* toggle ボタン列を表示 */
+  .detail-toggle-cell { display: table-cell; padding: 6px 4px 6px 0; white-space: nowrap; }
+
+  /* ---- #assets-table: 残高(2)・単価(3)・構成比(5) を折りたたむ ---- */
+  #assets-table th:nth-child(2), #assets-table td:nth-child(2),
+  #assets-table th:nth-child(3), #assets-table td:nth-child(3),
+  #assets-table th:nth-child(5), #assets-table td:nth-child(5) { display: none; }
+
+  /* ---- #tx-table: 口座(2)・送付(5)・手数料(6)・取引後残高(7) を折りたたむ ---- */
+  #tx-table th:nth-child(2), #tx-table td:nth-child(2),
+  #tx-table th:nth-child(5), #tx-table td:nth-child(5),
+  #tx-table th:nth-child(6), #tx-table td:nth-child(6),
+  #tx-table th:nth-child(7), #tx-table td:nth-child(7) { display: none; }
+
+  /* ---- import-accounts-table: ソースID(2)・取引数(3) を折りたたむ ---- */
+  #import-accounts-table th:nth-child(2), #import-accounts-table td:nth-child(2),
+  #import-accounts-table th:nth-child(3), #import-accounts-table td:nth-child(3) { display: none; }
+
+  /* ---- import-batches-table: 取込日時(1)・取引所(3)・ファイル(4)・取引数(5) を折りたたむ ---- */
+  #import-batches-table th:nth-child(1), #import-batches-table td:nth-child(1),
+  #import-batches-table th:nth-child(3), #import-batches-table td:nth-child(3),
+  #import-batches-table th:nth-child(4), #import-batches-table td:nth-child(4),
+  #import-batches-table th:nth-child(5), #import-batches-table td:nth-child(5) { display: none; }
+}
+
 /* ---- ウォレットアドレス表示（口座詳細） ---- */
 #account-wallet-info {
   margin-bottom: 16px;
