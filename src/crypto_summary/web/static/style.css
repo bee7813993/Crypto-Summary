@@ -765,10 +765,15 @@ html.light .tx-type-transfer { background: #d1fae5; color: #065f46; }
   /* toggle ボタン列を表示 */
   .detail-toggle-cell { display: table-cell; padding: 6px 4px 6px 0; white-space: nowrap; }
 
-  /* ---- #assets-table: 残高(2)・単価(3)・構成比(5) を折りたたむ ---- */
-  #assets-table th:nth-child(2), #assets-table td:nth-child(2),
+  /* ---- #assets-table: 単価(3)・評価額(4)・構成比(5) を折りたたむ（残高を優先表示）---- */
   #assets-table th:nth-child(3), #assets-table td:nth-child(3),
+  #assets-table th:nth-child(4), #assets-table td:nth-child(4),
   #assets-table th:nth-child(5), #assets-table td:nth-child(5) { display: none; }
+
+  /* ---- #all-assets-table: 単価(3)・評価額(4)・構成比(5) を折りたたむ（残高を優先表示）---- */
+  #all-assets-table th:nth-child(3), #all-assets-table td:nth-child(3),
+  #all-assets-table th:nth-child(4), #all-assets-table td:nth-child(4),
+  #all-assets-table th:nth-child(5), #all-assets-table td:nth-child(5) { display: none; }
 
   /* ---- #tx-table: 口座(2)・送付(5)・手数料(6)・取引後残高(7) を折りたたむ ---- */
   #tx-table th:nth-child(2), #tx-table td:nth-child(2),

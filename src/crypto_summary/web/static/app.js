@@ -448,9 +448,9 @@ function renderSummary(data) {
       navigateToTransactions({ asset: a.asset });
     });
     _appendDetailToggle(tr, [
-      { label: t("th.balance"), value: `${fmtAmount(a.balance)} ${escapeHtml(a.asset)}` },
-      { label: t("th.price"),   value: a.price ? fmtMoney(a.price, cur) : "-" },
-      { label: t("th.alloc"),   value: pct !== null ? pct.toFixed(1) + "%" : "-" },
+      { label: t("th.price"), value: a.price ? fmtMoney(a.price, cur) : "-" },
+      { label: t("th.value"), value: a.value ? fmtMoney(a.value, cur) : "-" },
+      { label: t("th.alloc"), value: pct !== null ? pct.toFixed(1) + "%" : "-" },
     ]);
     tbody.appendChild(tr);
   });
@@ -1122,6 +1122,11 @@ function renderAllAssets(data, currency) {
       e.stopPropagation();
       navigateToTransactions({ asset: a.asset });
     });
+    _appendDetailToggle(tr, [
+      { label: t("th.price"), value: a.price ? fmtMoney(a.price, currency) : "-" },
+      { label: t("th.value"), value: a.value ? fmtMoney(a.value, currency) : "-" },
+      { label: t("th.alloc"), value: pct !== null ? pct.toFixed(1) + "%" : "-" },
+    ]);
     tbody.appendChild(tr);
   });
   if (data.assets.length === 0) {
