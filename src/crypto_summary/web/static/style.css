@@ -151,7 +151,8 @@ select { flex: 1; }
   gap: 20px;
   margin-bottom: 20px;
 }
-@media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
+/* タブレット（641px〜）は 2 列を維持、スマホ（640px 以下）で 1 列 */
+@media (max-width: 640px) { .grid { grid-template-columns: 1fr; } }
 .grid > * { min-width: 0; }
 
 /* ---- Cards ---- */
@@ -708,6 +709,48 @@ html.light .tx-type-transfer { background: #d1fae5; color: #065f46; }
   background: var(--bg-elev);
   border-radius: 6px;
   border-left: 3px solid var(--accent);
+}
+
+/* ---- Tablet: ダッシュボードを1画面に収める ---- */
+@media (min-width: 641px) and (max-width: 1024px) {
+  .main-content { padding: 14px 18px; }
+
+  /* ヒーローをコンパクトに */
+  #page-dashboard .hero { padding: 12px 20px; margin-bottom: 12px; }
+  #page-dashboard .hero-value { font-size: 28px; }
+  #page-dashboard .hero-jpy { font-size: 12px; margin: -1px 0 2px; }
+  #page-dashboard .hero-sub { font-size: 12px; }
+
+  /* カードとグリッドの余白を詰める */
+  #page-dashboard .card { padding: 12px 14px; margin-bottom: 12px; }
+  #page-dashboard .history-card { padding: 10px 14px 8px; margin-bottom: 12px; }
+  #page-dashboard .grid { gap: 12px; margin-bottom: 12px; }
+
+  /* 推移グラフの高さを縮小 */
+  #page-dashboard .history-chart-wrap { height: 110px; }
+
+  /* 資産構成カード: チャートとレジェンドを横並びにして縦幅を削減 */
+  #page-dashboard .chart-card {
+    display: grid;
+    grid-template-columns: 150px 1fr;
+    grid-template-rows: auto 1fr;
+    column-gap: 14px;
+  }
+  #page-dashboard .chart-card h2 { grid-column: 1 / -1; margin-bottom: 6px; }
+  #page-dashboard .chart-wrap { height: 150px; width: 150px; }
+  #page-dashboard .chart-legend {
+    margin-top: 0;
+    border-top: none;
+    padding-top: 0;
+    align-self: center;
+    font-size: 12px;
+    row-gap: 1px;
+  }
+  /* 評価額列は幅不足で省略 */
+  #page-dashboard .legend-value { display: none; }
+
+  /* テーブル行を少し詰める */
+  #page-dashboard th, #page-dashboard td { padding: 7px 6px; }
 }
 
 /* ---- Mobile: サイドバーを上部に折りたたむ ---- */
