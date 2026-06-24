@@ -104,6 +104,19 @@ function fmtDate(iso) {
   });
 }
 
+// 年月日のみ（取引期間の表示用）。
+function fmtDateOnly(iso) {
+  return new Date(iso).toLocaleDateString("ja-JP", {
+    year: "numeric", month: "2-digit", day: "2-digit",
+  });
+}
+
+// first_ts〜last_ts を「YYYY/MM/DD 〜 YYYY/MM/DD」形式で返す（無ければ "-"）。
+function fmtPeriod(firstTs, lastTs) {
+  if (!firstTs || !lastTs) return "-";
+  return `${fmtDateOnly(firstTs)} 〜 ${fmtDateOnly(lastTs)}`;
+}
+
 async function fetchJSON(url) {
   const res = await fetch(url);
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -2041,12 +2054,12 @@ async function ensureImportExchanges() {
 async function loadImportAccountsTable() {
   const tbody = document.querySelector("#import-accounts-table tbody");
   if (!tbody) return;
-  tbody.innerHTML = `<tr><td colspan="4" class="loading">${t("label.loading")}</td></tr>`;
+  tbody.innerHTML = `<tr><td colspan="5" class="loading">${t("label.loading")}</td></tr>`;
   try {
     const data = await fetchJSON("/api/sources?currency=USD");
     tbody.innerHTML = "";
     if (data.sources.length === 0) {
-      tbody.innerHTML = `<tr><td colspan="4" class="muted">${t("label.noAccountsHere")}</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="5" class="muted">${t("label.noAccountsHere")}</td></tr>`;
       return;
     }
     data.sources.forEach((s) => {
@@ -2056,6 +2069,7 @@ async function loadImportAccountsTable() {
         <td>${escapeHtml(s.source)}</td>
         <td><span class="muted" style="font-size:12px;font-family:monospace">${escapeHtml(s.source_ids.join(", "))}</span></td>
         <td class="num">${s.tx_count}</td>
+        <td style="white-space:nowrap;font-size:12px">${fmtPeriod(s.first_ts, s.last_ts)}</td>
         <td style="white-space:nowrap;display:flex;gap:6px;align-items:center">
           <button class="tx-link-btn btn-csv-import">${t("btn.csvAppend")}</button>
           <button class="tx-link-btn btn-clear-account" style="border-color:#5a2a2a">${t("btn.clearAll")}</button>
@@ -2075,19 +2089,19 @@ async function loadImportAccountsTable() {
       tbody.appendChild(tr);
     });
   } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="4" class="muted">${t("status.error")}${escapeHtml(e.message)}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="5" class="muted">${t("status.error")}${escapeHtml(e.message)}</td></tr>`;
   }
 }
 
 async function loadImportBatches() {
   const tbody = document.querySelector("#import-batches-table tbody");
   if (!tbody) return;
-  tbody.innerHTML = `<tr><td colspan="6" class="loading">${t("label.loading")}</td></tr>`;
+  tbody.innerHTML = `<tr><td colspan="7" class="loading">${t("label.loading")}</td></tr>`;
   try {
     const data = await fetchJSON("/api/import/batches");
     tbody.innerHTML = "";
     if (!data.batches || data.batches.length === 0) {
-      tbody.innerHTML = `<tr><td colspan="6" class="muted">${t("label.noCsvHistory")}</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="7" class="muted">${t("label.noCsvHistory")}</td></tr>`;
       return;
     }
     data.batches.forEach((b) => {
@@ -2102,6 +2116,7 @@ async function loadImportBatches() {
         <td>${escapeHtml(b.exchange_label)}</td>
         <td><span class="muted" style="font-size:12px">${escapeHtml(b.filename || "-")}</span></td>
         <td class="num">${countLabel}</td>
+        <td style="white-space:nowrap;font-size:12px">${fmtPeriod(b.first_ts, b.last_ts)}</td>
         <td><button class="tx-link-btn" style="border-color:#5a2a2a">${t("btn.deleteByFile")}</button></td>
       `;
       tr.querySelector(".tx-link-btn").addEventListener("click", () => {
@@ -2111,7 +2126,7 @@ async function loadImportBatches() {
       tbody.appendChild(tr);
     });
   } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="6" class="muted">${t("status.error")}${escapeHtml(e.message)}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="7" class="muted">${t("status.error")}${escapeHtml(e.message)}</td></tr>`;
   }
 }
 

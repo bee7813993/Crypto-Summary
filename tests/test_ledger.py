@@ -71,6 +71,37 @@ def test_cursor_overwrites(ledger):
     assert ledger.get_cursor("binance") == t2
 
 
+def test_date_ranges_by_source(ledger):
+    """ソースごとの取引期間 (最古, 最新) を返す。"""
+    ledger.upsert(_tx("1", source="binance"))   # 2024-01-01
+    ledger.upsert(_tx("5", source="binance"))   # 2024-01-05
+    ledger.upsert(_tx("3", source="bybit"))     # 2024-01-03
+    ranges = ledger.date_ranges_by_source()
+    assert ranges["binance"][0].startswith("2024-01-01")
+    assert ranges["binance"][1].startswith("2024-01-05")
+    assert ranges["bybit"][0].startswith("2024-01-03")
+    assert ranges["bybit"][1].startswith("2024-01-03")
+
+
+def test_date_ranges_empty(ledger):
+    """取引が無ければ空の辞書。"""
+    assert ledger.date_ranges_by_source() == {}
+
+
+def test_list_import_batches_includes_period(ledger):
+    """インポートバッチに取引期間 (first_ts/last_ts) が含まれる。"""
+    txs = [_tx("2", source="bf"), _tx("8", source="bf")]  # 2024-01-02, 2024-01-08
+    ledger.upsert_many(txs)
+    ledger.record_import_batch(
+        "batch1", "bf", "bitflyer", "trades.csv", [t.id for t in txs]
+    )
+    batches = ledger.list_import_batches()
+    assert len(batches) == 1
+    b = batches[0]
+    assert b["first_ts"].startswith("2024-01-02")
+    assert b["last_ts"].startswith("2024-01-08")
+
+
 def test_all_returns_txs(ledger):
     for i in range(1, 4):
         ledger.upsert(_tx(str(i)))

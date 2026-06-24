@@ -27,6 +27,7 @@ var TRANSLATIONS = {
     // Table headers
     "th.account": "口座",
     "th.txCount": "取引数",
+    "th.txPeriod": "取引期間",
     "th.assetCount": "資産数",
     "th.value": "評価額",
     "th.asset": "資産",
@@ -328,6 +329,7 @@ var TRANSLATIONS = {
     // Table headers
     "th.account": "Account",
     "th.txCount": "Txs",
+    "th.txPeriod": "Period",
     "th.assetCount": "Assets",
     "th.value": "Value",
     "th.asset": "Asset",

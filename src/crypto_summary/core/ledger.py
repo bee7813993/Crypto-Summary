@@ -205,12 +205,12 @@ class Ledger:
         ).fetchall()
         result: list[dict] = []
         for bid, source, exchange, filename, imported_at, tx_count in rows:
-            existing = self._conn.execute(
-                "SELECT COUNT(*) FROM batch_txs bt "
+            existing, first_ts, last_ts = self._conn.execute(
+                "SELECT COUNT(*), MIN(t.timestamp), MAX(t.timestamp) FROM batch_txs bt "
                 "JOIN transactions t ON bt.tx_id = t.id "
                 "WHERE bt.batch_id = ?",
                 (bid,),
-            ).fetchone()[0]
+            ).fetchone()
             result.append({
                 "id": bid,
                 "source": source,
@@ -219,6 +219,8 @@ class Ledger:
                 "imported_at": imported_at,
                 "tx_count": tx_count,
                 "existing_count": existing,
+                "first_ts": first_ts,
+                "last_ts": last_ts,
             })
         return result
 
@@ -275,6 +277,17 @@ class Ledger:
             cur = self.get_cursor(src)
             result.append((src, cnt, cur.isoformat() if cur else None))
         return result
+
+    def date_ranges_by_source(self) -> dict[str, tuple[str, str]]:
+        """ソースごとの取引期間 (最古, 最新) の timestamp を返す。
+
+        返り値: {source: (min_iso, max_iso)}。取引が無いソースは含まれない。
+        """
+        rows = self._conn.execute(
+            "SELECT source, MIN(timestamp), MAX(timestamp) "
+            "FROM transactions GROUP BY source"
+        ).fetchall()
+        return {src: (lo, hi) for src, lo, hi in rows if lo and hi}
 
     @staticmethod
     def _source_clause(source: str | list[str] | None) -> tuple[str | None, list]:

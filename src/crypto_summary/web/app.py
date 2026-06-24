@@ -175,6 +175,7 @@ def _sources(db_path: str, currency: str) -> dict:
     try:
         per_source = ledger.balances_by_source()
         counts = {src: cnt for src, cnt, _ in ledger.sources()}
+        date_ranges = ledger.date_ranges_by_source()
     finally:
         ledger.close()
 
@@ -185,6 +186,8 @@ def _sources(db_path: str, currency: str) -> dict:
     group_bals: dict[str, dict[str, Decimal]] = {}
     group_tx: dict[str, int] = {}
     group_ids: dict[str, list[str]] = {}
+    group_first: dict[str, str] = {}
+    group_last: dict[str, str] = {}
 
     for src in sorted(per_source):
         name = _display_name(src, groups)
@@ -194,6 +197,13 @@ def _sources(db_path: str, currency: str) -> dict:
             group_ids[name] = []
         group_ids[name].append(src)
         group_tx[name] += counts.get(src, 0)
+        rng = date_ranges.get(src)
+        if rng:
+            lo, hi = rng
+            if name not in group_first or lo < group_first[name]:
+                group_first[name] = lo
+            if name not in group_last or hi > group_last[name]:
+                group_last[name] = hi
         for asset, bal in per_source[src].items():
             prev = group_bals[name].get(asset, Decimal("0"))
             group_bals[name][asset] = prev + bal
@@ -215,6 +225,8 @@ def _sources(db_path: str, currency: str) -> dict:
             "tx_count": group_tx[name],
             "asset_count": len(bals),
             "total_value": str(total),
+            "first_ts": group_first.get(name),
+            "last_ts": group_last.get(name),
         })
 
     sources.sort(key=lambda s: -Decimal(s["total_value"]))

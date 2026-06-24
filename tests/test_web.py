@@ -94,6 +94,17 @@ def test_sources_breakdown(client):
     assert d["sources"][0]["source"] == "Acct A"
 
 
+def test_sources_include_tx_period(client):
+    """口座リスト用に各口座の取引期間 (first_ts/last_ts) を返す。"""
+    d = client.get("/api/sources?currency=USD").json()
+    by_name = {s["source"]: s for s in d["sources"]}
+    # acct_a: 2024-01-01〜01-02, acct_b: 2024-01-03〜01-04
+    assert by_name["Acct A"]["first_ts"].startswith("2024-01-01")
+    assert by_name["Acct A"]["last_ts"].startswith("2024-01-02")
+    assert by_name["Acct B"]["first_ts"].startswith("2024-01-03")
+    assert by_name["Acct B"]["last_ts"].startswith("2024-01-04")
+
+
 def test_invalid_currency_falls_back_to_usd(client):
     d = client.get("/api/summary?currency=XXX").json()
     assert d["currency"] == "USD"
