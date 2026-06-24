@@ -23,7 +23,7 @@ from ..core.ledger import Ledger
 from ..core.models import CanonicalTx, TxType
 from ..core.portfolio import assets_in_range, daily_balances
 from ..core.price_history import fetch_price_history
-from ..core.prices import COINGECKO_IDS, SUPPORTED_CURRENCIES, fetch_coin_icons, fetch_prices
+from ..core.prices import COINGECKO_IDS, SUPPORTED_CURRENCIES, _coingecko_api_key, fetch_coin_icons, fetch_prices
 from ..core.secrets import SecretStore, SecretStoreError
 from ..sinks.cryptact_csv import to_cryptact_csv_string
 from ..sinks.koinly_csv import to_koinly_csv_string
@@ -916,6 +916,25 @@ _SYSTEM_PROVIDER_KEYS: dict[str, str] = {
     "helius": "HELIUS_API_KEY",
 }
 
+# .env.example のプレースホルダ値（コピーしたままの場合に誤認識しないよう除外）
+_ENV_KEY_PLACEHOLDERS = frozenset({
+    "your_api_key_here",
+    "your_api_secret_here",
+    "your_etherscan_api_key_here",
+    "your_helius_api_key_here",
+    "your-etherscan-api-key",
+    "your-helius-api-key",
+    "changeme",
+})
+
+
+def _env_key(env_name: str) -> str:
+    """環境変数からキーを取得し、プレースホルダは空文字として扱う。"""
+    val = os.environ.get(env_name, "").strip()
+    if val.lower() in _ENV_KEY_PLACEHOLDERS:
+        return ""
+    return val
+
 
 def _system_key_or_env(system_db: str, provider: str, env_name: str) -> str | None:
     """システム保存キー（暗号化）→ 環境変数 の順で解決する。
@@ -926,7 +945,7 @@ def _system_key_or_env(system_db: str, provider: str, env_name: str) -> str | No
         key = SecretStore(system_db).get_provider_key(provider)
     except SecretStoreError:
         key = None
-    return key or os.environ.get(env_name)
+    return key or _env_key(env_name) or None
 
 
 def _system_key_status(system_db: str) -> dict:
@@ -938,7 +957,7 @@ def _system_key_status(system_db: str) -> dict:
     return {
         provider: {
             "stored": bool(stored.get(provider)),
-            "env": bool(os.environ.get(env_name)),
+            "env": bool(_env_key(env_name)),
         }
         for provider, env_name in _SYSTEM_PROVIDER_KEYS.items()
     }
@@ -1549,7 +1568,7 @@ def create_app(
                 os.environ.get("GOOGLE_CLIENT_SECRET") or cfg.get("google_client_secret")
             ),
             "cs_secret_key_set": bool(os.environ.get("CS_SECRET_KEY")),
-            "coingecko_api_key_set": bool(os.environ.get("COINGECKO_API_KEY")),
+            "coingecko_api_key_set": bool(_coingecko_api_key()),
             "providers": _system_key_status(system_store_path()),
         }
 
