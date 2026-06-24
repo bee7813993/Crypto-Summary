@@ -131,7 +131,7 @@ crypto-summary fetch-wallet --chain solana --wallet YOURWALLET...
 |---|---|
 | **Cryptact** | [Cryptact](https://www.cryptact.com/)（カスタムファイル） |
 | **Koinly** | [Koinly](https://koinly.io/)（Universal CSV） |
-| **SUMM** | [SUMM](https://summ.app/)（カスタム CSV） |
+| **SUMM** | [SUMM](https://summ.com/)（旧 Crypto Tax Calculator・カスタム CSV） |
 
 Web UI の「取引履歴」ページから、年・口座・形式を指定してワンクリックでダウンロードできます。CLI では `crypto-summary export --sink koinly` を使用します。
 
