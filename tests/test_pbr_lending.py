@@ -4,10 +4,12 @@
 - 貸出開始 が DEPOSIT として残高に積み上がること (TRANSFER送出ではない)
 - 返還 が WITHDRAW として残高から引かれること
 - 予定利息(未受取)はスキップし、利確数量のみ REWARD として計上すること
-- cp932 エンコーディングで読めること
+- cp932 / UTF-8(BOM) いずれのエンコーディングでも読めること
 """
 from decimal import Decimal
 from pathlib import Path
+
+import pytest
 
 from crypto_summary.sources.jp.pbr_lending import PbrLendingCsvSource
 from crypto_summary.core.models import TxType
@@ -73,6 +75,19 @@ def test_return_is_withdraw(tmp_path):
     assert tx.sent_asset == "BTC"
     assert tx.sent_amount == Decimal("0.1018889500")
     assert tx.label == "lending_return"
+
+
+@pytest.mark.parametrize("encoding", ["cp932", "utf-8-sig", "utf-8"])
+def test_reads_multiple_encodings(tmp_path, encoding):
+    """Shift_JIS / UTF-8(BOM付き・なし) のいずれでも同じ結果になる。"""
+    row = "2025-09-30,BTC,0.1000000000,0,0,0,0,0,0,0,0,0,0,0,0,16877648.58,"
+    p = tmp_path / "pbr.csv"
+    p.write_text(_HEADER + "\n" + row + "\n", encoding=encoding)
+    txs = PbrLendingCsvSource("pbr_lending").load(p)
+    assert len(txs) == 1
+    assert txs[0].type == TxType.DEPOSIT
+    assert txs[0].received_asset == "BTC"
+    assert txs[0].received_amount == Decimal("0.1000000000")
 
 
 def test_balance_principal_plus_interest(tmp_path):
