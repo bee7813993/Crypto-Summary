@@ -148,6 +148,7 @@ class UniversalCsvSource(CsvSourceAdapter):
 from .jp.gmo import GmoCsvSource                          # noqa: E402
 from .jp.bitlend import BitLendCsvSource                   # noqa: E402
 from .jp.pbr_lending import PbrLendingCsvSource            # noqa: E402
+from .jp.pbr_transfers import PbrTransfersCsvSource        # noqa: E402
 from .jp.bitflyer import (                                 # noqa: E402
     BitflyerTradeCsvSource,
     BitflyerCollateralCsvSource,
@@ -158,8 +159,9 @@ from .nexo_savings import NexoSavingsCsvSource             # noqa: E402
 
 EXCHANGE_SOURCES: dict[str, type[CsvSourceAdapter]] = {
     "binance":       BinanceCsvSource,
-    "bitlend":       BitLendCsvSource,
-    "pbr_lending":   PbrLendingCsvSource,
+    "bitlend":         BitLendCsvSource,
+    "pbr_lending":     PbrLendingCsvSource,
+    "pbr_transfers":   PbrTransfersCsvSource,
     "bitflyer":             BitflyerTradeCsvSource,
     "bitflyer_collateral":  BitflyerCollateralCsvSource,
     "bitflyer_conversion":  BitflyerConversionCsvSource,

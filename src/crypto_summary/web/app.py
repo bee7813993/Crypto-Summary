@@ -571,7 +571,8 @@ _EXCHANGE_LABELS: dict[str, str] = {
     "bitflyer_conversion": "bitFlyer（両替 ConversionHistory）",
     "gmo": "GMOコイン",
     "bitlend": "BitLending",
-    "pbr_lending": "PBR Lending",
+    "pbr_lending": "PBR Lending（貸出日次レポート）",
+    "pbr_transfers": "PBR Lending（入出金履歴）",
     "binance": "Binance（スポット）",
     "universal": "汎用CSV",
 }
@@ -580,7 +581,7 @@ _EXCHANGE_LABELS: dict[str, str] = {
 _IMPORT_EXCHANGE_ORDER: list[str] = [
     "nexo", "nexo_savings", "nexo_spot", "nexo_dnw",
     "bitflyer", "bitflyer_collateral", "bitflyer_conversion",
-    "gmo", "bitlend", "pbr_lending", "binance", "universal",
+    "gmo", "bitlend", "pbr_lending", "pbr_transfers", "binance", "universal",
 ]
 
 
