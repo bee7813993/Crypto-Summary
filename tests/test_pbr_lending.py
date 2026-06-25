@@ -1,8 +1,9 @@
 """PbrLendingCsvSource のテスト
 
 重点検証:
-- 貸出開始 が DEPOSIT として残高に積み上がること (TRANSFER送出ではない)
-- 返還 が WITHDRAW として残高から引かれること
+- 旧システム（～2026-03-02）: 貸出開始 が DEPOSIT、返還 が WITHDRAW
+- 新システム（2026-03-03～）: 貸出数量/返還数量は貸出準備ウォレットとの内部移動の
+  ため計上しない（入出金履歴と二重計上になる）。利確 REWARD は引き続き記録。
 - 予定利息(未受取)はスキップし、利確数量のみ REWARD として計上すること
 - cp932 / UTF-8(BOM) いずれのエンコーディングでも読めること
 """
@@ -99,6 +100,43 @@ def test_reads_multiple_encodings(tmp_path, encoding):
     assert txs[0].type == TxType.DEPOSIT
     assert txs[0].received_asset == "BTC"
     assert txs[0].received_amount == Decimal("0.1000000000")
+
+
+# ---- 新システム（2026-03-03～）: 貸出数量/返還数量は内部移動でスキップ ----
+
+def test_new_system_lending_not_deposit(tmp_path):
+    """2026-03-03 以降の貸出数量は内部移動のため DEPOSIT を生成しない。
+
+    入金は入出金履歴 (pbr_transfers) の入庫で計上されるため、ここで計上すると
+    二重計上になる。
+    """
+    txs = _load(tmp_path,
+        "2026-03-31,BTC,0.1000000000,0,0,0,0,0,0,0,0,0,0,0,0,16877648.58,")
+    assert txs == []
+
+
+def test_new_system_return_not_withdraw(tmp_path):
+    """2026-03-03 以降の返還数量は内部移動のため WITHDRAW を生成しない。"""
+    txs = _load(tmp_path,
+        "2026-04-15,BTC,0,0,0,0.1018889500,0,0,0,0,0,0,0,0,0,14000000,")
+    assert txs == []
+
+
+def test_new_system_reward_still_recorded(tmp_path):
+    """新システムでも利確 (REWARD) は引き続き記録される。"""
+    txs = _load(tmp_path,
+        "2026-04-20,BTC,0,0.0000274,0.0009590000,0,0,0,0.004,0.0009590000,0,0,0,0.1,0.0009590000,15597040.51,")
+    assert len(txs) == 1
+    assert txs[0].type == TxType.REWARD
+    assert txs[0].label == "premium_migration_interest"
+
+
+def test_cutoff_boundary_2026_03_02_still_counts(tmp_path):
+    """境界値: 2026-03-02 の貸出数量は旧システムとして DEPOSIT 計上される。"""
+    txs = _load(tmp_path,
+        "2026-03-02,BTC,0.1000000000,0,0,0,0,0,0,0,0,0,0,0,0,16877648.58,")
+    assert len(txs) == 1
+    assert txs[0].type == TxType.DEPOSIT
 
 
 def test_balance_principal_plus_interest(tmp_path):

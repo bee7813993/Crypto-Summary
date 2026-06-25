@@ -582,8 +582,12 @@ _EXCHANGE_LABELS: dict[str, str] = {
 _IMPORT_EXCHANGE_ORDER: list[str] = [
     "nexo", "nexo_savings", "nexo_spot", "nexo_dnw",
     "bitflyer", "bitflyer_collateral", "bitflyer_conversion",
-    "gmo", "bitlend", "pbr", "pbr_lending", "pbr_transfers", "binance", "universal",
+    "gmo", "bitlend", "pbr", "binance", "universal",
 ]
+
+# UI のインポート選択肢には出さないが、内部・既存バッチ・CLI 用に登録は残す取引所。
+# PBR Lending は "pbr"（自動判定）に集約したため、個別形式は隠す。
+_HIDDEN_IMPORT_EXCHANGES: set[str] = {"pbr_lending", "pbr_transfers"}
 
 
 def _import_exchanges() -> dict:
@@ -595,7 +599,7 @@ def _import_exchanges() -> dict:
             items.append({"value": key, "label": _EXCHANGE_LABELS.get(key, key)})
             seen.add(key)
     for key in EXCHANGE_SOURCES:
-        if key not in seen:
+        if key not in seen and key not in _HIDDEN_IMPORT_EXCHANGES:
             items.append({"value": key, "label": _EXCHANGE_LABELS.get(key, key)})
     return {"exchanges": items}
 

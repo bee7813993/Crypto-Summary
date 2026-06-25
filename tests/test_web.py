@@ -250,7 +250,10 @@ def test_import_exchanges(client):
     values = {e["value"] for e in d["exchanges"]}
     # 主要な取引所・サービスが提示される
     assert {"nexo_savings", "nexo_spot", "nexo_dnw", "bitflyer",
-            "gmo", "bitlend", "pbr_lending"} <= values
+            "gmo", "bitlend", "pbr"} <= values
+    # PBR Lending は自動判定 (pbr) に集約し、個別形式は選択肢に出さない
+    assert "pbr_lending" not in values
+    assert "pbr_transfers" not in values
     # ラベルが付いている
     by_value = {e["value"]: e["label"] for e in d["exchanges"]}
     assert by_value["gmo"] == "GMOコイン"
