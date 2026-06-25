@@ -568,6 +568,18 @@ const centerTextPlugin = {
     ctx.textAlign = "center";
     ctx.textBaseline = "top";
     const th = chartTheme();
+    const isLight = document.documentElement.classList.contains("light");
+    const outlineColor = isLight ? "rgba(255,255,255,0.9)" : "rgba(0,0,0,0.55)";
+
+    // テキストに縁取りを付けてドーナツ色への被りを防ぐ
+    function drawOutlinedText(text, x, y, fillColor, lineW) {
+      ctx.lineWidth = lineW;
+      ctx.lineJoin = "round";
+      ctx.strokeStyle = outlineColor;
+      ctx.strokeText(text, x, y);
+      ctx.fillStyle = fillColor;
+      ctx.fillText(text, x, y);
+    }
 
     if (hasIcon) {
       const img = _getImg(iconUrl);
@@ -575,20 +587,17 @@ const centerTextPlugin = {
       top += ICON_R * 2 + 4;
     }
 
-    ctx.fillStyle = th.tooltipTitle;
     ctx.font = `600 15px ${FONT}`;
-    ctx.fillText(title, cx, top);
+    drawOutlinedText(title, cx, top, th.tooltipTitle, 4);
     top += 17 + 6;
 
-    ctx.fillStyle = th.tooltipTitle;
     ctx.font = `700 17px ${FONT}`;
-    ctx.fillText(sub, cx, top);
+    drawOutlinedText(sub, cx, top, th.tooltipTitle, 4);
     top += 19;
 
     if (amount) {
-      ctx.fillStyle = th.tick;
       ctx.font = `500 11px ${FONT}`;
-      ctx.fillText(amount, cx, top);
+      drawOutlinedText(amount, cx, top, th.tick, 3);
     }
 
     ctx.restore();
