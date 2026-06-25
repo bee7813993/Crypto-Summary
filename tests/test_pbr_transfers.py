@@ -1,7 +1,9 @@
 """PbrTransfersCsvSource のテスト
 
 重点検証:
-- 2026-03-03 より前の行はスキップ（日次レポートで記録済み）
+- 2026-01-01 より前の行はスキップ（旧システム期間、日次レポートで記録済み）
+- 2026-01-01～2026-03-02 の空白期間は記録される（日次レポートが存在しない）
+- 2026-03-03 以降の新システム期間も記録される
 - 入庫 → DEPOSIT、出庫 → WITHDRAW（abs値）
 - システム移行・数量0 はスキップ
 - 数量フィールドに桁区切りカンマがある場合 ("3,000") を正しく解析
@@ -32,19 +34,19 @@ def _load(tmp_path: Path, *rows: str):
 # ---- スキップ条件 ----
 
 def test_old_system_nyuko_skipped(tmp_path):
-    """2026-03-03 より前の入庫は旧システム分として全スキップ。"""
-    txs = _load(tmp_path, "2026-03-02,BTC,入庫,0.1,PBRLending 旧システム 貸出")
+    """2026-01-01 より前の入庫は旧システム分としてスキップ（日次レポートで記録済み）。"""
+    txs = _load(tmp_path, "2025-12-31,BTC,入庫,0.1,PBRLending 旧システム 貸出")
     assert txs == []
 
 
 def test_old_system_syukko_skipped(tmp_path):
-    """2026-03-03 より前の出庫もスキップ。"""
+    """2026-01-01 より前の出庫もスキップ。"""
     txs = _load(tmp_path, "2025-12-30,BTC,出庫,-0.05,PBRLending 旧システム")
     assert txs == []
 
 
 def test_system_migration_skipped(tmp_path):
-    """システム移行（数量=0）はスキップ。"""
+    """システム移行はスキップ（日付によらず）。"""
     txs = _load(tmp_path, "2026-03-02,BTC,システム移行,0,PBRLending 貸出準備ウォレット履歴")
     assert txs == []
 
@@ -55,10 +57,10 @@ def test_zero_amount_skipped(tmp_path):
     assert txs == []
 
 
-# ---- 新システム: 入庫 ----
+# ---- 空白期間・新システム: 入庫 ----
 
 def test_nyuko_after_cutoff_is_deposit(tmp_path):
-    """2026-03-03 以降の入庫は DEPOSIT として記録される。"""
+    """2026-01-01 以降の入庫は DEPOSIT として記録される。"""
     txs = _load(tmp_path, "2026-03-31,BTC,入庫,0.1,PBRLending 貸出準備ウォレット履歴")
     assert len(txs) == 1
     tx = txs[0]
@@ -69,10 +71,18 @@ def test_nyuko_after_cutoff_is_deposit(tmp_path):
 
 
 def test_cutoff_date_itself_is_recorded(tmp_path):
-    """2026-03-03 当日の入庫は記録される（境界値確認）。"""
-    txs = _load(tmp_path, "2026-03-03,USDC,入庫,1000,境界テスト")
+    """2026-01-01 当日の入庫は記録される（境界値確認）。"""
+    txs = _load(tmp_path, "2026-01-01,USDC,入庫,1000,境界テスト")
     assert len(txs) == 1
     assert txs[0].type == TxType.DEPOSIT
+
+
+def test_gap_period_is_recorded(tmp_path):
+    """日次レポートが存在しない空白期間 (2026-01-01～2026-03-02) の入庫は記録される。"""
+    txs = _load(tmp_path, "2026-03-02,BTC,入庫,0.5,空白期間テスト")
+    assert len(txs) == 1
+    assert txs[0].type == TxType.DEPOSIT
+    assert txs[0].received_amount == Decimal("0.5")
 
 
 # ---- 新システム: 出庫 ----

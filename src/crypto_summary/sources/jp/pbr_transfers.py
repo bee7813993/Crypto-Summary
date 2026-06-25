@@ -8,10 +8,15 @@
   - 出庫  : WITHDRAW（PBR からの出金）数量は負数で入っているので abs() を使う
   - システム移行: スキップ（数量=0 の移行記録）
 
-2026-03-03 以前の旧システム期間について:
-  旧システムでは「入金＝即座に貸出開始」だったため、入出金履歴の入庫/出庫は
-  日次レポート (pbr_lending) の 貸出数量/返還数量 と同一の取引を指す。
-  重複を避けるため、2026-03-03 より前の行はすべてスキップする。
+スキップ対象期間:
+  旧システム（～2025-12-31）では「入金＝即座に貸出開始」だったため、
+  入出金履歴の入庫/出庫は日次レポート (pbr_lending) の
+  貸出数量/返還数量 と同一の取引を指す。重複を避けるためスキップする。
+
+  2026-01-01～2026-03-02 は日次レポートが存在しない空白期間のため、
+  入出金履歴のみが保有資産の記録となる。この期間は記録する。
+
+  2026-03-03 以降は入金と貸出処理が分離した新システムのため記録する。
 
 数量のカンマ区切り:
   "3,000" のように桁区切りカンマが入る場合、CSV パーサーが列をずらして
@@ -29,8 +34,9 @@ from ...core.models import CanonicalTx, TxType
 from ..base import CsvSourceAdapter, read_csv_text
 
 _DATE_FMT = "%Y-%m-%d"
-# この日から入金と貸出処理が分離。以前の行は pbr_lending 日次レポートで記録済み。
-_NEW_SYSTEM_DATE = date(2026, 3, 3)
+# この日以前は旧システム期間（入庫=貸出開始）。pbr_lending 日次レポートで記録済みのためスキップ。
+# 2026-01-01 からは日次レポートが存在しない空白期間のため記録する。
+_SKIP_BEFORE = date(2026, 1, 1)
 
 
 class PbrTransfersCsvSource(CsvSourceAdapter):
@@ -74,7 +80,7 @@ class PbrTransfersCsvSource(CsvSourceAdapter):
             return None
 
         # 旧システム期間はスキップ（日次レポートで記録済み）
-        if ts.date() < _NEW_SYSTEM_DATE:
+        if ts.date() < _SKIP_BEFORE:
             return None
 
         asset = row.get("通貨種別", "").upper()
