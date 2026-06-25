@@ -159,6 +159,13 @@ select { flex: 1; }
 /* タブレット（641px〜）は 2 列を維持、スマホ（640px 以下）で 1 列 */
 @media (max-width: 640px) {
   .grid { grid-template-columns: 1fr; }
+}
+/* 横幅が狭い時は 資産構成カードを縦積み（円グラフ上・テーブル下）に戻す */
+@media (max-width: 900px) {
+  .chart-card { grid-template-columns: 1fr; }
+  .chart-wrap { margin: 0 auto 16px; }
+}
+@media (max-width: 640px) {
   .chart-card h2 { margin-bottom: 4px; }
   .chart-wrap { width: 160px; height: 160px; }
 }
@@ -178,14 +185,21 @@ select { flex: 1; }
 .card-footer { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border); text-align: right; }
 .card-link { background: none; border: none; color: var(--accent); font-size: 13px; cursor: pointer; padding: 4px 2px; }
 .card-link:hover { text-decoration: underline; border: none; }
-/* ---- ドーナツチャートカード: チャート上・資産テーブル下の縦積み ---- */
-.chart-card h2 { margin-bottom: 8px; }
+/* ---- ドーナツチャートカード: 全幅で 円グラフ左・資産テーブル右 ---- */
+.dash-cards { margin-bottom: 20px; }
+.chart-card {
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  grid-template-rows: auto 1fr;
+  column-gap: 28px;
+}
+.chart-card h2 { grid-column: 1 / -1; margin-bottom: 8px; }
 .chart-wrap {
   position: relative; height: 200px; width: 200px;
   display: flex; align-items: center; justify-content: center;
-  margin: 0 auto 16px;
+  align-self: start; margin: 8px auto 0;
 }
-.chart-card-detail { overflow: auto; display: flex; flex-direction: column; }
+.chart-card-detail { overflow: auto; display: flex; flex-direction: column; min-width: 0; }
 .chart-card-detail .card-footer { margin-top: auto; padding-top: 8px; }
 
 /* ---- Chart legend (円グラフ下の凡例: 資産 / 比率 / 評価額) ---- */
@@ -741,7 +755,8 @@ html.light .tx-type-transfer { background: #d1fae5; color: #065f46; }
   /* カードとグリッドの余白を詰める */
   #page-dashboard .card { padding: 12px 14px; margin-bottom: 12px; }
   #page-dashboard .history-card { padding: 10px 14px 8px; margin-bottom: 12px; }
-  #page-dashboard .grid { gap: 12px; margin-bottom: 12px; }
+  #page-dashboard .dash-cards { margin-bottom: 12px; }
+  #page-dashboard .dash-cards > .card { margin-bottom: 12px; }
 
   /* 推移グラフの高さを縮小 */
   #page-dashboard .history-chart-wrap { height: 110px; }
