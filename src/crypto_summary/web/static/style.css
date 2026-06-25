@@ -160,14 +160,11 @@ select { flex: 1; }
 @media (max-width: 640px) {
   .grid { grid-template-columns: 1fr; }
 }
-/* 横幅が狭い時は 資産構成カードを縦積み（円グラフ上・テーブル下）に戻す */
-@media (max-width: 900px) {
-  .chart-card { grid-template-columns: 1fr; }
-  .chart-wrap { margin: 0 auto 16px; }
-}
+/* スマホのみ 資産構成カードを縦積みに（サイドバー折りたたみ後は641px+でも2列が使える） */
 @media (max-width: 640px) {
+  .chart-card { grid-template-columns: 1fr; }
   .chart-card h2 { margin-bottom: 4px; }
-  .chart-wrap { width: 160px; height: 160px; }
+  .chart-wrap { margin: 0 auto 16px; width: 160px; height: 160px; }
 }
 .grid > * { min-width: 0; }
 
@@ -742,7 +739,29 @@ html.light .tx-type-transfer { background: #d1fae5; color: #065f46; }
   border-left: 3px solid var(--accent);
 }
 
-/* ---- Tablet: ダッシュボードを1画面に収める ---- */
+/* ---- Tablet (641-900px): サイドバーをアイコンのみに折りたたむ ---- */
+@media (min-width: 641px) and (max-width: 900px) {
+  :root { --sidebar-w: 52px; }
+  .sidebar { width: 52px; min-width: 52px; padding: 16px 6px; }
+  .brand { justify-content: center; }
+  .brand-name { display: none; }
+  .user-info { flex-direction: column; align-items: center; gap: 4px; padding: 6px 0 10px; }
+  .user-details { display: none; }
+  .nav-link { justify-content: center; padding: 9px 0; gap: 0; }
+  .nav-link span:last-child { display: none; }
+  .sidebar-controls { padding-top: 8px; align-items: center; }
+  .sidebar-controls > label { display: none; }
+  .controls-row:not(.controls-row-icons) { display: none; }
+  .controls-row.controls-row-icons { flex-direction: column; gap: 4px; }
+}
+
+/* ---- Tablet: 800px以下で 資産テーブルの列を折りたたむ（単価・構成比を非表示）---- */
+@media (max-width: 800px) {
+  #assets-table th:nth-child(3), #assets-table td:nth-child(3),
+  #assets-table th:nth-child(5), #assets-table td:nth-child(5) { display: none; }
+}
+
+/* ---- Tablet: ダッシュボードをコンパクトに ---- */
 @media (min-width: 641px) and (max-width: 1024px) {
   .main-content { padding: 14px 18px; }
 
