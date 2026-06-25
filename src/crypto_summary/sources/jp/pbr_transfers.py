@@ -50,6 +50,13 @@ class PbrTransfersCsvSource(CsvSourceAdapter):
         for raw_row in reader:
             if headers is None:
                 headers = [h.strip() for h in raw_row]
+                # フォーマット検証: 入出金履歴は「区分」「数量」列を持つ。
+                # 日次レポート (pbr_lending) を誤って選ぶと無言で0件になるため明示エラー。
+                if "区分" not in headers or "数量" not in headers:
+                    raise ValueError(
+                        "入出金履歴の形式ではありません（「区分」「数量」列が見つかりません）。"
+                        "日次レポートの場合は「PBR Lending（貸出日次レポート）」を選択してください。"
+                    )
                 continue
             tx = self._parse_row(raw_row, headers)
             if tx is not None:

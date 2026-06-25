@@ -51,6 +51,14 @@ class PbrLendingCsvSource(CsvSourceAdapter):
         txs: list[CanonicalTx] = []
         text = read_csv_text(path)  # Shift_JIS / UTF-8(BOM) 自動判定
         reader = csv.DictReader(io.StringIO(text))
+        # フォーマット検証: 日次レポートは「貸出数量」「返還数量」列を持つ。
+        # 入出金履歴 (pbr_transfers) を誤って選ぶと無言で0件になるため明示エラー。
+        fieldnames = [f.strip() for f in (reader.fieldnames or [])]
+        if "貸出数量" not in fieldnames and "返還数量" not in fieldnames:
+            raise ValueError(
+                "貸出日次レポートの形式ではありません（「貸出数量」「返還数量」列が見つかりません）。"
+                "入出金履歴の場合は「PBR Lending（入出金履歴）」を選択してください。"
+            )
         for i, row in enumerate(reader):
             txs.extend(self._parse_row(row, i))
         return txs

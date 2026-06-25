@@ -31,6 +31,19 @@ def _load(tmp_path: Path, *rows: str):
     return PbrTransfersCsvSource(_SOURCE).load(_write_cp932(tmp_path, *rows))
 
 
+# ---- フォーマット検証 ----
+
+def test_wrong_format_daily_report_rejected(tmp_path):
+    """日次レポート形式（「区分」「数量」列なし）を渡すと明示エラーになる。"""
+    p = tmp_path / "daily.csv"
+    p.write_text(
+        "日付,通貨種別,貸出数量,返還数量,備考\n2026-03-31,BTC,0.1,0,日次レポート\n",
+        encoding="cp932",
+    )
+    with pytest.raises(ValueError, match="入出金履歴の形式ではありません"):
+        PbrTransfersCsvSource(_SOURCE).load(p)
+
+
 # ---- スキップ条件 ----
 
 def test_old_system_nyuko_skipped(tmp_path):

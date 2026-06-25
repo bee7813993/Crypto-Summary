@@ -34,6 +34,17 @@ def _load(tmp_path: Path, *rows: str):
     return src.load(_write_csv(tmp_path, *rows))
 
 
+def test_wrong_format_transfers_rejected(tmp_path):
+    """入出金履歴形式（「貸出数量」「返還数量」列なし）を渡すと明示エラーになる。"""
+    p = tmp_path / "transfers.csv"
+    p.write_text(
+        "日付,通貨種別,区分,数量,備考\n2026-03-31,BTC,入庫,0.1,入出金履歴\n",
+        encoding="cp932",
+    )
+    with pytest.raises(ValueError, match="貸出日次レポートの形式ではありません"):
+        PbrLendingCsvSource("pbr_lending").load(p)
+
+
 def test_lending_start_is_deposit(tmp_path):
     """貸出数量 >0 は DEPOSIT。残高が増える。"""
     txs = _load(tmp_path,
