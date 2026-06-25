@@ -32,6 +32,7 @@ body {
   color: var(--text);
   line-height: 1.5;
   height: 100vh;
+  height: 100dvh; /* iOS Safari: アドレスバー分を除いた実際の表示領域 */
   overflow: hidden;
 }
 
@@ -39,6 +40,7 @@ body {
 .layout {
   display: flex;
   height: 100vh;
+  height: 100dvh;
 }
 
 /* ---- Sidebar ---- */
@@ -51,7 +53,7 @@ body {
   flex-direction: column;
   padding: 20px 12px;
   gap: 8px;
-  overflow-y: auto;
+  overflow: hidden; /* .nav が内部スクロールするので sidebar 自体は隠す */
 }
 
 .brand {
@@ -70,6 +72,8 @@ body {
   flex-direction: column;
   gap: 2px;
   flex: 1;
+  min-height: 0;       /* flex子要素が縮めるよう許可 */
+  overflow-y: auto;    /* ナビだけスクロール: brand/controls は常に表示 */
 }
 
 .nav-link {
