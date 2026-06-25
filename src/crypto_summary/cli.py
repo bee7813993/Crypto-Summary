@@ -555,6 +555,7 @@ def sources() -> None:
     _DESC = {
         "binance":              "Binance スポット取引履歴",
         "bitlend":              "BitLending 貸出履歴",
+        "pbr":                  "PBR Lending（日次レポート・入出金履歴を自動判定）",
         "pbr_lending":          "PBR Lending 貸出日次レポート",
         "pbr_transfers":        "PBR Lending 入出金履歴",
         "bitflyer":             "bitFlyer TradeHistory.csv（現物総合台帳）",
