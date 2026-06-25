@@ -575,7 +575,7 @@ const centerTextPlugin = {
       top += ICON_R * 2 + 4;
     }
 
-    ctx.fillStyle = th.tick;
+    ctx.fillStyle = th.tooltipTitle;
     ctx.font = `600 15px ${FONT}`;
     ctx.fillText(title, cx, top);
     top += 17 + 6;
@@ -587,7 +587,7 @@ const centerTextPlugin = {
 
     if (amount) {
       ctx.fillStyle = th.tick;
-      ctx.font = `11px ${FONT}`;
+      ctx.font = `500 11px ${FONT}`;
       ctx.fillText(amount, cx, top);
     }
 
