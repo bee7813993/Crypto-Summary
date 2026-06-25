@@ -73,6 +73,8 @@ cp .env.example .env
 > ⚠️ `.env` は `.gitignore` 済みです。**API キーをリポジトリにコミットしないでください**。
 > Docker 運用時は `.env` 変更後に `docker compose down && docker compose up -d` で再読み込みが必要です。
 
+> 💡 `.env.example` に入っているサンプル値（`your_api_key_here` / `your_api_secret_here` / `your_etherscan_api_key_here` / `your_helius_api_key_here` など）は、**未設定として扱われます**。値を書き換えずに残しても「設定済み」とは判定されず、実際のキーで上書きするまでは未設定動作になります（CLI の取得・管理者設定画面のステータス表示ともに）。
+
 ---
 
 ## キー一覧（どれが必要か）
