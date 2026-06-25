@@ -97,6 +97,15 @@ function fmtAmount(value) {
   return Number(value).toLocaleString(undefined, { maximumFractionDigits: 8 });
 }
 
+// ダッシュボード用: 有効数字を制限して長大な桁を抑える（既定7桁）
+function fmtAmountSig(value, sig = 7) {
+  if (maskAmounts) return "●●●●●";
+  const n = Number(value);
+  if (!isFinite(n) || n === 0) return fmtAmount(value);
+  const rounded = Number(n.toPrecision(sig));
+  return rounded.toLocaleString(undefined, { maximumFractionDigits: 20 });
+}
+
 function fmtDate(iso) {
   return new Date(iso).toLocaleString("ja-JP", {
     year: "numeric", month: "2-digit", day: "2-digit",
@@ -435,7 +444,7 @@ function renderSummary(data) {
       <td class="clickable-cell" data-action="asset-detail">
         ${assetNameHtml(a.asset, `<span class="swatch" style="background:${color}"></span>`)}
       </td>
-      <td class="num">${fmtAmount(a.balance)}</td>
+      <td class="num">${fmtAmountSig(a.balance)}</td>
       <td class="num">${a.price ? fmtMoney(a.price, cur) : '<span class="muted">-</span>'}</td>
       <td class="num">${a.value ? fmtMoney(a.value, cur) : '<span class="muted">-</span>'}</td>
       <td class="num">${pct !== null ? pct.toFixed(1) + "%" : '<span class="muted">-</span>'}</td>
@@ -542,7 +551,7 @@ const centerTextPlugin = {
       title = chart.data.labels[idx];
       sub = fmtMoney(val, cur) + (pct ? `  (${pct})` : "");
       const bal = (chart.$balances || [])[idx];
-      if (bal != null && bal !== "") amount = fmtAmount(bal) + " " + title;
+      if (bal != null && bal !== "") amount = fmtAmountSig(bal) + " " + title;
       iconUrl = _coinIcons[title.toUpperCase()];
     } else {
       title = t("label.total");
@@ -638,7 +647,7 @@ function renderLegend(slices, currency, total) {
     const row = document.createElement("div");
     row.className = "legend-item";
     const balText = (s.balance != null && s.balance !== "")
-      ? `<span class="legend-balance">${fmtAmount(s.balance)} ${escapeHtml(s.label)}</span>`
+      ? `<span class="legend-balance">${fmtAmountSig(s.balance)} ${escapeHtml(s.label)}</span>`
       : "";
     row.innerHTML = `
       <span class="legend-swatch" style="background:${s.color}"></span>
