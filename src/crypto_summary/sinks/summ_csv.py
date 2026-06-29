@@ -129,14 +129,18 @@ def link_nexo_transfers(txs: Sequence[CanonicalTx]) -> list[CanonicalTx]:
     for s in savings_sends:
         match = _best_match(nexo_deposits, used, s.sent_asset, s.sent_amount, s.timestamp)
         if match:
-            id_remap[match.id] = _native_id(s)
+            native = _native_id(s)
+            id_remap[match.id] = native  # nexo Pro 側を NXT ID に
+            id_remap[s.id] = native      # nexo_savings 側も同じ NXT ID に
             used.add(match.id)
 
     used.clear()
     for s in savings_recvs:
         match = _best_match(nexo_withdraws, used, s.received_asset, s.received_amount, s.timestamp)
         if match:
-            id_remap[match.id] = _native_id(s)
+            native = _native_id(s)
+            id_remap[match.id] = native
+            id_remap[s.id] = native
             used.add(match.id)
 
     if not id_remap:
