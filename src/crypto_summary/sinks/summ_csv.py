@@ -115,20 +115,28 @@ def link_nexo_transfers(txs: Sequence[CanonicalTx]) -> list[CanonicalTx]:
                 best_dt = dt
         return best
 
-    id_remap: dict[str, str] = {}  # nexo Pro 側 old_id → nexo_savings 側 id
+    id_remap: dict[str, str] = {}  # nexo Pro 側 old_id → 共通ID
     used: set[str] = set()
+
+    def _native_id(tx: CanonicalTx) -> str:
+        """nexo_savings CSVのネイティブ Nexo トランザクションID（NXT...）を返す。
+        なければ sha256 ベースの tx.id にフォールバックする。
+        Summ に直接 Nexo CSV をインポートした場合、ネイティブ ID を使わないと
+        両端の ID が一致しない。"""
+        native = (tx.raw or {}).get("Transaction", "").strip()
+        return native if native else tx.id
 
     for s in savings_sends:
         match = _best_match(nexo_deposits, used, s.sent_asset, s.sent_amount, s.timestamp)
         if match:
-            id_remap[match.id] = s.id
+            id_remap[match.id] = _native_id(s)
             used.add(match.id)
 
     used.clear()
     for s in savings_recvs:
         match = _best_match(nexo_withdraws, used, s.received_asset, s.received_amount, s.timestamp)
         if match:
-            id_remap[match.id] = s.id
+            id_remap[match.id] = _native_id(s)
             used.add(match.id)
 
     if not id_remap:
