@@ -109,6 +109,35 @@ def test_fee_row():
     assert r["Fee Currency (Optional)"] == ""
 
 
+def test_internal_transfer_labels_are_skipped():
+    """取引所内部サブウォレット間移動は Summ CSV に出力されないこと。"""
+    internal_labels = [
+        "term_deposit_lock",
+        "term_deposit_unlock",
+        "dual_investment_lock",
+        "dual_investment_unlock",
+    ]
+    for label in internal_labels:
+        tx = _tx(
+            type=TxType.TRANSFER,
+            label=label,
+            sent_asset="USDT",
+            sent_amount=Decimal("1000"),
+        )
+        assert to_summ_rows([tx]) == [], f"label={label!r} should be skipped"
+
+    # 内部ラベル以外の TRANSFER（例: cross-exchange 送金）は通常通り出力される
+    tx = _tx(
+        type=TxType.TRANSFER,
+        label="external_send",
+        sent_asset="BTC",
+        sent_amount=Decimal("0.1"),
+    )
+    rows = to_summ_rows([tx])
+    assert len(rows) == 1
+    assert rows[0]["Type"] == "send"
+
+
 def test_write_summ_csv(tmp_path: Path):
     txs = [
         _tx(type=TxType.TRADE, received_asset="ETH", received_amount=Decimal("1"),

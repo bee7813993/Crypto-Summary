@@ -19,6 +19,8 @@ Type マッピング（CanonicalTx → SUMM）:
   REWARD    → staking（label に stak）/ interest（lend・interest・利息）/ income
   FEE       → fee   : Base=手数料資産
   TRANSFER  → send（送付あり）/ receive（受取のみ）
+             ただし term_deposit_lock/unlock, dual_investment_lock/unlock は
+             取引所内部移動のためスキップ（課税イベントではない）
 """
 from __future__ import annotations
 
@@ -39,6 +41,15 @@ _SUMM_HEADERS = [
 ]
 
 _FIAT = {"JPY", "USD", "EUR", "GBP", "AUD", "CAD", "CHF"}
+
+# TRANSFER のうち取引所内部サブウォレット間移動は Summ に出力しない。
+# Nexo 定期預金のロック/アンロックは同一口座内の移動に過ぎず課税イベントではない。
+_INTERNAL_TRANSFER_LABELS = {
+    "term_deposit_lock",
+    "term_deposit_unlock",
+    "dual_investment_lock",
+    "dual_investment_unlock",
+}
 
 
 def _fmt_decimal(v: Decimal | None) -> str:
@@ -103,6 +114,8 @@ def to_summ_rows(txs: Sequence[CanonicalTx]) -> list[dict[str, str]]:
             row["Base Amount"] = _fmt_decimal(tx.sent_amount)
 
         elif tx.type == TxType.TRANSFER:
+            if (tx.label or "").lower() in _INTERNAL_TRANSFER_LABELS:
+                continue
             if tx.sent_asset and tx.sent_amount is not None:
                 row["Type"] = "send"
                 row["Base Currency"] = tx.sent_asset
