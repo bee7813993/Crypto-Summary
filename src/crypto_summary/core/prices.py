@@ -1,0 +1,306 @@
+"""暗号資産・法定通貨の現在価格取得（CoinGecko、read-only）
+
+CLI と Web UI の両方から使う共通ロジック。
+- 法定通貨資産（USD/JPY/EUR/GBP）は為替として扱い、対象通貨と一致すれば 1.0。
+- 連続実行による 429 を避けるため TTL 付きファイルキャッシュを使う。
+- 429 が出た場合は指数バックオフで最大 3 回リトライする。
+- CoinGecko ID 未登録 / 取得失敗の資産は結果から欠落する（呼び出し側で "-" 表示）。
+"""
+from __future__ import annotations
+
+import json
+import os
+import time
+from decimal import Decimal
+from pathlib import Path
+from typing import Callable
+
+COINGECKO_IDS: dict[str, str] = {
+    "BTC": "bitcoin", "ETH": "ethereum", "WETH": "weth", "SOL": "solana",
+    "MATIC": "polygon-ecosystem-token", "POL": "polygon-ecosystem-token",
+    "USDC": "usd-coin", "USDT": "tether", "DAI": "dai", "BNB": "binancecoin",
+    "ARB": "arbitrum", "OP": "optimism", "AVAX": "avalanche-2",
+    "XRP": "ripple", "ADA": "cardano", "DOT": "polkadot",
+    "LINK": "chainlink", "UNI": "uniswap", "AAVE": "aave",
+    "NEXO": "nexo", "TRX": "tron", "LPT": "livepeer", "MONA": "monacoin",
+    "TRIA": "tria",
+}
+
+# 法定通貨は CoinGecko の暗号資産IDではなく為替として扱う。
+FIAT_ASSETS = frozenset({"USD", "JPY", "EUR", "GBP"})
+
+SUPPORTED_CURRENCIES = ("USD", "JPY", "EUR", "GBP")
+
+_PRICE_CACHE_TTL = 300  # 秒。連続実行時の 429 を避けるためのキャッシュ有効期間。
+
+# CoinGecko Demo API キー（無料）。Google Cloud ではなく CoinGecko のダッシュボードで発行。
+# 設定すると x-cg-demo-api-key ヘッダーを付与し、レート制限が 30 req/分に緩和される。
+# 未設定ならキーなし（より厳しい制限）で従来どおり動作する＝後方互換。
+#
+# 値は呼び出しごとに os.environ から読む（管理者設定の Web 反映を即時に効かせるため）。
+# .env.example のプレースホルダをそのままコピーした場合に 401 で全価格取得が
+# 失敗するのを防ぐため、明らかなダミー値は「未設定」として無視する。
+_COINGECKO_KEY_PLACEHOLDERS = frozenset({
+    "your-coingecko-demo-api-key",
+    "your_coingecko_demo_api_key",
+    "your-coingecko-api-key",
+    "changeme",
+})
+
+
+def _coingecko_api_key() -> str:
+    """環境変数から CoinGecko Demo キーを取得する（プレースホルダは無視）。"""
+    key = os.environ.get("COINGECKO_API_KEY", "").strip()
+    if key.lower() in _COINGECKO_KEY_PLACEHOLDERS:
+        return ""
+    return key
+
+
+def _request_headers() -> dict[str, str]:
+    """CoinGecko リクエスト用の共通ヘッダー。Demo キーがあれば付与する。"""
+    key = _coingecko_api_key()
+    if key:
+        return {"x-cg-demo-api-key": key}
+    return {}
+
+
+# CoinGecko へのリクエスト間に空ける最小間隔（秒）。
+# 通貨切替直後など、履歴価格を資産ごとに連続取得する際のバースト（429）を防ぐ。
+# Demo キーあり: 30 req/分 ＝ 2.0 秒間隔（429 を出さず安定取得、キーなしより高スループット）。
+# キーなし: 公開枠は実測でさらに厳しいため、従来どおり 1.5 秒に据え置く。
+_last_request_ts = 0.0
+
+WarnFn = Callable[[str], None]
+
+
+def _throttle() -> None:
+    """直前の CoinGecko リクエストから最小間隔を空ける（バースト抑制）。
+
+    プロセス内で共有する単純なレートリミッタ。連続呼び出しでも
+    一定間隔以上に間引かれるため、まとめて取得しても 429 になりにくい。
+    """
+    global _last_request_ts
+    interval = 2.0 if _coingecko_api_key() else 1.5
+    wait = interval - (time.monotonic() - _last_request_ts)
+    if wait > 0:
+        time.sleep(wait)
+    _last_request_ts = time.monotonic()
+
+
+def _cache_path() -> Path:
+    return Path.home() / ".crypto_summary_prices.json"
+
+
+def _load_cache(currency: str) -> dict[str, Decimal] | None:
+    """TTL 内のキャッシュ価格を返す（なければ None）。"""
+    try:
+        data = json.loads(_cache_path().read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    entry = data.get(currency.upper())
+    if not entry:
+        return None
+    if time.time() - entry.get("ts", 0) > _PRICE_CACHE_TTL:
+        return None
+    return {k: Decimal(v) for k, v in entry.get("prices", {}).items()}
+
+
+def _save_cache(currency: str, prices: dict[str, Decimal]) -> None:
+    path = _cache_path()
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        data = {}
+    data[currency.upper()] = {
+        "ts": time.time(),
+        "prices": {k: str(v) for k, v in prices.items()},
+    }
+    try:
+        path.write_text(json.dumps(data))
+    except OSError:
+        pass
+
+
+def _fiat_rates(warn: WarnFn | None = None) -> dict[str, Decimal]:
+    """法定通貨の BTC 建てレート表を返す（CoinGecko /exchange_rates）。
+
+    返り値: {"USD": Decimal(...), "JPY": Decimal(...), ...}
+    1 BTC = value[通貨] なので、A→B 換算は value[B]/value[A]。
+    TTL 付きでキャッシュ（キー "_FX"）して 429 を避ける。
+    """
+    import httpx
+
+    cached = _load_cache("_FX")
+    if cached:
+        return cached
+
+    try:
+        _throttle()
+        resp = httpx.get(
+            "https://api.coingecko.com/api/v3/exchange_rates",
+            headers=_request_headers(),
+            timeout=10,
+        )
+        resp.raise_for_status()
+        rates = resp.json().get("rates", {})
+    except Exception as e:  # noqa: BLE001
+        if warn:
+            warn(f"為替レートの取得に失敗しました: {e}")
+        return {}
+
+    out: dict[str, Decimal] = {}
+    for fiat in FIAT_ASSETS:
+        entry = rates.get(fiat.lower())
+        if entry and entry.get("value") is not None:
+            out[fiat] = Decimal(str(entry["value"]))
+    if out:
+        _save_cache("_FX", out)
+    return out
+
+
+_ICON_CACHE_TTL = 86400  # 24時間（アイコンURLは変わらないため長めに設定）
+
+
+def _icon_cache_path() -> Path:
+    return Path.home() / ".crypto_summary_icons.json"
+
+
+def fetch_coin_icons() -> dict[str, str]:
+    """既知の暗号資産のアイコンURL（thumb）を返す。
+
+    CoinGecko の /coins/markets エンドポイントからアイコン画像URLを取得して
+    ファイルキャッシュする（24時間TTL）。
+    返り値: {"BTC": "https://...", "ETH": "https://...", ...}
+    """
+    import httpx
+
+    cache_path = _icon_cache_path()
+    try:
+        cached = json.loads(cache_path.read_text())
+        if time.time() - cached.get("ts", 0) < _ICON_CACHE_TTL:
+            return cached.get("icons", {})
+    except (OSError, json.JSONDecodeError, KeyError):
+        pass
+
+    ids_str = ",".join(COINGECKO_IDS.values())
+    url = (
+        f"https://api.coingecko.com/api/v3/coins/markets"
+        f"?vs_currency=usd&ids={ids_str}&per_page=250&sparkline=false"
+    )
+
+    id_to_symbol = {v: k for k, v in COINGECKO_IDS.items()}
+    icons: dict[str, str] = {}
+    try:
+        _throttle()
+        resp = httpx.get(url, headers=_request_headers(), timeout=15)
+        resp.raise_for_status()
+        for coin in resp.json():
+            sym = id_to_symbol.get(coin.get("id", ""))
+            img = coin.get("image") or coin.get("thumb")
+            if sym and img:
+                # thumb サイズに変換（large→thumb で軽量化）
+                icons[sym] = img.replace("/large/", "/thumb/")
+    except Exception:  # noqa: BLE001
+        return {}
+
+    try:
+        cache_path.write_text(json.dumps({"ts": time.time(), "icons": icons}))
+    except OSError:
+        pass
+
+    return icons
+
+
+def fetch_prices(
+    assets: list[str],
+    currency: str,
+    warn: WarnFn | None = None,
+) -> dict[str, Decimal]:
+    """指定資産の現在価格を currency 建てで返す（CoinGecko）。
+
+    warn: 警告メッセージを受け取るコールバック（None なら無音）。
+    """
+    import httpx
+
+    def _warn(msg: str) -> None:
+        if warn:
+            warn(msg)
+
+    result: dict[str, Decimal] = {}
+
+    # 法定通貨は為替として処理する。
+    # - 対象通貨と同じなら 1.0
+    # - 異なる法定通貨は /exchange_rates（BTC基準）からクロスレートを算出
+    fiat_assets = {a.upper() for a in assets if a.upper() in FIAT_ASSETS}
+    for fa in fiat_assets:
+        if fa == currency.upper():
+            result[fa] = Decimal("1")
+    cross_needed = {fa for fa in fiat_assets if fa != currency.upper()}
+    if cross_needed:
+        rates = _fiat_rates(_warn)
+        tgt = rates.get(currency.upper())
+        for fa in cross_needed:
+            src = rates.get(fa)
+            if tgt and src and src != 0:
+                result[fa] = tgt / src  # 1 fa = (BTC建てtgt / BTC建てsrc) 対象通貨
+
+    # CoinGecko ID にマップできる暗号資産だけ収集
+    id_to_asset: dict[str, str] = {}
+    for asset in assets:
+        cg_id = COINGECKO_IDS.get(asset.upper())
+        if cg_id and cg_id not in id_to_asset:
+            id_to_asset[cg_id] = asset.upper()
+
+    if not id_to_asset:
+        return result
+
+    # キャッシュ確認（必要な資産がすべて揃っていれば API を呼ばない）
+    cached = _load_cache(currency)
+    if cached is not None:
+        needed = set(id_to_asset.values())
+        if needed.issubset(cached.keys()):
+            for a in needed:
+                result[a] = cached[a]
+            return result
+
+    ids_str = ",".join(id_to_asset.keys())
+    currency_lower = currency.lower()
+    url = (
+        f"https://api.coingecko.com/api/v3/simple/price"
+        f"?ids={ids_str}&vs_currencies={currency_lower}"
+    )
+
+    data = None
+    for attempt in range(3):
+        try:
+            _throttle()
+            response = httpx.get(url, headers=_request_headers(), timeout=10)
+            if response.status_code == 429:
+                if attempt < 2:
+                    time.sleep(3 * (attempt + 1))  # 3s, 6s
+                    continue
+                _warn("CoinGecko のレート制限 (429) です。しばらく待って再実行してください。")
+                return result
+            response.raise_for_status()
+            data = response.json()
+            break
+        except Exception as e:  # noqa: BLE001 - ネットワーク全般を許容
+            _warn(f"CoinGecko価格の取得に失敗しました: {e}")
+            return result
+
+    if data is None:
+        return result
+
+    fetched: dict[str, Decimal] = {}
+    for cg_id, asset in id_to_asset.items():
+        price = (data.get(cg_id) or {}).get(currency_lower)
+        if price is not None:
+            fetched[asset] = Decimal(str(price))
+
+    if fetched:
+        merged = _load_cache(currency) or {}
+        merged.update(fetched)
+        _save_cache(currency, merged)
+        result.update(fetched)
+
+    return result

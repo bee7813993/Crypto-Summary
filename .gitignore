@@ -1,0 +1,46 @@
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# SQLite databases
+*.db
+*.sqlite
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+*.secrets.json
+
+# Output files
+out/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Claude Code internal worktrees
+.claude/
+
+# pytest
+.pytest_cache/.coverage
+htmlcov/
+pbr_lending_2026_manual.csv

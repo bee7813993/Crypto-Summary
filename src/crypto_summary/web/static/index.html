@@ -1,0 +1,852 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Crypto-Summary ダッシュボード</title>
+  <link rel="stylesheet" href="/static/style.css" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+</head>
+<body>
+  <!-- 初回セットアップ画面 (JS で表示制御) -->
+  <div id="setup-screen" class="login-screen hidden">
+    <div class="login-card">
+      <div class="login-logo">◈</div>
+      <h1 class="login-title">Crypto-Summary</h1>
+      <p class="login-sub" data-i18n="setup.subtitle">初回セットアップ</p>
+      <p class="setup-intro" data-i18n="setup.intro">API キーを Web 画面から登録するために必要な<br>暗号化マスター鍵を設定します。</p>
+
+      <!-- Google OAuth（マルチユーザーで env 未設定のときのみ表示）-->
+      <div id="setup-oauth-section" class="setup-field hidden">
+        <label class="setup-label" data-i18n="setup.oauthTitle">Google OAuth（ログインに必須）</label>
+        <p class="settings-hint" data-i18n="setup.oauthHint">Google Cloud Console で発行した OAuth クライアントの値を入力してください。リダイレクトURI には「BASE_URL + /auth/callback」を登録します。</p>
+        <input id="setup-base-url" class="settings-input" type="text" style="margin-bottom:8px"
+          data-i18n-placeholder="setup.baseUrlPlaceholder" placeholder="BASE_URL（例: https://your-domain.example.com）" />
+        <input id="setup-google-id" class="settings-input" type="text" style="margin-bottom:8px;font-family:monospace;font-size:11px"
+          data-i18n-placeholder="setup.googleIdPlaceholder" placeholder="GOOGLE_CLIENT_ID（...apps.googleusercontent.com）" />
+        <input id="setup-google-secret" class="settings-input" type="password" style="font-family:monospace;font-size:11px"
+          data-i18n-placeholder="setup.googleSecretPlaceholder" placeholder="GOOGLE_CLIENT_SECRET" autocomplete="off" />
+      </div>
+
+      <div class="setup-field">
+        <label class="setup-label" data-i18n="setup.masterKey">CS_SECRET_KEY（暗号化マスター鍵）</label>
+        <div class="setup-key-row">
+          <input id="setup-cs-key" class="settings-input" type="text"
+            style="font-family:monospace;font-size:11px;flex:1"
+            data-i18n-placeholder="setup.keyPlaceholder" placeholder="既存のキーを貼り付けるか「生成する」を押す" />
+          <button id="setup-generate-btn" class="action-btn" data-i18n="setup.generate">生成する</button>
+        </div>
+        <p class="settings-hint" data-i18n="setup.keyHint">このキーで取引所・ウォレットの API キーを暗号化します。安全な場所にバックアップしてください。</p>
+      </div>
+
+      <div id="setup-admin-section" class="setup-field hidden">
+        <label class="setup-label" data-i18n="setup.adminEmails">管理者メールアドレス <span style="font-weight:normal;font-size:12px" data-i18n="setup.optional">（任意）</span></label>
+        <input id="setup-admin-emails" class="settings-input" type="text"
+          placeholder="admin@example.com（カンマ区切りで複数可）" />
+        <p class="settings-hint" data-i18n="setup.adminHint">指定したアカウントだけが、Web からシステム設定（Etherscan/Helius キー）を編集できます。未設定でも後から .env で変更できます。</p>
+      </div>
+
+      <div id="setup-result" class="settings-result hidden"></div>
+
+      <button id="setup-submit-btn" class="login-btn" style="margin-top:16px" data-i18n="setup.submit">セットアップ完了</button>
+      <button id="setup-skip-btn" class="link-btn" style="margin-top:12px;display:block;text-align:center" data-i18n="setup.skip">後で設定する（スキップ）</button>
+      <p class="settings-hint" style="margin-top:8px;text-align:center" data-i18n="setup.skipHint">スキップすると、Web 画面から API キーを登録する機能が使えません。</p>
+    </div>
+  </div>
+
+  <!-- ログイン画面 (JS で表示制御) -->
+  <div id="login-screen" class="login-screen hidden">
+    <div class="login-card">
+      <div class="login-logo">◈</div>
+      <h1 class="login-title">Crypto-Summary</h1>
+      <p class="login-sub" data-i18n="login.sub">ポートフォリオトラッカー</p>
+      <a href="/auth/login" class="login-btn">
+        <svg width="18" height="18" viewBox="0 0 18 18"><path fill="#4285F4" d="M17.64 9.2c0-.637-.057-1.251-.164-1.84H9v3.481h4.844c-.209 1.125-.843 2.078-1.796 2.716v2.259h2.908c1.702-1.567 2.684-3.875 2.684-6.615z"/><path fill="#34A853" d="M9 18c2.43 0 4.467-.806 5.956-2.18l-2.908-2.259c-.806.54-1.837.86-3.048.86-2.344 0-4.328-1.584-5.036-3.711H.957v2.332A8.997 8.997 0 0 0 9 18z"/><path fill="#FBBC05" d="M3.964 10.71A5.41 5.41 0 0 1 3.682 9c0-.593.102-1.17.282-1.71V4.958H.957A8.996 8.996 0 0 0 0 9c0 1.452.348 2.827.957 4.042l3.007-2.332z"/><path fill="#EA4335" d="M9 3.58c1.321 0 2.508.454 3.44 1.345l2.582-2.58C13.463.891 11.426 0 9 0A8.997 8.997 0 0 0 .957 4.958L3.964 6.29C4.672 4.163 6.656 3.58 9 3.58z"/></svg>
+        <span data-i18n="login.btn">Google でログイン</span>
+      </a>
+    </div>
+  </div>
+
+  <div class="layout">
+    <!-- サイドバー -->
+    <aside class="sidebar">
+      <div class="brand">
+        <span class="logo">◈</span>
+        <span class="brand-name">Crypto-Summary</span>
+      </div>
+
+      <div id="user-info" class="user-info hidden">
+        <img id="user-avatar" class="user-avatar" src="" alt="" />
+        <div class="user-details">
+          <div id="user-name" class="user-name"></div>
+          <div id="user-email" class="user-email"></div>
+        </div>
+        <a href="/auth/logout" class="logout-btn" data-i18n-title="login.logout" title="ログアウト">⏻</a>
+      </div>
+
+      <nav class="nav">
+        <a class="nav-link active" data-page="dashboard" href="#dashboard">
+          <span class="nav-icon">⊞</span><span data-i18n="nav.dashboard">ダッシュボード</span>
+        </a>
+        <a class="nav-link" data-page="accounts" href="#accounts">
+          <span class="nav-icon">◫</span><span data-i18n="nav.accounts">口座別</span>
+        </a>
+        <a class="nav-link" data-page="assets" href="#assets">
+          <span class="nav-icon">◎</span><span data-i18n="nav.assets">資産別</span>
+        </a>
+        <a class="nav-link" data-page="transactions" href="#transactions">
+          <span class="nav-icon">≡</span><span data-i18n="nav.transactions">取引履歴</span>
+        </a>
+        <a class="nav-link" data-page="import" href="#import">
+          <span class="nav-icon">↑</span><span data-i18n="nav.import">インポート</span>
+        </a>
+        <a class="nav-link hidden" id="nav-admin" data-page="admin" href="#admin">
+          <span class="nav-icon">⚙</span><span data-i18n="nav.admin">管理者設定</span>
+        </a>
+      </nav>
+
+      <div class="sidebar-controls">
+        <label for="currency" data-i18n="label.currency">通貨</label>
+        <div class="controls-row">
+          <select id="currency">
+            <option value="USD">USD</option>
+            <option value="JPY">JPY</option>
+            <option value="EUR">EUR</option>
+            <option value="GBP">GBP</option>
+          </select>
+          <button id="refresh" data-i18n-title="btn.refresh" title="再取得">⟳</button>
+        </div>
+        <div class="controls-row controls-row-icons">
+          <button id="theme-toggle" class="icon-btn" title="ライト／ダークモード切替">☀</button>
+          <button id="mask-toggle" class="icon-btn" title="金額の表示／非表示">👁</button>
+          <button id="lang-toggle" class="icon-btn" title="日本語 / English">EN</button>
+        </div>
+      </div>
+    </aside>
+
+    <!-- メインコンテンツ -->
+    <main class="main-content">
+
+      <!-- ダッシュボードページ -->
+      <div id="page-dashboard" class="page">
+        <section class="hero">
+          <div class="hero-label" data-i18n="dash.totalValue">総資産評価額</div>
+          <div class="hero-main">
+            <span class="hero-value" id="total-value">—</span>
+            <span id="total-jpy" class="hero-jpy hidden"></span>
+          </div>
+          <div class="hero-sub" id="total-sub">読み込み中…</div>
+        </section>
+
+        <div id="warnings" class="warnings hidden"></div>
+
+        <!-- 推移グラフ（ダッシュボード：総資産） -->
+        <section class="card history-card">
+          <div class="history-header">
+            <h2 data-i18n="dash.valueHistory">資産推移</h2>
+            <div class="range-tabs" id="dash-range-tabs">
+              <button class="range-tab" data-range="7d">7D</button>
+              <button class="range-tab" data-range="30d">30D</button>
+              <button class="range-tab active" data-range="90d">90D</button>
+              <button class="range-tab" data-range="1y">1Y</button>
+              <button class="range-tab" data-range="all">ALL</button>
+            </div>
+          </div>
+          <div class="history-chart-wrap">
+            <canvas id="history-chart"></canvas>
+            <p class="history-empty hidden" data-i18n="label.noTxData">取引データがありません</p>
+          </div>
+          <div id="history-loading" class="loading hidden" data-i18n="label.loading">読み込み中…</div>
+          <div id="history-unpriced" class="history-unpriced hidden"></div>
+        </section>
+
+        <div class="dash-cards">
+          <section class="card chart-card">
+            <h2 data-i18n="dash.assetAlloc">資産構成</h2>
+            <div class="chart-wrap">
+              <canvas id="alloc-chart"></canvas>
+            </div>
+            <div class="chart-card-detail">
+              <div class="table-wrap">
+                <table id="assets-table">
+                  <thead>
+                    <tr>
+                      <th data-i18n="th.asset">資産</th>
+                      <th class="num" data-i18n="th.balance">残高</th>
+                      <th class="num" data-i18n="th.price">単価</th>
+                      <th class="num" data-i18n="th.value">評価額</th>
+                      <th class="num" data-i18n="th.alloc">構成比</th>
+                      <th></th>
+                      <th class="detail-toggle-cell"></th>
+                    </tr>
+                  </thead>
+                  <tbody></tbody>
+                </table>
+              </div>
+              <div class="card-footer">
+                <button class="card-link" id="assets-more" data-nav="assets">すべての資産を表示 →</button>
+              </div>
+            </div>
+          </section>
+
+          <section class="card">
+            <h2 data-i18n="dash.topAccounts">主な口座</h2>
+            <p class="card-hint" data-i18n="dash.topAccountsHint">評価額の大きい順・上位のみ（クリックで内訳 / 履歴）</p>
+            <div class="table-wrap">
+              <table id="sources-table">
+                <thead>
+                  <tr>
+                    <th data-i18n="th.account">口座</th>
+                    <th class="num" data-i18n="th.txCount">取引数</th>
+                    <th class="num" data-i18n="th.value">評価額</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+            <div class="card-footer">
+              <button class="card-link" id="sources-more" data-nav="accounts">すべての口座を表示 →</button>
+            </div>
+          </section>
+        </div>
+
+        <footer class="footer">
+          <span id="generated">—</span>
+          <span class="dot">·</span>
+          <span data-i18n="dash.priceSource">価格: CoinGecko（5分キャッシュ）</span>
+        </footer>
+      </div>
+
+      <!-- 口座別ページ -->
+      <div id="page-accounts" class="page hidden">
+        <div id="accounts-list-view">
+          <div class="list-header">
+            <h1 class="page-title" data-i18n="nav.accounts">口座別</h1>
+            <button id="sync-all-btn" class="action-btn" data-i18n="btn.syncAll" title="登録済みのAPI口座・ウォレットをすべて同期">⟳ 全同期</button>
+          </div>
+          <div id="sync-all-result" class="sync-all-result hidden"></div>
+          <section class="card">
+            <p class="card-hint" data-i18n="label.accountsHint">クリックで資産内訳 / 取引履歴</p>
+            <div class="table-wrap">
+              <table id="accounts-table">
+                <thead>
+                  <tr>
+                    <th data-i18n="th.account">口座</th>
+                    <th class="num" data-i18n="th.txCount">取引数</th>
+                    <th class="num" data-i18n="th.assetCount">資産数</th>
+                    <th class="num" data-i18n="th.value">評価額</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </section>
+        </div>
+
+        <div id="account-detail-view" class="hidden">
+          <div class="detail-header">
+            <button id="account-back" class="back-btn" data-i18n="btn.backToAccounts">← 口座一覧</button>
+            <h1 class="page-title" id="account-detail-name"></h1>
+            <button id="account-tx-link" class="action-btn" data-i18n="btn.accountTxHistory">≡ この口座の取引履歴</button>
+            <button id="account-settings-btn" class="action-btn" data-i18n="btn.settings">⚙ 設定</button>
+          </div>
+
+          <!-- ウォレットアドレス情報 -->
+          <div id="account-wallet-info" class="hidden"></div>
+
+          <!-- 推移グラフ（口座詳細） -->
+          <section class="card history-card">
+            <div class="history-header">
+              <h2 data-i18n="label.valueHistorySection">評価額推移</h2>
+              <div class="range-tabs" id="acct-range-tabs">
+                <button class="range-tab" data-range="7d">7D</button>
+                <button class="range-tab" data-range="30d">30D</button>
+                <button class="range-tab active" data-range="90d">90D</button>
+                <button class="range-tab" data-range="1y">1Y</button>
+                <button class="range-tab" data-range="all">ALL</button>
+              </div>
+            </div>
+            <div class="history-chart-wrap">
+              <canvas id="acct-history-chart"></canvas>
+              <p class="history-empty hidden" data-i18n="label.noTxData">取引データがありません</p>
+            </div>
+            <div id="acct-history-loading" class="loading hidden" data-i18n="label.loading">読み込み中…</div>
+            <div id="acct-history-unpriced" class="history-unpriced hidden"></div>
+          </section>
+
+          <div id="account-settings-panel" class="settings-panel hidden">
+            <h3 class="settings-title" data-i18n="settings.title">口座設定</h3>
+            <div class="settings-row">
+              <label class="settings-label" data-i18n="settings.displayName">表示名</label>
+              <input id="settings-display-name" class="settings-input" type="text" />
+            </div>
+            <div class="settings-row">
+              <label class="settings-label" data-i18n="settings.sourceIds">この口座のソースID</label>
+              <div id="settings-source-ids" class="source-ids-wrap"></div>
+              <p class="settings-hint" data-i18n="settings.sourceIdsHint">チェックを外すとこの口座から外れます（単独の口座になります）</p>
+            </div>
+            <div class="settings-row">
+              <label class="settings-label" data-i18n="settings.otherSourceIds">他のソースID</label>
+              <div id="settings-unassigned-ids" class="source-ids-wrap"></div>
+              <p class="settings-hint" data-i18n="settings.otherSourceIdsHint">チェックするとこの口座に統合します（複数をまとめられます）</p>
+            </div>
+            <div class="settings-actions">
+              <button id="settings-save" class="settings-save-btn" data-i18n="btn.save">保存</button>
+              <button id="settings-cancel" class="link-btn" data-i18n="btn.cancel">キャンセル</button>
+            </div>
+            <div id="settings-result" class="settings-result hidden"></div>
+          </div>
+
+          <section class="card">
+            <p class="card-hint" data-i18n="label.accountDetailHint">クリックでこの口座内の資産の取引履歴</p>
+            <div class="table-wrap">
+              <table id="account-assets-table">
+                <thead>
+                  <tr>
+                    <th data-i18n="th.asset">資産</th>
+                    <th class="num" data-i18n="th.balance">残高</th>
+                    <th class="num" data-i18n="th.price">単価</th>
+                    <th class="num" data-i18n="th.value">評価額</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </section>
+          <div id="account-detail-loading" class="loading hidden" data-i18n="label.loading">読み込み中…</div>
+        </div>
+      </div>
+
+      <!-- 資産別ページ -->
+      <div id="page-assets" class="page hidden">
+        <div id="assets-list-view">
+          <h1 class="page-title" data-i18n="nav.assets">資産別</h1>
+          <section class="card">
+            <p class="card-hint" data-i18n="label.assetsHint">クリックで口座別内訳 / 取引履歴</p>
+            <div class="table-wrap">
+              <table id="all-assets-table">
+                <thead>
+                  <tr>
+                    <th data-i18n="th.asset">資産</th>
+                    <th class="num" data-i18n="th.balance">残高</th>
+                    <th class="num" data-i18n="th.price">単価</th>
+                    <th class="num" data-i18n="th.value">評価額</th>
+                    <th class="num" data-i18n="th.alloc">構成比</th>
+                    <th></th>
+                    <th class="detail-toggle-cell"></th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+            <div class="toggle-row">
+              <button id="toggle-small" class="link-btn">少額残高のトークンを表示 ▾</button>
+            </div>
+            <div id="unpriced" class="unpriced hidden"></div>
+          </section>
+        </div>
+
+        <div id="asset-detail-view" class="hidden">
+          <div class="detail-header">
+            <button id="asset-back" class="back-btn" data-i18n="btn.backToAssets">← 資産一覧</button>
+            <h1 class="page-title" id="asset-detail-name"></h1>
+            <button id="asset-tx-link" class="action-btn" data-i18n="btn.assetTxHistory">≡ この資産の取引履歴</button>
+          </div>
+
+          <!-- 推移グラフ（資産詳細） -->
+          <section class="card history-card">
+            <div class="history-header">
+              <h2 data-i18n="label.valueHistorySection">評価額推移</h2>
+              <div class="range-tabs" id="asset-range-tabs">
+                <button class="range-tab" data-range="7d">7D</button>
+                <button class="range-tab" data-range="30d">30D</button>
+                <button class="range-tab active" data-range="90d">90D</button>
+                <button class="range-tab" data-range="1y">1Y</button>
+                <button class="range-tab" data-range="all">ALL</button>
+              </div>
+            </div>
+            <div class="history-chart-wrap">
+              <canvas id="asset-history-chart"></canvas>
+              <p class="history-empty hidden" data-i18n="label.noTxData">取引データがありません</p>
+            </div>
+            <div id="asset-history-loading" class="loading hidden" data-i18n="label.loading">読み込み中…</div>
+            <div id="asset-history-unpriced" class="history-unpriced hidden"></div>
+          </section>
+
+          <section class="card">
+            <p class="card-hint" data-i18n="label.accountDetailHint">クリックでこの口座内の資産の取引履歴</p>
+            <div class="table-wrap">
+              <table id="asset-accounts-table">
+                <thead>
+                  <tr>
+                    <th data-i18n="th.account">口座</th>
+                    <th class="num" data-i18n="th.balance">残高</th>
+                    <th class="num" data-i18n="th.value">評価額</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </section>
+          <div id="asset-detail-loading" class="loading hidden" data-i18n="label.loading">読み込み中…</div>
+        </div>
+      </div>
+
+      <!-- 取引履歴ページ -->
+      <div id="page-transactions" class="page hidden">
+
+        <!-- 確定申告用エクスポートパネル -->
+        <div class="card tax-export-panel">
+          <h2 data-i18n="label.taxExport">確定申告用エクスポート</h2>
+          <div class="tax-export-row">
+            <div class="filter-group">
+              <span class="filter-label" data-i18n="label.taxYear">年度</span>
+              <div class="tax-year-btns" id="tax-year-btns"></div>
+            </div>
+            <div class="filter-group">
+              <span class="filter-label" data-i18n="th.account">口座</span>
+              <select id="tax-account" class="filter-date">
+                <option value="" data-i18n="label.allAccounts">すべての口座</option>
+              </select>
+            </div>
+            <div class="filter-group">
+              <span class="filter-label" data-i18n="label.taxFormat">形式</span>
+              <select id="tax-format" class="filter-date"></select>
+            </div>
+            <button id="tax-export-btn" class="action-btn" data-i18n="btn.taxExport">⬇ 確定申告用 CSV</button>
+          </div>
+          <div id="tax-export-result" class="settings-result hidden"></div>
+        </div>
+
+        <div class="tx-header">
+          <h1 class="page-title" data-i18n="nav.transactions">取引履歴</h1>
+          <button id="tx-add-btn" class="action-btn" data-i18n="btn.manualAdd">＋ 手動追加</button>
+          <div class="tx-export">
+            <select id="tx-export-format" class="filter-date" title="エクスポート形式"></select>
+            <button id="tx-export-btn" class="action-btn" data-i18n="btn.export">⬇ CSVエクスポート</button>
+          </div>
+        </div>
+        <div id="tx-export-result" class="settings-result hidden"></div>
+
+        <div class="tx-filters">
+          <div class="filter-group">
+            <label class="filter-label" data-i18n="th.account">口座</label>
+            <select id="tx-filter-account"><option value="" data-i18n="label.allAccounts">すべての口座</option></select>
+          </div>
+          <div class="filter-group">
+            <label class="filter-label" data-i18n="th.asset">資産</label>
+            <select id="tx-filter-asset"><option value="" data-i18n="label.allAssets">すべての資産</option></select>
+          </div>
+          <div class="filter-group">
+            <label class="filter-label" data-i18n="filter.from">開始日</label>
+            <input type="date" id="tx-filter-since" class="filter-date" />
+          </div>
+          <div class="filter-group">
+            <label class="filter-label" data-i18n="filter.to">終了日</label>
+            <input type="date" id="tx-filter-until" class="filter-date" />
+          </div>
+          <button id="tx-filter-clear" class="link-btn" data-i18n="btn.clearFilter">絞り込みを解除</button>
+        </div>
+
+        <div id="tx-active-filter" class="tx-active-filter hidden"></div>
+
+        <!-- 手動追加フォーム -->
+        <div id="tx-add-form" class="settings-panel hidden">
+          <h3 class="settings-title" data-i18n="manual.title">取引を手動追加</h3>
+          <div class="manual-add-grid">
+            <div class="settings-row">
+              <label class="settings-label" data-i18n="manual.account">口座 *</label>
+              <select id="manual-account" class="settings-input"></select>
+            </div>
+            <div class="settings-row">
+              <label class="settings-label" data-i18n="manual.datetime">日時 *</label>
+              <input id="manual-timestamp" class="settings-input" type="datetime-local" />
+            </div>
+            <div class="settings-row">
+              <label class="settings-label" data-i18n="manual.type">種別 *</label>
+              <select id="manual-type" class="settings-input">
+                <option value="deposit" data-i18n="manual.deposit">入金</option>
+                <option value="withdraw" data-i18n="manual.withdrawal">出金</option>
+                <option value="trade" data-i18n="manual.trade">売買</option>
+                <option value="fee" data-i18n="manual.fee">手数料</option>
+                <option value="reward" data-i18n="manual.reward">報酬</option>
+                <option value="transfer" data-i18n="manual.transfer">振替</option>
+              </select>
+            </div>
+            <div class="settings-row">
+              <label class="settings-label" data-i18n="manual.receivedAsset">受取資産</label>
+              <div class="input-pair">
+                <input id="manual-recv-asset" class="settings-input" type="text" placeholder="例: BTC" />
+                <input id="manual-recv-amount" class="settings-input" type="number" step="any" data-i18n-placeholder="manual.amount" placeholder="数量" />
+              </div>
+            </div>
+            <div class="settings-row">
+              <label class="settings-label" data-i18n="manual.sentAsset">送付資産</label>
+              <div class="input-pair">
+                <input id="manual-sent-asset" class="settings-input" type="text" placeholder="例: ETH" />
+                <input id="manual-sent-amount" class="settings-input" type="number" step="any" data-i18n-placeholder="manual.amount" placeholder="数量" />
+              </div>
+            </div>
+            <div class="settings-row">
+              <label class="settings-label" data-i18n="manual.feeAsset">手数料</label>
+              <div class="input-pair">
+                <input id="manual-fee-asset" class="settings-input" type="text" placeholder="例: ETH" />
+                <input id="manual-fee-amount" class="settings-input" type="number" step="any" data-i18n-placeholder="manual.amount" placeholder="数量" />
+              </div>
+            </div>
+            <div class="settings-row">
+              <label class="settings-label" data-i18n="manual.memo">メモ</label>
+              <input id="manual-label" class="settings-input" type="text" placeholder="任意のメモ" />
+            </div>
+          </div>
+          <div class="settings-actions">
+            <button id="manual-save" class="settings-save-btn" data-i18n="btn.add">追加</button>
+            <button id="manual-cancel" class="link-btn" data-i18n="btn.cancel">キャンセル</button>
+          </div>
+          <div id="manual-result" class="settings-result hidden"></div>
+        </div>
+
+        <section class="card tx-card">
+          <div class="table-wrap">
+            <table id="tx-table">
+              <thead>
+                <tr>
+                  <th data-i18n="th.datetime">日時</th>
+                  <th data-i18n="th.account">口座</th>
+                  <th data-i18n="th.type">種別</th>
+                  <th data-i18n="th.received">受取</th>
+                  <th data-i18n="th.sent">送付</th>
+                  <th data-i18n="th.fee">手数料</th>
+                  <th class="num" data-i18n="th.afterBalance">取引後残高</th>
+                  <th></th>
+                  <th class="detail-toggle-cell"></th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <div id="tx-loading" class="loading hidden" data-i18n="label.loading">読み込み中…</div>
+          <div id="tx-empty" class="loading hidden" data-i18n="label.noTxFound">取引履歴がありません</div>
+        </section>
+
+        <div class="tx-pagination" id="tx-pagination"></div>
+      </div>
+
+      <!-- インポートページ -->
+      <div id="page-import" class="page hidden">
+        <h1 class="page-title" data-i18n="nav.import">インポート</h1>
+
+        <!-- 新規口座追加 -->
+        <section class="card import-section">
+          <h2 data-i18n="manual.newAccount">新規口座を追加</h2>
+          <div class="import-tabs">
+            <button class="import-tab active" data-tab="csv" data-i18n="import.csvTab">📄 CSV インポート</button>
+            <button class="import-tab" data-tab="api" data-i18n="import.apiTab">🔑 取引所 API</button>
+            <button class="import-tab" data-tab="wallet" data-i18n="import.walletTab">💼 ウォレットアドレス</button>
+          </div>
+
+          <!-- CSV タブ -->
+          <div id="import-tab-csv" class="import-tab-content">
+            <div class="settings-row">
+              <label class="settings-label" data-i18n="import.exchange">取引所・サービス</label>
+              <select id="import-csv-exchange" class="settings-input" style="max-width:300px"></select>
+            </div>
+            <div class="settings-row">
+              <label class="settings-label" data-i18n="import.csvFile">CSVファイル</label>
+              <input id="import-csv-file" type="file" accept=".csv" class="file-input" />
+            </div>
+            <div class="settings-row">
+              <label class="settings-label" data-i18n="import.sourceId">ソースID（任意）</label>
+              <input id="import-csv-account" class="settings-input" type="text" data-i18n-placeholder="import.sourceIdHint" placeholder="未入力の場合は取引所名を使用" style="max-width:300px" />
+              <p class="settings-hint" data-i18n="import.sourceIdHint2">既存口座に追加する場合はその口座のソースIDを指定してください。</p>
+            </div>
+            <div class="settings-actions">
+              <button id="import-csv-btn" class="settings-save-btn" data-i18n="btn.import">インポート</button>
+            </div>
+            <div id="import-csv-result" class="settings-result hidden"></div>
+          </div>
+
+          <!-- API タブ -->
+          <div id="import-tab-api" class="import-tab-content hidden">
+            <div class="import-note" style="margin-bottom:12px">
+              <strong>⚠ 読み取り専用 API キーのみ登録してください</strong><br>
+              出金・送付・注文の権限は絶対に付与しないこと。<br>
+              キーはサーバー側で即座に暗号化されます（平文では保存されません）。<br>
+              サーバー起動前に <code>CS_SECRET_KEY</code> 環境変数を設定してください（<code>crypto-summary account gen-key</code> で生成）。
+            </div>
+
+            <div class="settings-row">
+              <label class="settings-label" data-i18n="import.apiExchange">取引所</label>
+              <select id="import-api-exchange" class="settings-input" style="max-width:240px">
+                <option value="bybit">Bybit</option>
+              </select>
+            </div>
+            <div class="settings-row">
+              <label class="settings-label" data-i18n="import.apiSourceId">ソースID *</label>
+              <input id="import-api-source-id" class="settings-input" type="text"
+                data-i18n-placeholder="import.apiSourceIdExample" placeholder="例: mybybit" style="max-width:240px" />
+              <p class="settings-hint" data-i18n="import.apiSourceIdHint">口座を識別する任意の名前（既存ソースIDを指定すると追加インポートになります）</p>
+            </div>
+            <div class="settings-row">
+              <label class="settings-label" data-i18n="import.apiKey">API Key *</label>
+              <input id="import-api-key" class="settings-input" type="password"
+                data-i18n-placeholder="import.apiKeyPlaceholder" placeholder="APIキーを入力" style="max-width:380px;font-family:monospace" autocomplete="off" />
+            </div>
+            <div class="settings-row">
+              <label class="settings-label" data-i18n="import.apiSecret">API Secret *</label>
+              <input id="import-api-secret" class="settings-input" type="password"
+                data-i18n-placeholder="import.apiSecretPlaceholder" placeholder="APIシークレットを入力" style="max-width:380px;font-family:monospace" autocomplete="off" />
+            </div>
+            <div class="settings-row" id="import-api-category-row">
+              <label class="settings-label" data-i18n="import.category">カテゴリ</label>
+              <select id="import-api-category" class="settings-input" style="max-width:200px">
+                <option value="all" selected data-i18n="import.categoryAll">Spot + Linear（両方）</option>
+                <option value="spot" data-i18n="import.categorySpot">Spot のみ（現物）</option>
+                <option value="linear" data-i18n="import.categoryLinear">Linear のみ（無期限先物）</option>
+              </select>
+            </div>
+            <div class="settings-actions">
+              <button id="import-api-register-btn" class="settings-save-btn" data-i18n="btn.registerAndSave">登録して暗号化保存</button>
+            </div>
+            <div id="import-api-result" class="settings-result hidden"></div>
+
+            <h3 style="margin:24px 0 8px;font-size:14px;color:#8b949e;border-top:1px solid #30363d;padding-top:16px" data-i18n="label.registeredApis">登録済み API 口座</h3>
+            <div class="table-wrap">
+              <table id="import-api-accounts-table">
+                <thead>
+                  <tr>
+                    <th data-i18n="th.sourceId">ソースID</th>
+                    <th data-i18n="th.exchange">取引所</th>
+                    <th data-i18n="label.currency">カテゴリ</th>
+                    <th data-i18n="th.registeredAt">登録日時</th>
+                    <th data-i18n="th.action">操作</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- ウォレット タブ -->
+          <div id="import-tab-wallet" class="import-tab-content hidden">
+            <div class="import-note" style="margin-bottom:12px">
+              <strong>📖 公開アドレスから取引履歴を取得します</strong><br>
+              ウォレットアドレスは公開情報のため平文で保存されます（秘密鍵は不要・絶対に入力しないこと）。<br>
+              スキャン用 API キーは読み取り専用です（出金権限の概念はありません）。<br>
+              <span data-i18n="import.systemKeyHint">スキャン用 API キー（Etherscan / Helius）は「管理者設定」から登録してください。</span>
+            </div>
+
+            <div class="settings-row">
+              <label class="settings-label" data-i18n="import.walletAddress">ウォレットアドレス *</label>
+              <input id="import-wallet-address" class="settings-input" type="text"
+                data-i18n-placeholder="import.walletAddressPlaceholder" placeholder="0x... または Solana アドレス" style="max-width:420px; font-family:monospace" />
+            </div>
+            <div class="settings-row">
+              <label class="settings-label" data-i18n="import.walletSourceId">ソースID（任意）</label>
+              <input id="import-wallet-name" class="settings-input" type="text"
+                data-i18n-placeholder="import.walletSourceIdExample" placeholder="例: my_wallet（未入力なら自動生成）" style="max-width:240px" />
+              <p class="settings-hint" data-i18n="import.walletSourceIdHint">口座を識別する任意の名前。未入力ならアドレスから自動生成します。</p>
+            </div>
+            <div class="import-note">
+              <strong data-i18n="import.chainHint">対応チェーン（アドレスから自動判定）</strong><br>
+              <span data-i18n="import.chainEvmHint">EVM（0x...）: Ethereum / Arbitrum / Polygon / Base / Optimism を全スキャンしてマージ</span><br>
+              <span data-i18n="import.chainSolanaHint">Solana: Helius API でスキャン</span><br>
+              <span data-i18n="import.chainNoTxHint">取引のないチェーンは履歴に含みません。</span>
+            </div>
+            <div class="settings-actions">
+              <button id="import-wallet-btn" class="settings-save-btn" data-i18n="btn.register">登録</button>
+            </div>
+            <div id="import-wallet-result" class="settings-result hidden"></div>
+
+            <h3 style="margin:24px 0 8px;font-size:14px;color:#8b949e;border-top:1px solid #30363d;padding-top:16px" data-i18n="label.registeredWallets">登録済みウォレット</h3>
+            <div class="table-wrap">
+              <table id="import-wallets-table">
+                <thead>
+                  <tr>
+                    <th data-i18n="th.sourceId">ソースID</th>
+                    <th data-i18n="th.address">アドレス</th>
+                    <th data-i18n="th.chain">チェーン</th>
+                    <th data-i18n="th.registeredAt">登録日時</th>
+                    <th data-i18n="th.action">操作</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <!-- 既存口座の操作 -->
+        <section class="card import-section">
+          <h2 data-i18n="label.existingAccounts">既存の口座</h2>
+          <p class="card-hint" data-i18n="label.existingAccountsHint">各口座への追加CSVインポート・全消去</p>
+          <div class="table-wrap">
+            <table id="import-accounts-table">
+              <thead>
+                <tr>
+                  <th data-i18n="th.account">口座</th>
+                  <th data-i18n="th.sourceId">ソースID</th>
+                  <th class="num" data-i18n="th.txCount">取引数</th>
+                  <th data-i18n="th.txPeriod">取引期間</th>
+                  <th data-i18n="th.action">操作</th>
+                  <th class="detail-toggle-cell"></th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </section>
+
+        <!-- インポート履歴（CSV単位の削除） -->
+        <section class="card import-section">
+          <h2 data-i18n="label.csvHistory">インポート履歴（CSV単位で削除）</h2>
+          <p class="card-hint" data-i18n="label.csvHistoryHint">過去に取り込んだCSVを、そのCSV由来の取引ごとまとめて削除できます</p>
+          <div class="table-wrap">
+            <table id="import-batches-table">
+              <thead>
+                <tr>
+                  <th data-i18n="th.importedAt">取込日時</th>
+                  <th data-i18n="th.account">口座</th>
+                  <th data-i18n="th.exchange">取引所</th>
+                  <th data-i18n="th.file">ファイル</th>
+                  <th class="num" data-i18n="th.txCount">取引数</th>
+                  <th data-i18n="th.txPeriod">取引期間</th>
+                  <th></th>
+                  <th class="detail-toggle-cell"></th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+
+      <!-- 管理者設定ページ -->
+      <div id="page-admin" class="page hidden">
+        <h1 class="page-title" data-i18n="nav.admin">管理者設定</h1>
+
+        <!-- Google OAuth（マルチユーザーのみ表示）-->
+        <section class="card import-section" id="admin-oauth-section">
+          <h2 data-i18n="admin.oauthSection">Google OAuth（ログイン設定）</h2>
+          <p class="card-hint" data-i18n="admin.oauthHint">マルチユーザーモードでのログインに使用する Google OAuth 設定です。リダイレクト URI には「BASE_URL + /auth/callback」を登録してください。</p>
+          <div class="settings-row">
+            <label class="settings-label" data-i18n="admin.baseUrl">BASE_URL</label>
+            <input id="admin-base-url" class="settings-input" type="text"
+              placeholder="https://your-domain.example.com" style="max-width:400px" />
+          </div>
+          <div class="settings-row">
+            <label class="settings-label" data-i18n="admin.googleClientId">GOOGLE_CLIENT_ID</label>
+            <input id="admin-google-id" class="settings-input" type="text"
+              placeholder="...apps.googleusercontent.com" style="max-width:400px;font-family:monospace;font-size:11px" autocomplete="off" />
+          </div>
+          <div class="settings-row">
+            <label class="settings-label" data-i18n="admin.googleClientSecret">GOOGLE_CLIENT_SECRET</label>
+            <div style="display:flex;align-items:center;gap:8px">
+              <input id="admin-google-secret" class="settings-input" type="password"
+                data-i18n-placeholder="system.keyPlaceholder" placeholder="キーを入力（空欄で変更なし）"
+                style="max-width:300px;font-family:monospace;font-size:11px" autocomplete="off" />
+              <span id="admin-google-secret-status" class="settings-hint"></span>
+            </div>
+          </div>
+          <div class="settings-actions">
+            <button id="admin-oauth-save-btn" class="settings-save-btn" data-i18n="btn.save">保存</button>
+          </div>
+          <div id="admin-oauth-result" class="settings-result hidden"></div>
+        </section>
+
+        <!-- 暗号化マスター鍵（ステータス表示のみ）-->
+        <section class="card import-section">
+          <h2 data-i18n="admin.masterKeySection">暗号化マスター鍵（CS_SECRET_KEY）</h2>
+          <div class="settings-row">
+            <label class="settings-label" data-i18n="system.masterKey">CS_SECRET_KEY</label>
+            <span id="admin-cs-secret-status" class="settings-hint"></span>
+          </div>
+          <p class="settings-hint" data-i18n="system.masterKeyHint">CS_SECRET_KEY は初回セットアップ時にのみ Web から設定できます。以降の変更はサーバーの設定ファイルか環境変数で行ってください。</p>
+        </section>
+
+        <!-- 管理者メールアドレス（マルチユーザーのみ表示）-->
+        <section class="card import-section" id="admin-emails-section">
+          <h2 data-i18n="admin.adminEmailsSection">管理者メールアドレス（ADMIN_EMAILS）</h2>
+          <p class="card-hint" data-i18n="admin.adminEmailsHint">この管理者設定画面へのアクセス権を持つ Google アカウントのメールアドレスです。カンマ区切りで複数指定できます。</p>
+          <div class="settings-row">
+            <label class="settings-label">ADMIN_EMAILS</label>
+            <input id="admin-emails-input" class="settings-input" type="text"
+              placeholder="admin@example.com, admin2@example.com" style="max-width:400px" />
+          </div>
+          <div class="settings-actions">
+            <button id="admin-emails-save-btn" class="settings-save-btn" data-i18n="btn.save">保存</button>
+          </div>
+          <div id="admin-emails-result" class="settings-result hidden"></div>
+        </section>
+
+        <!-- スキャン用APIキー（Etherscan / Helius）-->
+        <section class="card import-section">
+          <h2 data-i18n="admin.scanKeysSection">スキャン用 API キー</h2>
+          <p class="card-hint" data-i18n="system.hint">全ユーザー共通のスキャン用 API キーです。ウォレットアドレスの同期に使用します。環境変数より優先されます。</p>
+          <div class="settings-row">
+            <label class="settings-label" data-i18n="import.etherscanKey">Etherscan API Key（EVM 用）</label>
+            <div style="display:flex;align-items:center;gap:8px">
+              <input id="system-etherscan" class="settings-input" type="password"
+                data-i18n-placeholder="system.keyPlaceholder" placeholder="キーを入力（空欄で変更なし）"
+                style="max-width:300px" autocomplete="off" />
+              <span id="system-etherscan-status" class="settings-hint"></span>
+            </div>
+          </div>
+          <div class="settings-row">
+            <label class="settings-label" data-i18n="import.heliusKey">Helius API Key（Solana 用）</label>
+            <div style="display:flex;align-items:center;gap:8px">
+              <input id="system-helius" class="settings-input" type="password"
+                data-i18n-placeholder="system.keyPlaceholder" placeholder="キーを入力（空欄で変更なし）"
+                style="max-width:300px" autocomplete="off" />
+              <span id="system-helius-status" class="settings-hint"></span>
+            </div>
+          </div>
+          <div class="settings-actions">
+            <button id="system-keys-save-btn" class="settings-save-btn" data-i18n="btn.saveKeys">キーを保存</button>
+          </div>
+          <div id="system-keys-result" class="settings-result hidden"></div>
+        </section>
+
+        <!-- CoinGecko API Key -->
+        <section class="card import-section">
+          <h2 data-i18n="admin.coingeckoSection">CoinGecko API Key</h2>
+          <p class="card-hint" data-i18n="admin.coingeckoHint">価格・推移グラフの取得に使用します。無料の Demo プランで取得できます。設定するとレート制限が緩和されます（任意）。</p>
+          <div class="settings-row">
+            <label class="settings-label">COINGECKO_API_KEY</label>
+            <div style="display:flex;align-items:center;gap:8px">
+              <input id="admin-coingecko-input" class="settings-input" type="password"
+                data-i18n-placeholder="system.keyPlaceholder" placeholder="キーを入力（空欄で変更なし）"
+                style="max-width:300px;font-family:monospace;font-size:11px" autocomplete="off" />
+              <span id="admin-coingecko-status" class="settings-hint"></span>
+            </div>
+          </div>
+          <div class="settings-actions">
+            <button id="admin-coingecko-save-btn" class="settings-save-btn" data-i18n="btn.save">保存</button>
+          </div>
+          <div id="admin-coingecko-result" class="settings-result hidden"></div>
+        </section>
+      </div>
+
+    </main>
+  </div>
+
+  <!-- 削除確認ダイアログ -->
+  <div id="delete-dialog" class="dialog-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="delete-dialog-title">
+    <div class="dialog">
+      <h3 id="delete-dialog-title" class="dialog-title">削除しますか？</h3>
+      <p id="delete-dialog-msg" class="dialog-msg"></p>
+      <div class="dialog-actions">
+        <button id="delete-confirm" class="settings-save-btn" style="background:#f85149" data-i18n="btn.delete">削除</button>
+        <button id="delete-cancel" class="link-btn" data-i18n="btn.cancel">キャンセル</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/i18n.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>
