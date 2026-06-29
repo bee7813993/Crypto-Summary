@@ -12,6 +12,7 @@ from pathlib import Path
 from crypto_summary.core.models import CanonicalTx, TxType
 from crypto_summary.sinks.summ_csv import (
     _SUMM_HEADERS,
+    link_nexo_transfers,
     to_summ_csv_string,
     to_summ_rows,
     write_summ_csv,
@@ -136,6 +137,69 @@ def test_internal_transfer_labels_are_skipped():
     rows = to_summ_rows([tx])
     assert len(rows) == 1
     assert rows[0]["Type"] == "send"
+
+
+def test_link_nexo_transfers_unifies_ids():
+    """nexo_savings ↔ nexo (Pro) 振替ペアの ID が nexo_savings 側に統一されること。"""
+    ts_s = datetime(2026, 4, 30, 20, 4, 49, tzinfo=timezone.utc)
+    ts_n = datetime(2026, 4, 30, 20, 4, 51, tzinfo=timezone.utc)
+
+    savings_send = _tx(
+        id="savings_id_aaa",
+        source="nexo_savings",
+        type=TxType.WITHDRAW,
+        label="to_pro_wallet",
+        timestamp=ts_s,
+        sent_asset="SOL",
+        sent_amount=Decimal("38.3999946"),
+    )
+    nexo_recv = _tx(
+        id="nexo_pro_id_bbb",
+        source="nexo",
+        type=TxType.DEPOSIT,
+        label=None,
+        timestamp=ts_n,
+        received_asset="SOL",
+        received_amount=Decimal("38.3999946"),
+    )
+
+    linked = link_nexo_transfers([savings_send, nexo_recv])
+    ids = [t.id for t in linked]
+
+    # nexo Pro 側が nexo_savings 側の ID に統一される
+    assert ids.count("savings_id_aaa") == 2
+    assert "nexo_pro_id_bbb" not in ids
+
+    # to_summ_rows でも両行が同一 ID を持つ
+    rows = to_summ_rows([savings_send, nexo_recv])
+    assert rows[0]["ID (Optional)"] == rows[1]["ID (Optional)"] == "savings_id_aaa"
+
+
+def test_link_nexo_transfers_disambiguates_same_asset_by_timestamp():
+    """同一資産・同一金額が複数ある場合にタイムスタンプで正しくペアを選ぶこと。"""
+    t1s = datetime(2026, 1, 13, 0, 20, 46, tzinfo=timezone.utc)
+    t1n = datetime(2026, 1, 13, 0, 20, 50, tzinfo=timezone.utc)
+    t2s = datetime(2026, 1, 19, 3, 2, 2, tzinfo=timezone.utc)
+    t2n = datetime(2026, 1, 19, 3, 2, 3, tzinfo=timezone.utc)
+
+    s1 = _tx(id="s1", source="nexo_savings", type=TxType.WITHDRAW, label="to_pro_wallet",
+             timestamp=t1s, sent_asset="NEXO", sent_amount=Decimal("150"))
+    n1 = _tx(id="n1", source="nexo", type=TxType.DEPOSIT, timestamp=t1n,
+             received_asset="NEXO", received_amount=Decimal("150"))
+    s2 = _tx(id="s2", source="nexo_savings", type=TxType.WITHDRAW, label="to_pro_wallet",
+             timestamp=t2s, sent_asset="NEXO", sent_amount=Decimal("150"))
+    n2 = _tx(id="n2", source="nexo", type=TxType.DEPOSIT, timestamp=t2n,
+             received_asset="NEXO", received_amount=Decimal("150"))
+
+    linked = link_nexo_transfers([s1, n1, s2, n2])
+    all_ids = [t.id for t in linked]
+
+    # n1 → s1, n2 → s2 に統一され、old ID は残らない
+    assert "n1" not in all_ids
+    assert "n2" not in all_ids
+    # s1, s2 それぞれに2件（savings側+nexo側）
+    assert all_ids.count("s1") == 2
+    assert all_ids.count("s2") == 2
 
 
 def test_write_summ_csv(tmp_path: Path):
