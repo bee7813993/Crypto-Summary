@@ -27,7 +27,9 @@ from ..core.prices import COINGECKO_IDS, SUPPORTED_CURRENCIES, _coingecko_api_ke
 from ..core.secrets import SecretStore, SecretStoreError
 from ..sinks.cryptact_csv import to_cryptact_csv_string
 from ..sinks.koinly_csv import to_koinly_csv_string
-from ..sinks.summ_csv import to_summ_csv_string
+from ..sinks.summ_csv import _SUMM_HEADERS as _SUMM_CSV_HEADERS
+from ..sinks.summ_csv import link_nexo_transfers, to_summ_csv_string
+from ..sinks.summ_csv import to_summ_rows as _to_summ_rows_inner
 from ..sources.api.bybit import BybitApiSource
 from ..sources.csv_import import EXCHANGE_SOURCES
 
@@ -714,6 +716,48 @@ def _collect_export_txs(
     return txs
 
 
+_NEXO_LINK_COMPANIONS = {"nexo": "nexo_savings", "nexo_savings": "nexo"}
+
+
+def _to_summ_csv_with_nexo_link(
+    db_path: str, txs: list, since: str | None, until: str | None
+) -> str:
+    """SUMM CSV文字列を生成する。
+
+    nexo / nexo_savings が片方だけ txs に含まれる場合、相手方を補完ロードして
+    link_nexo_transfers() による ID 統一を実行してから CSV 化する。
+    補完分のトランザクションは出力に含めない。
+    """
+    import csv as _csv
+    import io
+
+    sources_in_txs = {t.source for t in txs}
+    companion_source: str | None = None
+    for src, companion in _NEXO_LINK_COMPANIONS.items():
+        if src in sources_in_txs and companion not in sources_in_txs:
+            companion_source = companion
+            break
+
+    if companion_source:
+        ledger = Ledger(db_path)
+        try:
+            companion_txs, _ = ledger.transactions(source=[companion_source], limit=10_000_000)
+        finally:
+            ledger.close()
+        linked_all = link_nexo_transfers(list(txs) + companion_txs)
+        # 補完ソースを除いて出力用リストに絞る
+        linked = [t for t in linked_all if t.source in sources_in_txs]
+    else:
+        linked = list(txs)
+
+    rows = _to_summ_rows_inner(linked)
+    buf = io.StringIO()
+    writer = _csv.DictWriter(buf, fieldnames=_SUMM_CSV_HEADERS)
+    writer.writeheader()
+    writer.writerows(rows)
+    return buf.getvalue()
+
+
 def _export_csv(
     db_path: str, fmt: str, account: str | None, since: str | None, until: str | None
 ) -> Response:
@@ -730,7 +774,7 @@ def _export_csv(
     elif fmt == "cryptact":
         text, _skipped = to_cryptact_csv_string(txs)
     else:  # summ
-        text = to_summ_csv_string(txs)
+        text = _to_summ_csv_with_nexo_link(db_path, txs, since, until)
 
     # ファイル名: <format>_<account>_<today>.csv（ASCIIのみ）
     acc_part = ""
