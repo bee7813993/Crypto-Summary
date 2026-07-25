@@ -12,7 +12,7 @@
 from __future__ import annotations
 
 import csv
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
@@ -20,6 +20,19 @@ from ...core.models import CanonicalTx, TxType
 from ..base import CsvSourceAdapter
 
 _DATE_FMT = "%Y/%m/%d %H:%M"
+
+# GMOコインの取引レポートCSVの「日時」は日本時間(JST, UTC+9)で記録される。
+# CanonicalTx.timestamp は UTC で保持するため JST → UTC へ変換する。
+_JST = timezone(timedelta(hours=9))
+
+
+def _parse_jst(value: str) -> datetime:
+    """GMO CSV の JST 文字列を UTC の datetime に変換する。"""
+    return (
+        datetime.strptime(value.strip(), _DATE_FMT)
+        .replace(tzinfo=_JST)
+        .astimezone(timezone.utc)
+    )
 
 
 def _d(value: str) -> Decimal | None:
@@ -61,7 +74,7 @@ class GmoCsvSource(CsvSourceAdapter):
             if settlement in _TRADE_SETTLEMENTS:
                 continue  # 上で処理済み
             try:
-                ts = datetime.strptime(row["日時"].strip(), _DATE_FMT).replace(tzinfo=timezone.utc)
+                ts = _parse_jst(row["日時"])
                 tx: CanonicalTx | None = None
                 if settlement == "暗号資産預入・送付":
                     tx = self._parse_crypto_transfer(row, ts, i)
@@ -113,7 +126,7 @@ class GmoCsvSource(CsvSourceAdapter):
 
         txs = []
         for (settlement, ts_str, order_id, asset, side), g in groups.items():
-            ts = datetime.strptime(ts_str, _DATE_FMT).replace(tzinfo=timezone.utc)
+            ts = _parse_jst(ts_str)
             qty     = g["qty"]
             jpy     = abs(g["net_jpy"])   # 正味JPY (手数料込み)
 

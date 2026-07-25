@@ -164,12 +164,6 @@ select { flex: 1; }
 @media (max-width: 640px) {
   .grid { grid-template-columns: 1fr; }
 }
-/* スマホのみ 資産構成カードを縦積みに（サイドバー折りたたみ後は641px+でも2列が使える） */
-@media (max-width: 640px) {
-  .chart-card { grid-template-columns: 1fr; }
-  .chart-card h2 { margin-bottom: 4px; }
-  .chart-wrap { margin: 0 auto 16px; width: 160px; height: 160px; }
-}
 .grid > * { min-width: 0; }
 
 /* ---- Cards ---- */
@@ -202,6 +196,14 @@ select { flex: 1; }
 }
 .chart-card-detail { overflow: auto; display: flex; flex-direction: column; min-width: 0; }
 .chart-card-detail .card-footer { margin-top: auto; padding-top: 8px; }
+/* スマホのみ 資産構成カードを縦積みに（サイドバー折りたたみ後は641px+でも2列が使える）。
+   注意: ベースの .chart-card (220px 1fr) より後に書くこと。前に置くと同詳細度の
+   カスケードで負けて無効になる（グラフ横の表が潰れるバグの原因だった）。 */
+@media (max-width: 640px) {
+  .chart-card { grid-template-columns: 1fr; }
+  .chart-card h2 { margin-bottom: 4px; }
+  .chart-wrap { margin: 0 auto 16px; width: 160px; height: 160px; }
+}
 
 /* ---- Chart legend (円グラフ下の凡例: 資産 / 比率 / 評価額) ---- */
 .chart-legend {
