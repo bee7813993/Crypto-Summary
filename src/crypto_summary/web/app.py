@@ -96,6 +96,61 @@ def _save_groups(db_path: str, groups: dict[str, list[str]]) -> None:
     )
 
 
+# ユーザー設定（口座グループ以外の表示設定）。<stem>.prefs.json に保存する。
+_DEFAULT_PREFS: dict[str, Any] = {
+    # PBR Lending の日次利息を残高・ポートフォリオ・エクスポートに含めるか。
+    # 取引自体は常に取り込まれ、ここでは算入するかだけを切り替える。
+    "include_daily_interest": True,
+}
+
+_prefs_cache: dict[str, dict[str, Any]] = {}
+
+
+def _prefs_path(db_path: str) -> Path:
+    """DB ファイルと同じディレクトリに <stem>.prefs.json を置く。"""
+    p = Path(db_path)
+    return p.with_name(p.stem + ".prefs.json")
+
+
+def _load_prefs(db_path: str) -> dict[str, Any]:
+    """表示設定を読み込む（キャッシュあり）。未知のキーは既定値で補完する。"""
+    if db_path in _prefs_cache:
+        return _prefs_cache[db_path]
+    prefs = dict(_DEFAULT_PREFS)
+    try:
+        saved = json.loads(_prefs_path(db_path).read_text(encoding="utf-8"))
+        if isinstance(saved, dict):
+            for key in _DEFAULT_PREFS:
+                if key in saved:
+                    prefs[key] = saved[key]
+    except (OSError, json.JSONDecodeError):
+        pass
+    _prefs_cache[db_path] = prefs
+    return prefs
+
+
+def _save_prefs(db_path: str, prefs: dict[str, Any]) -> dict[str, Any]:
+    """表示設定を保存してキャッシュを更新する。既知のキーのみ受け付ける。"""
+    merged = dict(_load_prefs(db_path))
+    for key in _DEFAULT_PREFS:
+        if key in prefs:
+            merged[key] = bool(prefs[key])
+    _prefs_cache[db_path] = merged
+    _prefs_path(db_path).write_text(
+        json.dumps(merged, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    return merged
+
+
+def _excluded_labels(db_path: str) -> set[str]:
+    """表示設定から、残高・集計に含めない label の集合を返す。"""
+    prefs = _load_prefs(db_path)
+    excluded: set[str] = set()
+    if not prefs.get("include_daily_interest", True):
+        excluded.add("daily_interest")
+    return excluded
+
+
 def _display_name(source_id: str, groups: dict[str, list[str]]) -> str:
     for name, ids in groups.items():
         if source_id in ids:
@@ -115,7 +170,7 @@ def _summary(db_path: str, currency: str) -> dict:
 
     ledger = Ledger(db_path)
     try:
-        bals = ledger.balances()
+        bals = ledger.balances(exclude_labels=_excluded_labels(db_path))
     finally:
         ledger.close()
 
@@ -175,7 +230,7 @@ def _sources(db_path: str, currency: str) -> dict:
 
     ledger = Ledger(db_path)
     try:
-        per_source = ledger.balances_by_source()
+        per_source = ledger.balances_by_source(exclude_labels=_excluded_labels(db_path))
         counts = {src: cnt for src, cnt, _ in ledger.sources()}
         date_ranges = ledger.date_ranges_by_source()
     finally:
@@ -251,7 +306,7 @@ def _account_assets(account: str, db_path: str, currency: str) -> dict:
 
     ledger = Ledger(db_path)
     try:
-        per_source = ledger.balances_by_source()
+        per_source = ledger.balances_by_source(exclude_labels=_excluded_labels(db_path))
     finally:
         ledger.close()
 
@@ -333,7 +388,7 @@ def _asset_accounts(asset: str, db_path: str, currency: str) -> dict:
 
     ledger = Ledger(db_path)
     try:
-        per_source = ledger.balances_by_source()
+        per_source = ledger.balances_by_source(exclude_labels=_excluded_labels(db_path))
     finally:
         ledger.close()
 
@@ -464,9 +519,13 @@ def _transactions(
 
     ledger = Ledger(db_path)
     try:
-        # 残高計算用: アカウントフィルタなし・日付フィルタなし・資産フィルタのみ
-        bal_txs, _ = ledger.transactions(asset=asset, limit=10_000_000)
-        # 表示用: 全フィルタ適用
+        # 残高計算用: アカウントフィルタなし・日付フィルタなし・資産フィルタのみ。
+        # 表示設定で除外中のラベルは残高に含めない（サマリー画面と一致させる）。
+        bal_txs, _ = ledger.transactions(
+            asset=asset, limit=10_000_000, exclude_labels=_excluded_labels(db_path)
+        )
+        # 表示用: 全フィルタ適用。除外中のラベルも行としては表示する
+        # （「取り込んだのに消えた」と見えないようにするため）。
         offset = (max(page, 1) - 1) * _TX_PAGE_SIZE
         txs, total = ledger.transactions(
             source=source_ids,
@@ -639,8 +698,14 @@ def _import_csv(db_path: str, body: dict[str, Any]) -> dict:
         if tmp_path is not None:
             tmp_path.unlink(missing_ok=True)
 
+    # 「読めたが記録対象外として落とした」件数（アダプタが対応していれば）。
+    # 0件になった理由が見えないと「入れたのに反映されない」に見えるため必ず返す。
+    skipped = getattr(adapter, "skipped", 0)
+    skip_reasons = dict(getattr(adapter, "skip_reasons", {}) or {})
+
     if not txs:
         return {"ok": True, "imported": 0, "parsed": 0, "source": source_id,
+                "skipped": skipped, "skip_reasons": skip_reasons,
                 "message": "取引が見つかりませんでした"}
 
     ledger = Ledger(db_path)
@@ -665,6 +730,8 @@ def _import_csv(db_path: str, body: dict[str, Any]) -> dict:
         "ok": True,
         "imported": after - before,
         "parsed": len(txs),
+        "skipped": skipped,
+        "skip_reasons": skip_reasons,
         "source": source_id,
         "batch_id": batch_id,
     }
@@ -708,7 +775,11 @@ def _collect_export_txs(
     ledger = Ledger(db_path)
     try:
         txs, _ = ledger.transactions(
-            source=source_ids, since=since_dt, until=until_dt, limit=10_000_000
+            source=source_ids,
+            since=since_dt,
+            until=until_dt,
+            limit=10_000_000,
+            exclude_labels=_excluded_labels(db_path),
         )
     finally:
         ledger.close()
@@ -1274,6 +1345,7 @@ def _portfolio_history(
             asset=asset_filter,
             start=range_start,
             end=today,
+            exclude_labels=_excluded_labels(db_path),
         )
     finally:
         ledger.close()
@@ -1702,6 +1774,22 @@ def create_app(
                 raise HTTPException(status_code=422, detail="invalid groups format")
         _save_groups(db, groups)
         return {"ok": True, "groups": groups}
+
+    @app.get("/api/prefs")
+    def get_prefs(db: str = Depends(get_db_path)) -> dict:
+        return {"prefs": _load_prefs(db)}
+
+    @app.put("/api/prefs")
+    def put_prefs(body: dict[str, Any], db: str = Depends(get_db_path)) -> dict:
+        prefs = body.get("prefs")
+        if not isinstance(prefs, dict):
+            raise HTTPException(status_code=422, detail="prefs must be an object")
+        unknown = set(prefs) - set(_DEFAULT_PREFS)
+        if unknown:
+            raise HTTPException(
+                status_code=422, detail=f"unknown pref keys: {', '.join(sorted(unknown))}"
+            )
+        return {"ok": True, "prefs": _save_prefs(db, prefs)}
 
     @app.get("/api/portfolio-history")
     def portfolio_history(

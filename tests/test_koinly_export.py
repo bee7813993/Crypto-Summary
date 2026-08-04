@@ -43,6 +43,19 @@ class TestLabelMapping:
         rows = to_koinly_rows([tx])
         assert rows[0]["Label"] == "staking"
 
+    @pytest.mark.parametrize("label", [
+        "daily_interest",
+        "return_interest",
+        "premium_migration_interest",
+        "premium_maturity_interest",
+    ])
+    def test_pbr_interest_labels_are_reward(self, label):
+        """PBR の利息ラベルは reward に分類される（staking ではない）。"""
+        tx = _tx(type=TxType.REWARD, label=label,
+                 received_asset="BTC", received_amount=Decimal("0.001"))
+        rows = to_koinly_rows([tx])
+        assert rows[0]["Label"] == "reward"
+
     def test_transfer_ignored(self):
         tx = _tx(type=TxType.TRANSFER, label="term_deposit_lock",
                  sent_asset="USDC", sent_amount=Decimal("1000"))

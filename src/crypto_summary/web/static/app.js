@@ -1939,7 +1939,54 @@ async function loadImportPage() {
   loadImportBatches();
   loadApiAccountsTable();
   loadWalletsTable();
+  loadPrefs();
 }
+
+// ---- 集計の表示設定 -------------------------------------------------------
+
+// 保存済みの設定を読んでチェックボックスへ反映する。
+async function loadPrefs() {
+  const box = document.getElementById("prefs-daily-interest");
+  if (!box) return;
+  try {
+    const d = await fetchJSON("/api/prefs");
+    box.checked = (d.prefs || {}).include_daily_interest !== false;
+  } catch (e) {
+    // 読めない場合は既定（含める）のまま
+    box.checked = true;
+  }
+}
+
+document.getElementById("prefs-daily-interest")?.addEventListener("change", async (ev) => {
+  const box = ev.currentTarget;
+  const result = document.getElementById("prefs-result");
+  const desired = box.checked;
+  box.disabled = true;
+  try {
+    const resp = await fetch("/api/prefs", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prefs: { include_daily_interest: desired } }),
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      throw new Error(err.detail || `HTTP ${resp.status}`);
+    }
+    result.className = "settings-result ok";
+    result.textContent = t("prefs.saved");
+    result.classList.remove("hidden");
+    // 残高が変わるので集計を作り直す
+    loadImportAccountsTable();
+    _txAccountsLoaded = false;
+  } catch (e) {
+    box.checked = !desired;
+    result.className = "settings-result err";
+    result.textContent = t("prefs.saveFail", { error: e.message });
+    result.classList.remove("hidden");
+  } finally {
+    box.disabled = false;
+  }
+});
 
 // 管理者設定ページ: スキャン用キーのステータスを管理者設定ページに反映する。
 async function loadSystemKeys() {
@@ -2330,6 +2377,11 @@ document.getElementById("import-csv-btn").addEventListener("click", async () => 
       result.textContent = d.message || t("label.noTxFound");
     } else {
       result.textContent = t("status.importDone", { parsed: d.parsed, imported: d.imported, source: d.source });
+    }
+    if (d.skipped) {
+      // 理由キーは unknown_kubun:<値> のように可変なので翻訳せずコンソールへ
+      result.textContent += " " + t("status.importSkipped", { skipped: d.skipped });
+      console.info("import skip reasons:", d.skip_reasons);
     }
     result.classList.remove("hidden");
     fileInput.value = "";

@@ -28,8 +28,33 @@ def read_csv_text(path: Path, encodings: tuple[str, ...] = ("utf-8-sig", "cp932"
 
 
 class CsvSourceAdapter(ABC):
+    """CSV アダプタの基底クラス。
+
+    スキップ件数の計上（任意）:
+      アダプタが「読めたが記録対象外」として落とした行を ``_skip(reason)`` で
+      数えておくと、``load()`` 後に ``skipped`` / ``skip_reasons`` から取得できる。
+      Web の取り込み結果に表示され、「入れたのに反映されない」の原因が見える。
+
+      計上するのは *実データを持つ行を意図的に落とした場合のみ*。
+      構造上ほぼ全行が対象外になるような形式（日次レポートの予定利息行など）は
+      数えない。数えると意味のない巨大な件数になり、本当に見てほしい
+      「未知の区分がある」というシグナルが埋もれるため。
+    """
+
     def __init__(self, source_id: str):
         self.source_id = source_id
+        self.skipped: int = 0
+        self.skip_reasons: dict[str, int] = {}
+
+    def _reset_skips(self) -> None:
+        """load() の冒頭で呼ぶ。同一インスタンスの再利用でも件数が累積しない。"""
+        self.skipped = 0
+        self.skip_reasons = {}
+
+    def _skip(self, reason: str) -> None:
+        """記録対象外として落とした行を理由別に計上する。"""
+        self.skipped += 1
+        self.skip_reasons[reason] = self.skip_reasons.get(reason, 0) + 1
 
     @abstractmethod
     def load(self, path: Path) -> list[CanonicalTx]:
