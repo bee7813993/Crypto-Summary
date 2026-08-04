@@ -898,3 +898,92 @@ def test_admin_config_coingecko_applied_via_server_config(tmp_path, monkeypatch)
     base_dir = str(Path(db).parent)
     cfg = _json.loads(web_app._server_config_path(base_dir).read_text())
     assert cfg.get("coingecko_api_key") == "MYGECKO"
+
+
+# ---- PBR: スキップ件数の可視化 ----
+
+def _pbr_transfers_b64(*rows: str) -> str:
+    import base64
+    csv = "日付,通貨種別,区分,数量,備考\n" + "\n".join(rows) + "\n"
+    return base64.b64encode(csv.encode("utf-8")).decode("ascii")
+
+
+def test_import_csv_reports_skipped(client):
+    """記録対象外として落とした行を件数と理由で返す。"""
+    r = client.post("/api/import/csv", json={
+        "exchange": "pbr",
+        "filename": "transfers.csv",
+        "content_b64": _pbr_transfers_b64(
+            "2026-03-31,BTC,入庫,0.1,",
+            "2026-03-31,BTC,貸出,0.1,",
+            "2026-03-31,BTC,謎,1,",
+        ),
+    })
+    assert r.status_code == 200
+    d = r.json()
+    assert d["parsed"] == 1
+    assert d["skipped"] == 2
+    assert d["skip_reasons"]["internal_move"] == 1
+    assert d["skip_reasons"]["unknown_kubun:謎"] == 1
+
+
+def test_import_csv_all_skipped_still_reports(client):
+    """全行スキップでも件数を返す（parsed=0 のときが一番説明が必要）。"""
+    r = client.post("/api/import/csv", json={
+        "exchange": "pbr",
+        "filename": "internal.csv",
+        "content_b64": _pbr_transfers_b64(
+            "2026-03-31,BTC,貸出,0.1,",
+            "2026-04-28,BTC,返還,0.1,",
+        ),
+    })
+    assert r.status_code == 200
+    d = r.json()
+    assert d["parsed"] == 0
+    assert d["skipped"] == 2
+    assert d["skip_reasons"] == {"internal_move": 2}
+
+
+# ---- 集計の表示設定（日次利息トグル） ----
+
+def test_prefs_default_and_roundtrip(client):
+    assert client.get("/api/prefs").json()["prefs"]["include_daily_interest"] is True
+
+    r = client.put("/api/prefs", json={"prefs": {"include_daily_interest": False}})
+    assert r.status_code == 200
+    assert r.json()["prefs"]["include_daily_interest"] is False
+    assert client.get("/api/prefs").json()["prefs"]["include_daily_interest"] is False
+
+
+def test_prefs_unknown_key_rejected(client):
+    r = client.put("/api/prefs", json={"prefs": {"nope": True}})
+    assert r.status_code == 422
+
+
+def test_daily_interest_toggle_changes_balance(client):
+    """トグルを切ると残高から日次利息が外れ、取引履歴には残る。"""
+    client.post("/api/import/csv", json={
+        "exchange": "pbr",
+        "filename": "transfers.csv",
+        "content_b64": _pbr_transfers_b64(
+            "2026-03-31,BTC,入庫,0.1,",
+            "2026-04-01,BTC,利息,0.01,",
+            "2026-04-02,BTC,返還利息,0.001,",
+        ),
+    })
+
+    def _btc_balance() -> Decimal:
+        assets = client.get("/api/account-assets?account=Pbr").json()["assets"]
+        return Decimal(next(a["balance"] for a in assets if a["asset"] == "BTC"))
+
+    assert _btc_balance() == Decimal("0.111")
+
+    client.put("/api/prefs", json={"prefs": {"include_daily_interest": False}})
+    assert _btc_balance() == Decimal("0.101")
+
+    # 除外中でも取引履歴の行としては残る
+    txs = client.get("/api/transactions?account=Pbr").json()
+    assert txs["total"] == 3
+
+    client.put("/api/prefs", json={"prefs": {"include_daily_interest": True}})
+    assert _btc_balance() == Decimal("0.111")

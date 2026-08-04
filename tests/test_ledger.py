@@ -201,3 +201,57 @@ def test_balances_by_source(ledger):
     assert set(per) == {"nexo_spot", "nexo_dnw"}
     assert per["nexo_spot"]["BTC"] == Decimal("0.1")
     assert per["nexo_dnw"]["BTC"] == Decimal("0.2")
+
+
+# ---- ラベル除外（UI トグル） ----
+
+def _reward_tx(suffix: str, label: str, source: str = "pbr") -> CanonicalTx:
+    return CanonicalTx(
+        id=CanonicalTx.make_id(source, f"{label}{suffix}"),
+        source=source,
+        timestamp=datetime(2026, 3, int(suffix), tzinfo=timezone.utc),
+        type=TxType.REWARD,
+        received_asset="BTC",
+        received_amount=Decimal("0.001"),
+        label=label,
+    )
+
+
+def test_balances_exclude_labels(ledger):
+    ledger.upsert(_reward_tx("3", "daily_interest"))
+    ledger.upsert(_reward_tx("4", "return_interest"))
+
+    assert ledger.balances()["BTC"] == Decimal("0.002")
+    assert ledger.balances(exclude_labels={"daily_interest"})["BTC"] == Decimal("0.001")
+
+
+def test_balances_by_source_exclude_labels(ledger):
+    ledger.upsert(_reward_tx("3", "daily_interest"))
+    ledger.upsert(_reward_tx("4", "return_interest"))
+
+    per = ledger.balances_by_source(exclude_labels={"daily_interest"})
+    assert per["pbr"]["BTC"] == Decimal("0.001")
+
+
+def test_exclude_labels_keeps_null_label_rows(ledger):
+    """label が NULL の取引は除外の対象外（大半の取引はラベルを持たない）。"""
+    ledger.upsert(_tx("1"))                      # label なし
+    ledger.upsert(_reward_tx("3", "daily_interest"))
+
+    bal = ledger.balances(exclude_labels={"daily_interest"})
+    assert bal["BTC"] == Decimal("0.1")
+
+
+def test_transactions_exclude_labels(ledger):
+    ledger.upsert(_reward_tx("3", "daily_interest"))
+    ledger.upsert(_reward_tx("4", "return_interest"))
+
+    txs, total = ledger.transactions(exclude_labels={"daily_interest"})
+    assert total == 1
+    assert [t.label for t in txs] == ["return_interest"]
+
+
+def test_exclude_labels_none_is_noop(ledger):
+    ledger.upsert(_reward_tx("3", "daily_interest"))
+    assert ledger.balances(exclude_labels=None)["BTC"] == Decimal("0.001")
+    assert ledger.balances(exclude_labels=set())["BTC"] == Decimal("0.001")

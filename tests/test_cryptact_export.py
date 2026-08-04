@@ -6,6 +6,8 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 
+import pytest
+
 from crypto_summary.core.models import CanonicalTx, TxType
 from crypto_summary.sinks.cryptact_csv import (
     to_cryptact_csv_string,
@@ -59,6 +61,23 @@ class TestActionMapping:
     def test_reward_lending(self):
         tx = _tx(type=TxType.REWARD, label="lending_interest",
                  received_asset="USDC", received_amount=Decimal("3"))
+        rows, _ = to_cryptact_rows([tx])
+        assert rows[0]["Action"] == "LENDING"
+
+    @pytest.mark.parametrize("label", [
+        "daily_interest",
+        "return_interest",
+        "premium_migration_interest",
+        "premium_maturity_interest",
+    ])
+    def test_pbr_interest_labels_are_lending(self, label):
+        """PBR の利息ラベルは LENDING に分類される。
+
+        _reward_action は label の部分文字列判定なので、"interest" を含まない
+        名前に改名すると無言で BONUS に降格する。ここで固定する。
+        """
+        tx = _tx(type=TxType.REWARD, label=label,
+                 received_asset="BTC", received_amount=Decimal("0.001"))
         rows, _ = to_cryptact_rows([tx])
         assert rows[0]["Action"] == "LENDING"
 

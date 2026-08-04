@@ -34,6 +34,7 @@ def daily_balances(
     asset: str | None = None,
     start: date | None = None,
     end: date | None = None,
+    exclude_labels: set[str] | None = None,
 ) -> dict[str, dict[str, Decimal]]:
     """日付ごとの資産残高スナップショットを返す。
 
@@ -43,9 +44,12 @@ def daily_balances(
       - start/end 省略時は最初の取引日〜今日を対象とする。
       - asset 指定時はその資産のみ（マルチアセットポートフォリオの
         部分集合として使う場合、呼び出し側でフィルタする）。
+      - exclude_labels 指定時はその label の取引を集計に含めない。
     """
     # すべての取引を昇順で取得（limit=None で全件）
-    txs, _ = ledger.transactions(source=source, asset=asset, limit=999_999)
+    txs, _ = ledger.transactions(
+        source=source, asset=asset, limit=999_999, exclude_labels=exclude_labels
+    )
     txs = sorted(txs, key=lambda t: t.timestamp)
 
     if not txs:

@@ -8,29 +8,37 @@
   運営からの付与数量（利確数量）, 総貸出元本残高, 総受取数量,
   ご参考レート, 備考
 
+このアダプタは *利確した利息だけ* を記録する。元本（預入・引き出し）は
+入出金履歴 (pbr_transfers) が全期間を通じて唯一の情報源。
+
 税務上の取り扱い:
   - 「予定利息」列は日次発生額（未受取）→ スキップ
   - 「利確数量」列が >0 の行のみ REWARD として記録（実際の受取）
 
-貸出数量・返還数量の扱い（システム移行 2026-03-03 を境に変化）:
+貸出数量・返還数量を記録しない理由（どの日付でも記録しない）:
   旧システム（～2026-03-02）:
-    入金＝即座に貸出開始だったため、貸出数量＝PBR への預け入れそのもの。
-    - 貸出開始（貸出数量 >0）→ DEPOSIT（PBR Lending への預け入れ）
-    - 返還（返還数量 >0）   → WITHDRAW（PBR Lending からの引き出し）
+    入金＝即座に貸出開始だったため、貸出数量は入出金履歴の「入庫」と同一イベント。
   新システム（2026-03-03～）:
-    入金→貸出準備ウォレット→貸出 と段階が分かれた。貸出数量/返還数量は
-    「貸出準備ウォレット ⇔ 貸出」の内部移動にすぎず、PBR 全体の保有残高は
-    変わらない。実際の入出金は入出金履歴 (pbr_transfers) が記録する。
-    ここで貸出数量を DEPOSIT 扱いすると入出金履歴の入庫と二重計上になるため、
-    貸出数量/返還数量はスキップする（利確 REWARD は引き続き記録）。
+    貸出数量/返還数量は「貸出準備ウォレット ⇔ 貸出」の内部移動にすぎず、
+    PBR 全体の保有残高は変わらない。
+  いずれの場合も記録すると入出金履歴と二重計上になる。
 
-pbr_lending ソースの残高は「PBR Lending に預けている資産」を表す。
+  なお旧システムでも「入庫したがその日は貸し出されなかった」ケースが実在し
+  （2025-12-30 の入庫は 2026-01-03 まで貸出にならなかった）、貸出数量を
+  預入の代用にすると資産が丸ごと欠落する。日付で切り替える方式が破綻する理由。
+
+注意: 2026-03-03 以降の日次レポートは取り込まないこと。
+  「返還受取利息（利確数量）」は入出金履歴の「返還利息」と同一イベントだが
+  raw_key が異なるため ID による重複排除が効かず、利息が二重計上になる。
+
+pbr_lending ソース単体の残高は「受け取った利息の累計」であって預入資産ではない。
+保有残高を得るには入出金履歴も取り込むこと。
 """
 from __future__ import annotations
 
 import csv
 import io
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
@@ -38,10 +46,6 @@ from ...core.models import CanonicalTx, TxType
 from ..base import CsvSourceAdapter, read_csv_text
 
 _DATE_FMT = "%Y-%m-%d"
-
-# この日からシステムが分離: 入金→貸出準備ウォレット→貸出。
-# 以降の貸出数量/返還数量は内部移動のため残高に計上しない（二重計上防止）。
-_PREP_WALLET_DATE = date(2026, 3, 3)
 
 _ZERO = Decimal("0")
 
@@ -60,6 +64,7 @@ class PbrLendingCsvSource(CsvSourceAdapter):
     """PBR Lending 日次レポート CSV パーサー"""
 
     def load(self, path: Path) -> list[CanonicalTx]:
+        self._reset_skips()
         txs: list[CanonicalTx] = []
         text = read_csv_text(path)  # Shift_JIS / UTF-8(BOM) 自動判定
         reader = csv.DictReader(io.StringIO(text))
@@ -76,29 +81,12 @@ class PbrLendingCsvSource(CsvSourceAdapter):
         return txs
 
     def _parse_row(self, row: dict[str, str], idx: int) -> list[CanonicalTx]:
+        # このレポートは全日付・全通貨の行を持ち、大半は利確が無い（予定利息のみ）。
+        # 構造上の埋め草なので skip カウンタには計上しない。
         results: list[CanonicalTx] = []
 
         ts    = datetime.strptime(row["日付"].strip(), _DATE_FMT).replace(tzinfo=timezone.utc)
         asset = row["通貨種別"].strip().upper()
-
-        # 新システム（2026-03-03～）では貸出数量/返還数量は貸出準備ウォレットとの
-        # 内部移動のため残高に計上しない（入出金履歴の入庫/出庫と二重計上になる）。
-        count_lending = ts.date() < _PREP_WALLET_DATE
-
-        # --- 貸出開始（預け入れ） → DEPOSIT（旧システムのみ） ---
-        lend_qty = _d(row.get("貸出数量", ""))
-        if count_lending and lend_qty > _ZERO:
-            raw_key = f"{row['日付']}|貸出数量|{asset}|{row['貸出数量']}"
-            results.append(CanonicalTx(
-                id=CanonicalTx.make_id(self.source_id, raw_key),
-                source=self.source_id,
-                timestamp=ts,
-                type=TxType.DEPOSIT,
-                received_asset=asset,
-                received_amount=lend_qty,
-                label="lending_start",
-                raw=dict(row),
-            ))
 
         # --- 確定利息（利確）→ REWARD のみ記録 ---
         confirmed_cols = [
@@ -121,20 +109,5 @@ class PbrLendingCsvSource(CsvSourceAdapter):
                     label=label,
                     raw=dict(row),
                 ))
-
-        # --- 返還（引き出し）→ WITHDRAW（旧システムのみ） ---
-        return_qty = _d(row.get("返還数量", ""))
-        if count_lending and return_qty > _ZERO:
-            raw_key = f"{row['日付']}|返還数量|{asset}|{row['返還数量']}"
-            results.append(CanonicalTx(
-                id=CanonicalTx.make_id(self.source_id, raw_key),
-                source=self.source_id,
-                timestamp=ts,
-                type=TxType.WITHDRAW,
-                sent_asset=asset,
-                sent_amount=return_qty,
-                label="lending_return",
-                raw=dict(row),
-            ))
 
         return results

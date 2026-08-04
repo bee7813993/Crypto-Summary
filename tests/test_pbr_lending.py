@@ -1,9 +1,8 @@
 """PbrLendingCsvSource のテスト
 
 重点検証:
-- 旧システム（～2026-03-02）: 貸出開始 が DEPOSIT、返還 が WITHDRAW
-- 新システム（2026-03-03～）: 貸出数量/返還数量は貸出準備ウォレットとの内部移動の
-  ため計上しない（入出金履歴と二重計上になる）。利確 REWARD は引き続き記録。
+- 貸出数量/返還数量は *どの日付でも* 計上しないこと。元本は入出金履歴
+  (pbr_transfers) が唯一の情報源であり、ここで計上すると二重計上になる。
 - 予定利息(未受取)はスキップし、利確数量のみ REWARD として計上すること
 - cp932 / UTF-8(BOM) いずれのエンコーディングでも読めること
 """
@@ -46,16 +45,15 @@ def test_wrong_format_transfers_rejected(tmp_path):
         PbrLendingCsvSource("pbr_lending").load(p)
 
 
-def test_lending_start_is_deposit(tmp_path):
-    """貸出数量 >0 は DEPOSIT。残高が増える。"""
+def test_lending_qty_not_recorded(tmp_path):
+    """貸出数量は記録しない。元本は入出金履歴が唯一の情報源。
+
+    旧システムでは貸出数量＝入出金履歴の「入庫」と同一イベントであり、
+    新システムでは貸出準備ウォレットとの内部移動にすぎない。
+    """
     txs = _load(tmp_path,
         "2025-09-30,BTC,0.1000000000,0,0,0,0,0,0,0,0,0,0,0,0,16877648.58,")
-    assert len(txs) == 1
-    tx = txs[0]
-    assert tx.type == TxType.DEPOSIT
-    assert tx.received_asset == "BTC"
-    assert tx.received_amount == Decimal("0.1000000000")
-    assert tx.label == "lending_start"
+    assert txs == []
 
 
 def test_planned_interest_skipped(tmp_path):
@@ -77,48 +75,45 @@ def test_realized_interest_is_reward(tmp_path):
     assert tx.label == "premium_migration_interest"
 
 
-def test_return_is_withdraw(tmp_path):
-    """返還数量 >0 は WITHDRAW。残高が減る。"""
+def test_return_qty_not_recorded(tmp_path):
+    """返還数量も記録しない（貸出数量と同じ理由）。"""
     txs = _load(tmp_path,
         "2026-01-15,BTC,0,0,0,0.1018889500,0,0,0,0,0,0,0,0,0,14000000,")
-    assert len(txs) == 1
-    tx = txs[0]
-    assert tx.type == TxType.WITHDRAW
-    assert tx.sent_asset == "BTC"
-    assert tx.sent_amount == Decimal("0.1018889500")
-    assert tx.label == "lending_return"
+    assert txs == []
 
 
 @pytest.mark.parametrize("encoding", ["cp932", "utf-8-sig", "utf-8"])
 def test_reads_multiple_encodings(tmp_path, encoding):
     """Shift_JIS / UTF-8(BOM付き・なし) のいずれでも同じ結果になる。"""
-    row = "2025-09-30,BTC,0.1000000000,0,0,0,0,0,0,0,0,0,0,0,0,16877648.58,"
+    row = "2025-11-04,BTC,0,0.0000274000,0.0009590000,0,0,0,0.0040000000,0.0009590000,0,0,0,0.1,0.0009590000,15597040.51,"
     p = tmp_path / "pbr.csv"
     p.write_text(_HEADER + "\n" + row + "\n", encoding=encoding)
     txs = PbrLendingCsvSource("pbr_lending").load(p)
     assert len(txs) == 1
-    assert txs[0].type == TxType.DEPOSIT
+    assert txs[0].type == TxType.REWARD
     assert txs[0].received_asset == "BTC"
-    assert txs[0].received_amount == Decimal("0.1000000000")
+    assert txs[0].received_amount == Decimal("0.0009590000")
 
 
-# ---- 新システム（2026-03-03～）: 貸出数量/返還数量は内部移動でスキップ ----
+# ---- 貸出数量/返還数量は日付によらず計上しない ----
 
-def test_new_system_lending_not_deposit(tmp_path):
-    """2026-03-03 以降の貸出数量は内部移動のため DEPOSIT を生成しない。
+@pytest.mark.parametrize("day", ["2025-09-30", "2026-03-02", "2026-03-31"])
+def test_lending_qty_never_recorded(tmp_path, day):
+    """旧システム・境界日・新システムのいずれでも貸出数量は計上しない。
 
-    入金は入出金履歴 (pbr_transfers) の入庫で計上されるため、ここで計上すると
-    二重計上になる。
+    以前は 2026-03-03 を境に扱いを変えていたが、旧システムにも
+    「入庫したがその日は貸し出されなかった」ケースがあり破綻した。
     """
     txs = _load(tmp_path,
-        "2026-03-31,BTC,0.1000000000,0,0,0,0,0,0,0,0,0,0,0,0,16877648.58,")
+        f"{day},BTC,0.1000000000,0,0,0,0,0,0,0,0,0,0,0,0,16877648.58,")
     assert txs == []
 
 
-def test_new_system_return_not_withdraw(tmp_path):
-    """2026-03-03 以降の返還数量は内部移動のため WITHDRAW を生成しない。"""
+@pytest.mark.parametrize("day", ["2026-01-15", "2026-04-15"])
+def test_return_qty_never_recorded(tmp_path, day):
+    """返還数量も日付によらず計上しない。"""
     txs = _load(tmp_path,
-        "2026-04-15,BTC,0,0,0,0.1018889500,0,0,0,0,0,0,0,0,0,14000000,")
+        f"{day},BTC,0,0,0,0.1018889500,0,0,0,0,0,0,0,0,0,14000000,")
     assert txs == []
 
 
@@ -131,16 +126,11 @@ def test_new_system_reward_still_recorded(tmp_path):
     assert txs[0].label == "premium_migration_interest"
 
 
-def test_cutoff_boundary_2026_03_02_still_counts(tmp_path):
-    """境界値: 2026-03-02 の貸出数量は旧システムとして DEPOSIT 計上される。"""
-    txs = _load(tmp_path,
-        "2026-03-02,BTC,0.1000000000,0,0,0,0,0,0,0,0,0,0,0,0,16877648.58,")
-    assert len(txs) == 1
-    assert txs[0].type == TxType.DEPOSIT
+def test_balance_interest_only(tmp_path):
+    """このアダプタ単体の残高は「受け取った利息の累計」になる。
 
-
-def test_balance_principal_plus_interest(tmp_path):
-    """貸出開始 + 利確 で残高が総貸出元本残高に一致する。"""
+    元本 0.1 BTC は入出金履歴側で計上されるため、ここには含まれない。
+    """
     txs = _load(tmp_path,
         "2025-09-30,BTC,0.1000000000,0,0,0,0,0,0,0,0,0,0,0,0,16877648.58,",
         "2025-11-04,BTC,0,0.0000274,0.0009590000,0,0,0,0.004,0.0009590000,0,0,0,0.1,0.0009590000,15597040.51,",
@@ -151,4 +141,14 @@ def test_balance_principal_plus_interest(tmp_path):
             balance += tx.received_amount
         if tx.sent_amount:
             balance -= tx.sent_amount
-    assert balance == Decimal("0.1018889500")
+    assert balance == Decimal("0.0018889500")
+
+
+def test_no_skip_counting(tmp_path):
+    """予定利息のみの行は構造上の埋め草なので skipped に数えない。"""
+    src = PbrLendingCsvSource("pbr_lending")
+    src.load(_write_csv(tmp_path,
+        "2025-10-01,BTC,0,0.0000274000,0.0000274000,0,0,0,0,0,0,0,0,0.1,0,17450607.57,",
+        "2025-10-02,BTC,0,0.0000274000,0.0000548000,0,0,0,0,0,0,0,0,0.1,0,17450607.57,"))
+    assert src.skipped == 0
+    assert src.skip_reasons == {}

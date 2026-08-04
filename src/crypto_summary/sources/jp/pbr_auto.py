@@ -22,17 +22,24 @@ class PbrAutoCsvSource(CsvSourceAdapter):
     """PBR Lending CSV（日次レポート／入出金履歴）自動判定パーサー"""
 
     def load(self, path: Path) -> list[CanonicalTx]:
+        self._reset_skips()
         text = read_csv_text(path)
         first_row = next(csv.reader(io.StringIO(text)), [])
         headers = [h.strip() for h in first_row]
 
+        sub: CsvSourceAdapter
         if "貸出数量" in headers or "返還数量" in headers:
-            return PbrLendingCsvSource(self.source_id).load(path)
+            sub = PbrLendingCsvSource(self.source_id)
+        elif "区分" in headers and "数量" in headers:
+            sub = PbrTransfersCsvSource(self.source_id)
+        else:
+            raise ValueError(
+                "PBR Lending のCSV形式を識別できませんでした。"
+                f"検出されたヘッダー: {', '.join(headers) or '（空）'}"
+            )
 
-        if "区分" in headers and "数量" in headers:
-            return PbrTransfersCsvSource(self.source_id).load(path)
-
-        raise ValueError(
-            "PBR Lending のCSV形式を識別できませんでした。"
-            f"検出されたヘッダー: {', '.join(headers) or '（空）'}"
-        )
+        txs = sub.load(path)
+        # Web UI は常に「自動判定」で取り込むため、転送しないとスキップ件数が消える
+        self.skipped = sub.skipped
+        self.skip_reasons = dict(sub.skip_reasons)
+        return txs

@@ -50,6 +50,14 @@ CREATE TABLE IF NOT EXISTS batch_txs (
 );
 """
 
+# UI から残高・集計への算入を切り替えられるラベル。
+# 取引自体は常に台帳へ記録し、表示側で含める／含めないを選ぶ。
+TOGGLEABLE_LABELS: dict[str, str] = {
+    # PBR Lending 新システムの日次利息付与。受取時点で所得とみなすかは
+    # 利用者の判断に委ねるため、残高・エクスポートから外せるようにしている。
+    "daily_interest": "PBR Lending 日次利息",
+}
+
 _COLS = [
     "id", "source", "timestamp", "type",
     "received_asset", "received_amount",
@@ -299,21 +307,38 @@ class Ledger:
         placeholders = ",".join("?" for _ in source)
         return f"source IN ({placeholders})", list(source)
 
+    @staticmethod
+    def _label_exclude_clause(
+        exclude_labels: set[str] | None,
+    ) -> tuple[str | None, list]:
+        """指定ラベルの取引を除外する WHERE 句の断片を返す（label NULL は残す）。"""
+        if not exclude_labels:
+            return None, []
+        labels = sorted(exclude_labels)
+        placeholders = ",".join("?" for _ in labels)
+        return f"(label IS NULL OR label NOT IN ({placeholders}))", labels
+
     def balances(
         self,
         source: str | list[str] | None = None,
         since: datetime | None = None,
         until: datetime | None = None,
+        exclude_labels: set[str] | None = None,
     ) -> dict[str, Decimal]:
         """資産ごとの純残高を返す (受取 - 送出 - 手数料)。
 
         source は単一文字列・複数リスト・None(全ソース合算) のいずれも可。
+        exclude_labels に含まれる label の取引は集計から除外する。
         """
         clauses, params = [], []
         src_clause, src_params = self._source_clause(source)
         if src_clause:
             clauses.append(src_clause)
             params.extend(src_params)
+        lbl_clause, lbl_params = self._label_exclude_clause(exclude_labels)
+        if lbl_clause:
+            clauses.append(lbl_clause)
+            params.extend(lbl_params)
         if since:
             clauses.append("timestamp >= ?")
             params.append(since.isoformat())
@@ -342,6 +367,7 @@ class Ledger:
         source: str | list[str] | None = None,
         since: datetime | None = None,
         until: datetime | None = None,
+        exclude_labels: set[str] | None = None,
     ) -> dict[str, dict[str, Decimal]]:
         """ソースごとの資産別純残高を返す: {source: {asset: balance}}。"""
         clauses, params = [], []
@@ -349,6 +375,10 @@ class Ledger:
         if src_clause:
             clauses.append(src_clause)
             params.extend(src_params)
+        lbl_clause, lbl_params = self._label_exclude_clause(exclude_labels)
+        if lbl_clause:
+            clauses.append(lbl_clause)
+            params.extend(lbl_params)
         if since:
             clauses.append("timestamp >= ?")
             params.append(since.isoformat())
@@ -380,11 +410,16 @@ class Ledger:
         since: datetime | None = None,
         until: datetime | None = None,
         limit: int | None = 50,
+        exclude_labels: set[str] | None = None,
     ) -> list[CanonicalTx]:
         clauses, params = [], []
         if source:
             clauses.append("source=?")
             params.append(source)
+        lbl_clause, lbl_params = self._label_exclude_clause(exclude_labels)
+        if lbl_clause:
+            clauses.append(lbl_clause)
+            params.extend(lbl_params)
         if tx_type:
             clauses.append("type=?")
             params.append(tx_type)
@@ -410,17 +445,23 @@ class Ledger:
         until: datetime | None = None,
         limit: int = 50,
         offset: int = 0,
+        exclude_labels: set[str] | None = None,
     ) -> tuple[list[CanonicalTx], int]:
         """取引履歴をフィルタ付きで返す。戻り値: (取引リスト, 総件数)。
 
         source: 単一文字列 / リスト / None(全ソース)
         asset:  received_asset / sent_asset / fee_asset のいずれかに一致
+        exclude_labels: 指定 label の取引を除外する
         """
         clauses, params = [], []
         src_clause, src_params = self._source_clause(source)
         if src_clause:
             clauses.append(src_clause)
             params.extend(src_params)
+        lbl_clause, lbl_params = self._label_exclude_clause(exclude_labels)
+        if lbl_clause:
+            clauses.append(lbl_clause)
+            params.extend(lbl_params)
         if asset:
             clauses.append(
                 "(received_asset=? OR sent_asset=? OR fee_asset=?)"

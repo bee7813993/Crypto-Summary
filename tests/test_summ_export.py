@@ -9,6 +9,8 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 
+import pytest
+
 from crypto_summary.core.models import CanonicalTx, TxType
 from crypto_summary.sinks.summ_csv import (
     _SUMM_HEADERS,
@@ -91,6 +93,23 @@ def test_reward_types():
     assert to_summ_rows([staking])[0]["Type"] == "staking"
     assert to_summ_rows([interest])[0]["Type"] == "interest"
     assert to_summ_rows([income])[0]["Type"] == "income"
+
+
+@pytest.mark.parametrize("label", [
+    "daily_interest",
+    "return_interest",
+    "premium_migration_interest",
+    "premium_maturity_interest",
+])
+def test_pbr_interest_labels_map_to_interest(label):
+    """PBR の利息ラベルは貸暗号資産の利息として分類される。
+
+    _reward_type は label の部分文字列判定なので、うっかり "interest" を
+    含まないラベルに改名すると無言で "income" に降格する。ここで固定する。
+    """
+    tx = _tx(type=TxType.REWARD, label=label,
+             received_asset="BTC", received_amount=Decimal("0.001"))
+    assert to_summ_rows([tx])[0]["Type"] == "interest"
 
 
 def test_fiat_deposit_and_crypto_receive():
