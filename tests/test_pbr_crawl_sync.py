@@ -363,6 +363,54 @@ def test_official_import_year_rows_survive_sync(crawl_dir, db_path):
         ledger.close()
 
 
+def test_viewer_only_sync_without_crawl_results(crawl_dir, db_path):
+    """クロール結果が無くても、手動インポート分だけで取り込める。"""
+    (crawl_dir / ARTIFACT_NAME).unlink()
+    _write_viewer_transfers(crawl_dir, _OLD_DEPOSITS)
+
+    result = sync_pbr_crawl(db_path, crawl_dir)
+
+    assert result["parsed"] == 2
+    assert result["parsed_viewer"] == 2
+    assert result["crawl_window_start"] is None
+    assert any("クロール結果が無い" in w for w in result["sync_warnings"])
+    assert _sources(db_path) == {"pbr_crawl": 2}
+
+
+def test_viewer_only_sync_leaves_crawl_rows_alone(crawl_dir, db_path):
+    """クロール結果を消しても、取り込み済みのクロール期間は洗い替えない。"""
+    sync_pbr_crawl(db_path, crawl_dir)              # クロール分 3 件
+    (crawl_dir / ARTIFACT_NAME).unlink()
+    _write_viewer_transfers(crawl_dir, _OLD_DEPOSITS)
+
+    sync_pbr_crawl(db_path, crawl_dir)
+
+    assert _sources(db_path) == {"pbr_crawl": 5}    # 3 件はそのまま + 2 件追加
+
+
+def test_nothing_to_import_raises(crawl_dir, db_path):
+    (crawl_dir / ARTIFACT_NAME).unlink()
+    with pytest.raises(PbrSyncError) as exc:
+        sync_pbr_crawl(db_path, crawl_dir)
+    assert exc.value.code == "artifact_missing"
+
+
+def test_viewer_rows_after_crawl_window_are_imported(crawl_dir, db_path):
+    """クロール期間の後ろ側にある手動インポートも取り込む。"""
+    _write_viewer_transfers(crawl_dir, [
+        _transfer_row("2026-06-01", "BTC", "入庫", "0.5"),   # クロール期間より後
+    ])
+
+    result = sync_pbr_crawl(db_path, crawl_dir)
+
+    assert result["parsed_viewer"] == 1
+    ledger = Ledger(db_path)
+    try:
+        assert ledger.balances(source="pbr_crawl")["BTC"] == Decimal("0.50003")
+    finally:
+        ledger.close()
+
+
 def test_viewer_sync_is_idempotent(crawl_dir, db_path):
     _write_viewer_transfers(crawl_dir, _OLD_DEPOSITS)
     _write_viewer_ledger(crawl_dir, [

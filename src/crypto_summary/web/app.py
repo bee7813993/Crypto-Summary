@@ -1334,13 +1334,13 @@ def _pbr_sync_status(db_path: str) -> dict:
             "configured": False, "crawl_dir": None, "viewer_url": None,
             "crawl": None, "last_sync": last_sync,
             "last_purge": state.get("last_purge") or None,
-            "up_to_date": False,
+            "has_data": False, "blocked": False, "up_to_date": False,
         }
 
     crawl = read_crawl_status(directory)
-    synced_run = (last_sync or {}).get("run_id")
-    # 取り込み規則が変わっている場合は、同じクロール結果でも取り込み直す。
-    synced_format = (last_sync or {}).get("format_version", 1)
+    synced = last_sync or {}
+    # 取り込み規則が変わっている場合は、同じ入力でも取り込み直す。
+    synced_format = synced.get("format_version", 1)
     return {
         "configured": True,
         "crawl_dir": str(directory),
@@ -1348,10 +1348,17 @@ def _pbr_sync_status(db_path: str) -> dict:
         "crawl": crawl,
         "last_sync": last_sync,
         "last_purge": state.get("last_purge") or None,
-        # 未取り込みのクロール結果があるか（自動取り込みの判定に使う）。
+        # 取り込める材料があるか（クロール結果、または手動インポート）。
+        "has_data": crawl["has_data"],
+        # クロール結果が正常終了していない場合は自動取り込みを止める。
+        "blocked": crawl["blocked"],
+        # 未取り込みの変更があるか（自動取り込みの判定に使う）。
+        # クロール結果と手動インポートの両方の更新を指紋で見る。
         "up_to_date": bool(
-            crawl["healthy"]
-            and synced_run and synced_run == crawl["run_id"]
+            crawl["has_data"]
+            and not crawl["blocked"]
+            and synced.get("signature")
+            and synced["signature"] == crawl["signature"]
             and synced_format >= SYNC_FORMAT_VERSION
         ),
     }

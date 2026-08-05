@@ -2043,24 +2043,27 @@ function _renderPbrSyncCard() {
   const lastSync = _pbrStatus.last_sync;
   const lines = [];
 
-  if (!crawl.artifact_found) {
-    lines.push(`<span class="status-warn">${escapeHtml(t("pbr.noArtifact"))}</span>`);
-  } else {
+  if (crawl.artifact_found) {
     lines.push(escapeHtml(t("pbr.lastCrawl", {
       when: _fmtDateTime(crawl.finished_at) || "-",
       state: crawl.healthy ? t("pbr.crawlDone") : (crawl.phase || "?"),
     })));
+  } else if ((crawl.viewer_files || []).length) {
+    // クロール結果は無いが、手動インポートした分だけは取り込める。
+    lines.push(escapeHtml(t("pbr.viewerOnly")));
+  } else {
+    lines.push(`<span class="status-warn">${escapeHtml(t("pbr.noArtifact"))}</span>`);
   }
   lines.push(escapeHtml(lastSync
     ? t("pbr.lastSync", { when: _fmtDateTime(lastSync.synced_at) || "-", count: lastSync.parsed })
     : t("pbr.neverSynced")));
 
-  if (crawl.artifact_found && !_pbrStatus.up_to_date) {
-    const key = crawl.healthy ? "pbr.statusBehind" : "pbr.statusUnhealthy";
-    const cls = crawl.healthy ? "status-ok" : "status-warn";
-    lines.push(`<span class="${cls}">${escapeHtml(t(key))}</span>`);
-  } else if (_pbrStatus.up_to_date) {
+  if (_pbrStatus.up_to_date) {
     lines.push(`<span class="status-ok">${escapeHtml(t("pbr.statusUpToDate"))}</span>`);
+  } else if (_pbrStatus.blocked) {
+    lines.push(`<span class="status-warn">${escapeHtml(t("pbr.statusUnhealthy"))}</span>`);
+  } else if (_pbrStatus.has_data) {
+    lines.push(`<span class="status-ok">${escapeHtml(t("pbr.statusBehind"))}</span>`);
   }
   (crawl.warnings || []).forEach((w) => {
     lines.push(`<span class="status-warn">⚠ ${escapeHtml(w)}</span>`);
@@ -2163,10 +2166,11 @@ async function runPbrSync({ force = false, auto = false } = {}) {
 async function autoSyncPbrIfNeeded() {
   const status = await loadPbrSyncStatus();
   if (!status || !status.configured) return;
-  const crawl = status.crawl || {};
-  if (!crawl.healthy || status.up_to_date) return;
-  if (_pbrAutoSyncTried === crawl.run_id) return;
-  _pbrAutoSyncTried = crawl.run_id;
+  // 取り込める材料が無い / クロールが失敗している / 既に最新 なら何もしない。
+  if (!status.has_data || status.blocked || status.up_to_date) return;
+  const signature = (status.crawl || {}).signature;
+  if (_pbrAutoSyncTried === signature) return;
+  _pbrAutoSyncTried = signature;
 
   const banner = _showPbrBanner(t("pbr.autoSyncRunning"));
   const result = await runPbrSync({ auto: true });

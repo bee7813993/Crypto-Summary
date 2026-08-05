@@ -19,6 +19,7 @@ from crypto_summary.sources.jp.pbr_crawl import (  # noqa: E402
     ARTIFACT_NAME,
     ENV_VAR,
     MARKER_NAME,
+    VIEWER_TRANSFERS_NAME,
     sync_state_path,
 )
 from crypto_summary.web import app as web_app  # noqa: E402
@@ -125,6 +126,53 @@ def test_status_not_up_to_date_after_new_crawl(client, crawl_dir, monkeypatch):
     (crawl_dir / MARKER_NAME).write_text(
         json.dumps({**_MARKER, "runId": "2026-03-06T10:00:00.000Z"}), encoding="utf-8")
     assert client.get("/api/sync/pbr/status").json()["up_to_date"] is False
+
+
+def test_status_not_up_to_date_after_manual_import(client, crawl_dir, monkeypatch):
+    """クロールせずに手動インポートしただけでも、取り込み対象として検知する。"""
+    _configure(monkeypatch, crawl_dir)
+    client.post("/api/sync/pbr", json={})
+    assert client.get("/api/sync/pbr/status").json()["up_to_date"] is True
+
+    (crawl_dir / VIEWER_TRANSFERS_NAME).write_text(
+        json.dumps({"version": 2, "rows": [{
+            "日付": "2025-09-29", "通貨種別": "BTC", "区分": "入庫",
+            "数量": "0.1", "備考": "",
+        }]}, ensure_ascii=False), encoding="utf-8")
+
+    d = client.get("/api/sync/pbr/status").json()
+    assert d["up_to_date"] is False
+    assert d["blocked"] is False
+    assert d["has_data"] is True
+
+
+def test_status_without_crawl_but_with_manual_import(client, crawl_dir, monkeypatch):
+    """クロール結果が無くても、手動インポートがあれば取り込める状態と判定する。"""
+    _configure(monkeypatch, crawl_dir)
+    (crawl_dir / ARTIFACT_NAME).unlink()
+    (crawl_dir / VIEWER_TRANSFERS_NAME).write_text(
+        json.dumps({"version": 2, "rows": [{
+            "日付": "2025-09-29", "通貨種別": "BTC", "区分": "入庫",
+            "数量": "0.1", "備考": "",
+        }]}, ensure_ascii=False), encoding="utf-8")
+
+    d = client.get("/api/sync/pbr/status").json()
+    assert d["has_data"] is True
+    assert d["blocked"] is False       # クロールが無いだけなので止めない
+    assert d["up_to_date"] is False
+
+    r = client.post("/api/sync/pbr", json={})
+    assert r.status_code == 200
+    assert r.json()["parsed_viewer"] == 1
+
+
+def test_status_has_no_data_when_directory_is_empty(client, crawl_dir, monkeypatch):
+    _configure(monkeypatch, crawl_dir)
+    (crawl_dir / ARTIFACT_NAME).unlink()
+    (crawl_dir / MARKER_NAME).unlink()
+    d = client.get("/api/sync/pbr/status").json()
+    assert d["has_data"] is False
+    assert d["up_to_date"] is False
 
 
 def test_status_not_up_to_date_when_format_is_old(

@@ -348,9 +348,11 @@ class PbrViewerStateSource(CsvSourceAdapter):
     列構成なので、pbr_transfers / pbr_lending と同じ意味論で変換する。
 
     二重計上を避けるための 2 つの制約:
-      1. ``before`` より前の行だけを採用する。クロールがカバーする期間は
-         クロール結果を正とし、ビューア側の同じ期間は読まない。
-         （viewer_ledger.json はクロール分と手動分が混在した表示用の状態）
+      1. ``crawl_window`` の期間は読まない。クロールがカバーする期間は
+         クロール結果を正とする（viewer_ledger.json はクロール分と手動分が
+         混在した表示用の状態なので、そのまま全部読むと重複する）。
+         その期間の外側は前後どちらも取り込む。クロール結果が無ければ
+         (``crawl_window is None``) 全期間を取り込む。
       2. ``skip_years`` に入っている年は丸ごと読まない。呼び出し側が
          「公式 CSV を Crypto-Summary に直接取り込み済みの年」を渡す。
     """
@@ -359,24 +361,27 @@ class PbrViewerStateSource(CsvSourceAdapter):
         raise NotImplementedError("load_viewer_state を使ってください")
 
     def load_viewer_state(
-        self, crawl_dir: Path, *, before: datetime, skip_years: frozenset[int],
+        self, crawl_dir: Path, *,
+        crawl_window: tuple[datetime, datetime] | None,
+        skip_years: frozenset[int],
     ) -> list[CanonicalTx]:
         self._reset_skips()
         occurrences: dict[str, int] = {}
         txs: list[CanonicalTx] = []
         txs.extend(self._transfer_txs(
             _viewer_rows(crawl_dir / VIEWER_TRANSFERS_NAME),
-            before, skip_years, occurrences,
+            crawl_window, skip_years, occurrences,
         ))
         txs.extend(self._ledger_txs(
             _viewer_rows(crawl_dir / VIEWER_LEDGER_NAME),
-            before, skip_years, occurrences,
+            crawl_window, skip_years, occurrences,
         ))
         txs.sort(key=lambda t: (t.timestamp, t.id))
         return txs
 
     def _in_scope(
-        self, row: dict, before: datetime, skip_years: frozenset[int],
+        self, row: dict, crawl_window: tuple[datetime, datetime] | None,
+        skip_years: frozenset[int],
     ) -> str | None:
         """採用する行なら日付文字列を、対象外なら None を返す。"""
         raw_date = str(row.get("日付", "")).strip()
@@ -388,18 +393,20 @@ class PbrViewerStateSource(CsvSourceAdapter):
             # 公式 CSV を直接取り込み済みの年。二重計上になるので読まない。
             self._skip(f"official_import_exists:{day.year}")
             return None
-        if _utc_midnight(day.isoformat()) >= before:
-            # クロールがカバーする期間。クロール結果を正とする。
-            return None
+        if crawl_window is not None:
+            crawl_start, crawl_end = crawl_window
+            if crawl_start <= _utc_midnight(day.isoformat()) < crawl_end:
+                # クロールがカバーする期間。クロール結果を正とする。
+                return None
         return day.isoformat()
 
     def _transfer_txs(
-        self, rows: list[dict], before: datetime,
+        self, rows: list[dict], crawl_window: tuple[datetime, datetime] | None,
         skip_years: frozenset[int], occurrences: dict[str, int],
     ) -> list[CanonicalTx]:
         txs: list[CanonicalTx] = []
         for row in sorted(rows, key=_viewer_sort_key):
-            day_str = self._in_scope(row, before, skip_years)
+            day_str = self._in_scope(row, crawl_window, skip_years)
             if day_str is None:
                 continue
             kind = str(row.get("区分", "")).strip()
@@ -423,12 +430,12 @@ class PbrViewerStateSource(CsvSourceAdapter):
         return txs
 
     def _ledger_txs(
-        self, rows: list[dict], before: datetime,
+        self, rows: list[dict], crawl_window: tuple[datetime, datetime] | None,
         skip_years: frozenset[int], occurrences: dict[str, int],
     ) -> list[CanonicalTx]:
         txs: list[CanonicalTx] = []
         for row in sorted(rows, key=_viewer_sort_key):
-            day_str = self._in_scope(row, before, skip_years)
+            day_str = self._in_scope(row, crawl_window, skip_years)
             if day_str is None:
                 continue
             for column, label in _VIEWER_LEDGER_COLUMNS:
@@ -474,6 +481,15 @@ class PbrViewerStateSource(CsvSourceAdapter):
             fields["received_asset"] = asset
             fields["received_amount"] = Decimal(amount_str)
         return CanonicalTx(**fields)
+
+
+def _file_stamp(path: Path) -> str | None:
+    """ファイルの更新時刻とサイズ。内容が変わったかの判定に使う。"""
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    return f"{int(st.st_mtime)}:{st.st_size}"
 
 
 def _viewer_rows(path: Path) -> list[dict]:
@@ -568,6 +584,11 @@ def read_crawl_status(crawl_dir: str | Path) -> dict:
     marker = directory / MARKER_NAME
     warnings: list[str] = []
 
+    viewer_files = [
+        name for name in (VIEWER_TRANSFERS_NAME, VIEWER_LEDGER_NAME)
+        if (directory / name).is_file()
+    ]
+
     status: dict = {
         "crawl_dir": str(directory),
         "artifact_found": artifact.is_file(),
@@ -581,6 +602,7 @@ def read_crawl_status(crawl_dir: str | Path) -> dict:
         "end_date": None,
         "currencies": [],
         "crawl_warnings": [],
+        "viewer_files": viewer_files,
         "healthy": False,
         "warnings": warnings,
     }
@@ -635,6 +657,19 @@ def read_crawl_status(crawl_dir: str | Path) -> dict:
         warnings.append(
             f"{ARTIFACT_NAME} が最後のクロールより古いままです（実行中の可能性）"
         )
+
+    # 取り込める材料があるか。クロール結果が無くても、ビューアへの手動
+    # インポートだけで取り込めることがある。
+    status["has_data"] = bool(status["artifact_found"] or viewer_files)
+    # クロール結果があるのに正常終了していない場合だけ、自動取り込みを止める。
+    status["blocked"] = bool(status["artifact_found"] and not status["healthy"])
+
+    # 取り込み元の状態をまとめた指紋。前回同期時から変わっていれば取り込み直す。
+    status["signature"] = "|".join([
+        str(status["run_id"] or "-"),
+        _file_stamp(artifact) or "-",
+        *(f"{name}:{_file_stamp(directory / name) or '-'}" for name in viewer_files),
+    ])
 
     return status
 
@@ -742,54 +777,61 @@ def sync_pbr_crawl(
             "not_configured",
             f"クロール出力ディレクトリが未設定です（環境変数 {ENV_VAR}）。",
         )
-    artifact = directory / ARTIFACT_NAME
-    if not artifact.is_file():
-        raise PbrSyncError(
-            "artifact_missing",
-            f"{artifact} が見つかりません。クローラーを実行してください。",
-        )
 
     status = read_crawl_status(directory)
+    if not status["has_data"]:
+        raise PbrSyncError(
+            "artifact_missing",
+            f"{directory} に取り込めるデータがありません。"
+            f"クローラーを実行するか、クローラー画面から公式 CSV を"
+            f"インポートしてください。",
+        )
+
+    artifact = directory / ARTIFACT_NAME
     sync_warnings: list[str] = []
-    if not status["marker_found"] and not force:
-        raise PbrSyncError(
-            "marker_missing",
-            f"{MARKER_NAME} が見つからず、クロールの成否を確認できません。",
-        )
-    if status["marker_found"] and not status["healthy"] and not force:
-        raise PbrSyncError(
-            "unhealthy",
-            "直近のクロールが正常終了していません: "
-            + "／".join(status["warnings"] or ["原因不明"]),
-        )
-    if not status["healthy"]:
-        sync_warnings.append("ヘルスチェックを無視して同期しました（force）")
-        sync_warnings.extend(status["warnings"])
-
-    try:
-        data = read_artifact(artifact)
-    except (OSError, json.JSONDecodeError) as e:
-        raise PbrSyncError("artifact_invalid", f"{artifact} を読み取れません: {e}")
-
+    crawl_txs: list[CanonicalTx] = []
+    crawl_window: tuple[datetime, datetime] | None = None
+    data: dict = {}
     adapter = PbrCrawlJsonSource(SOURCE_ID)
-    try:
-        txs = adapter.load_data(data)
-    except ValueError as e:
-        raise PbrSyncError("artifact_invalid", str(e))
-    if not txs:
-        # 壊れた JSON で期間を空にしてしまわないための安全弁。
-        raise PbrSyncError(
-            "no_rows",
-            "クロール結果から取引を 1 件も取り出せませんでした（洗い替えは中止）。",
+
+    if status["artifact_found"]:
+        # ヘルスチェックはクロール結果を取り込むときだけ意味がある。
+        if not status["marker_found"] and not force:
+            raise PbrSyncError(
+                "marker_missing",
+                f"{MARKER_NAME} が見つからず、クロールの成否を確認できません。",
+            )
+        if status["marker_found"] and not status["healthy"] and not force:
+            raise PbrSyncError(
+                "unhealthy",
+                "直近のクロールが正常終了していません: "
+                + "／".join(status["warnings"] or ["原因不明"]),
+            )
+        if not status["healthy"]:
+            sync_warnings.append("ヘルスチェックを無視して同期しました（force）")
+            sync_warnings.extend(status["warnings"])
+
+        try:
+            data = read_artifact(artifact)
+        except (OSError, json.JSONDecodeError) as e:
+            raise PbrSyncError("artifact_invalid", f"{artifact} を読み取れません: {e}")
+        try:
+            crawl_txs = adapter.load_data(data)
+        except ValueError as e:
+            raise PbrSyncError("artifact_invalid", str(e))
+        if crawl_txs:
+            crawl_start = min(t.timestamp for t in crawl_txs)
+            last_row = max(t.timestamp for t in crawl_txs)
+            end_date = data.get("end_date")
+            end_ts = (_utc_midnight(end_date)
+                      if isinstance(end_date, str) and end_date else last_row)
+            crawl_window = (crawl_start, max(end_ts, last_row) + timedelta(days=1))
+    else:
+        sync_warnings.append(
+            "クロール結果が無いため、クローラー画面へ手動インポートした分だけを"
+            "取り込みました。"
         )
 
-    crawl_start = min(t.timestamp for t in txs)
-    last_row = max(t.timestamp for t in txs)
-    end_date = data.get("end_date")
-    end_ts = _utc_midnight(end_date) if isinstance(end_date, str) and end_date else last_row
-    end_exclusive = max(end_ts, last_row) + timedelta(days=1)
-
-    delete_sources = _delete_sources(end_exclusive)
     batch_id = f"batch:{uuid.uuid4().hex[:12]}"
 
     ledger = Ledger(db_path)
@@ -799,11 +841,22 @@ def sync_pbr_crawl(
             ledger.years_with_source(list(LEGACY_SOURCES)))
         viewer = PbrViewerStateSource(SOURCE_ID)
         viewer_txs = viewer.load_viewer_state(
-            directory, before=crawl_start, skip_years=official_years)
-        txs = txs + viewer_txs
+            directory, crawl_window=crawl_window, skip_years=official_years)
+        txs = crawl_txs + viewer_txs
+        if not txs:
+            # 壊れた入力で期間を空にしてしまわないための安全弁。
+            raise PbrSyncError(
+                "no_rows",
+                "取り込める取引が 1 件もありませんでした（洗い替えは中止）。",
+            )
 
-        start = min(crawl_start, *(t.timestamp for t in viewer_txs)) \
-            if viewer_txs else crawl_start
+        start = min(t.timestamp for t in txs)
+        end_exclusive = max(
+            max(t.timestamp for t in txs) + timedelta(days=1),
+            crawl_window[1] if crawl_window else datetime.min.replace(
+                tzinfo=timezone.utc),
+        )
+        last_row = max(t.timestamp for t in txs)
         skip_reasons = dict(adapter.skip_reasons)
         for reason, count in viewer.skip_reasons.items():
             skip_reasons[reason] = skip_reasons.get(reason, 0) + count
@@ -811,14 +864,17 @@ def sync_pbr_crawl(
         result: dict = {
             "ok": True,
             "dry_run": dry_run,
-            "forced": bool(force and not status["healthy"]),
+            "forced": bool(force and status["artifact_found"]
+                           and not status["healthy"]),
             "run_id": status["run_id"],
+            "signature": status["signature"],
             "crawl_dir": str(directory),
             "window": {
                 "start": start.isoformat(),
                 "end_exclusive": end_exclusive.isoformat(),
             },
-            "crawl_window_start": crawl_start.isoformat(),
+            "crawl_window_start": (
+                crawl_window[0].isoformat() if crawl_window else None),
             "parsed": len(txs),
             "parsed_viewer": len(viewer_txs),
             "skipped": adapter.skipped + viewer.skipped,
@@ -833,9 +889,11 @@ def sync_pbr_crawl(
         delete_specs: list[tuple[list[str], datetime, datetime]] = [
             ([SOURCE_ID], start, end_exclusive)
         ]
-        legacy = [s for s in delete_sources if s != SOURCE_ID]
-        if legacy:
-            delete_specs.append((legacy, crawl_start, end_exclusive))
+        if crawl_window:
+            legacy = [s for s in _delete_sources(crawl_window[1])
+                      if s != SOURCE_ID]
+            if legacy:
+                delete_specs.append((legacy, *crawl_window))
 
         counts: dict[str, int] = {}
         for sources, spec_start, spec_end in delete_specs:
@@ -872,6 +930,7 @@ def sync_pbr_crawl(
 
     _save_sync_state(db_path, last_sync={
         "run_id": status["run_id"],
+        "signature": status["signature"],
         "format_version": SYNC_FORMAT_VERSION,
         "synced_at": datetime.now(timezone.utc).isoformat(),
         "window": result["window"],
