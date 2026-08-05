@@ -7,6 +7,8 @@
 - 年次パージの入力検証
 """
 import json
+import os
+import time
 from pathlib import Path
 
 import pytest
@@ -19,6 +21,7 @@ from crypto_summary.sources.jp.pbr_crawl import (  # noqa: E402
     ARTIFACT_NAME,
     ENV_VAR,
     MARKER_NAME,
+    SETTLE_SECONDS,
     VIEWER_TRANSFERS_NAME,
     sync_state_path,
 )
@@ -51,12 +54,19 @@ _MARKER = {
 }
 
 
+def _write_settled(path: Path, text: str) -> None:
+    """ファイルを書き、更新直後の「整定待ち」に入らないよう時刻を戻す。"""
+    path.write_text(text, encoding="utf-8")
+    old = time.time() - SETTLE_SECONDS - 60
+    os.utime(path, (old, old))
+
+
 @pytest.fixture
 def crawl_dir(tmp_path: Path) -> Path:
     d = tmp_path / "outputs"
     d.mkdir()
-    (d / ARTIFACT_NAME).write_text(json.dumps(_ARTIFACT), encoding="utf-8")
-    (d / MARKER_NAME).write_text(json.dumps(_MARKER), encoding="utf-8")
+    _write_settled(d / ARTIFACT_NAME, json.dumps(_ARTIFACT))
+    _write_settled(d / MARKER_NAME, json.dumps(_MARKER))
     return d
 
 
@@ -74,6 +84,41 @@ def client(db_path, monkeypatch) -> TestClient:
 
 def _configure(monkeypatch, crawl_dir: Path) -> None:
     monkeypatch.setenv(ENV_VAR, str(crawl_dir))
+
+
+# ---- 配備まわり ----
+
+def test_health_needs_no_auth(client):
+    """クラウドのヘルスチェックはログイン前に叩かれるので認証を通さない。"""
+    r = client.get("/api/health")
+    assert r.status_code == 200
+    assert r.json() == {"status": "ok"}
+
+
+def test_session_key_is_generated_and_persisted(tmp_path, monkeypatch):
+    """SECRET_KEY 未設定でも固定値へフォールバックせず、生成して保存する。"""
+    from crypto_summary.web.app import _session_secret
+
+    monkeypatch.delenv("SECRET_KEY", raising=False)
+    base = tmp_path / "data"
+    base.mkdir()
+
+    first = _session_secret(str(base))
+    assert len(first) == 64
+    assert "dev-secret" not in first
+    # 再起動してもログインが切れないよう、同じ鍵を読み直す
+    assert _session_secret(str(base)) == first
+    assert (base / "_session_key").read_text(encoding="utf-8").strip() == first
+
+
+def test_session_key_prefers_env(tmp_path, monkeypatch):
+    from crypto_summary.web.app import _session_secret
+
+    monkeypatch.setenv("SECRET_KEY", "explicit-key")
+    base = tmp_path / "data"
+    base.mkdir()
+    assert _session_secret(str(base)) == "explicit-key"
+    assert not (base / "_session_key").exists()
 
 
 # ---- 未設定 ----
@@ -123,8 +168,8 @@ def test_status_not_up_to_date_after_new_crawl(client, crawl_dir, monkeypatch):
     """新しいクロール結果があれば up_to_date が False に戻る（自動取り込みの判定）。"""
     _configure(monkeypatch, crawl_dir)
     client.post("/api/sync/pbr", json={})
-    (crawl_dir / MARKER_NAME).write_text(
-        json.dumps({**_MARKER, "runId": "2026-03-06T10:00:00.000Z"}), encoding="utf-8")
+    _write_settled(crawl_dir / MARKER_NAME,
+                   json.dumps({**_MARKER, "runId": "2026-03-06T10:00:00.000Z"}))
     assert client.get("/api/sync/pbr/status").json()["up_to_date"] is False
 
 
@@ -134,11 +179,11 @@ def test_status_not_up_to_date_after_manual_import(client, crawl_dir, monkeypatc
     client.post("/api/sync/pbr", json={})
     assert client.get("/api/sync/pbr/status").json()["up_to_date"] is True
 
-    (crawl_dir / VIEWER_TRANSFERS_NAME).write_text(
-        json.dumps({"version": 2, "rows": [{
+    _write_settled(crawl_dir / VIEWER_TRANSFERS_NAME,
+                       json.dumps({"version": 2, "rows": [{
             "日付": "2025-09-29", "通貨種別": "BTC", "区分": "入庫",
             "数量": "0.1", "備考": "",
-        }]}, ensure_ascii=False), encoding="utf-8")
+        }]}, ensure_ascii=False))
 
     d = client.get("/api/sync/pbr/status").json()
     assert d["up_to_date"] is False
@@ -150,11 +195,11 @@ def test_status_without_crawl_but_with_manual_import(client, crawl_dir, monkeypa
     """クロール結果が無くても、手動インポートがあれば取り込める状態と判定する。"""
     _configure(monkeypatch, crawl_dir)
     (crawl_dir / ARTIFACT_NAME).unlink()
-    (crawl_dir / VIEWER_TRANSFERS_NAME).write_text(
-        json.dumps({"version": 2, "rows": [{
+    _write_settled(crawl_dir / VIEWER_TRANSFERS_NAME,
+                       json.dumps({"version": 2, "rows": [{
             "日付": "2025-09-29", "通貨種別": "BTC", "区分": "入庫",
             "数量": "0.1", "備考": "",
-        }]}, ensure_ascii=False), encoding="utf-8")
+        }]}, ensure_ascii=False))
 
     d = client.get("/api/sync/pbr/status").json()
     assert d["has_data"] is True
@@ -224,9 +269,9 @@ def test_sync_dry_run_changes_nothing(client, crawl_dir, db_path, monkeypatch):
 
 def test_unhealthy_crawl_is_409_then_force_succeeds(client, crawl_dir, monkeypatch):
     _configure(monkeypatch, crawl_dir)
-    (crawl_dir / MARKER_NAME).write_text(
-        json.dumps({**_MARKER, "phase": "partial", "failedCurrencies": ["ETH"]}),
-        encoding="utf-8")
+    _write_settled(crawl_dir / MARKER_NAME,
+                   json.dumps({**_MARKER, "phase": "partial",
+                               "failedCurrencies": ["ETH"]}))
 
     r = client.post("/api/sync/pbr", json={})
     assert r.status_code == 409

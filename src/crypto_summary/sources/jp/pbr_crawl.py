@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 import uuid
 from datetime import date as _date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
@@ -72,6 +73,11 @@ LEGACY_SOURCES: tuple[str, ...] = ("pbr",)
 
 #: 残高照合の許容誤差(丸め差)
 RECON_TOLERANCE = Decimal("0.000001")
+
+#: 取り込み元ファイルの更新からこの秒数は自動取り込みを見送る。
+#: ファイル同期でディレクトリへ運ぶ場合、複数ファイルが順に届くため。
+#: 手動の同期ボタン・CLI はこの待ちを無視する（利用者が明示的に選んでいる）。
+SETTLE_SECONDS = 30
 
 #: 取り込み結果の形式。取り込む対象や変換規則を変えたらこれを上げる。
 #: 同じクロール結果でも結果が変わるため、記録済みの版が古ければ再同期する。
@@ -492,6 +498,24 @@ def _file_stamp(path: Path) -> str | None:
     return f"{int(st.st_mtime)}:{st.st_size}"
 
 
+def _is_settling(paths: list[Path], within_seconds: int = SETTLE_SECONDS) -> bool:
+    """直近に更新されたファイルがあるか。
+
+    ファイル同期でディレクトリへ運ぶ運用では、複数ファイルが順に届く。
+    片方だけ新しい状態や書き込み途中を読まないよう、更新直後は待つ。
+    ローカルのクロール直後にも効くが、クロールは数分かかるので実害はない。
+    """
+    now = time.time()
+    for path in paths:
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            continue
+        if 0 <= now - mtime < within_seconds:
+            return True
+    return False
+
+
 def _viewer_rows(path: Path) -> list[dict]:
     """ビューアの状態ファイルを読む。
 
@@ -661,8 +685,21 @@ def read_crawl_status(crawl_dir: str | Path) -> dict:
     # 取り込める材料があるか。クロール結果が無くても、ビューアへの手動
     # インポートだけで取り込めることがある。
     status["has_data"] = bool(status["artifact_found"] or viewer_files)
-    # クロール結果があるのに正常終了していない場合だけ、自動取り込みを止める。
-    status["blocked"] = bool(status["artifact_found"] and not status["healthy"])
+
+    # ファイル同期（Syncthing 等）で運ぶ場合、複数のファイルが順に届く。
+    # 届いた直後は片方だけ新しい・書き込み途中ということがあるので、
+    # 更新が落ち着くまで自動取り込みを見送る。
+    status["settling"] = _is_settling(
+        [artifact, *(directory / name for name in viewer_files)])
+    if status["settling"]:
+        warnings.append("取り込み元のファイルが更新された直後です（整定待ち）")
+
+    # 自動取り込みを止める条件。クロール結果があるのに正常終了していない場合と、
+    # ファイルがまだ落ち着いていない場合。
+    status["blocked"] = bool(
+        (status["artifact_found"] and not status["healthy"])
+        or status["settling"]
+    )
 
     # 取り込み元の状態をまとめた指紋。前回同期時から変わっていれば取り込み直す。
     status["signature"] = "|".join([

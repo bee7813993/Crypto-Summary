@@ -8,6 +8,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import secrets
 import tempfile
 import uuid
 from datetime import date, datetime, timedelta, timezone
@@ -1010,6 +1011,38 @@ def _save_server_config(base_dir: str, data: dict) -> None:
         pass
 
 
+_SESSION_KEY_FILE = "_session_key"
+
+
+def _session_secret(base_dir: str) -> str:
+    """セッション署名鍵を返す。env が無ければ生成して base_dir に保存する。
+
+    固定の既定値にフォールバックすると、公開した瞬間に誰でもセッション Cookie を
+    偽造できてしまう。env が無い場合はランダムに生成し、再起動でログインが
+    切れないようファイルへ残す（ファイルは 0600、data ディレクトリ内）。
+    """
+    env_key = os.environ.get("SECRET_KEY", "").strip()
+    if env_key:
+        return env_key
+
+    path = Path(base_dir) / _SESSION_KEY_FILE
+    try:
+        saved = path.read_text(encoding="utf-8").strip()
+        if saved:
+            return saved
+    except OSError:
+        pass
+
+    key = secrets.token_hex(32)
+    try:
+        path.write_text(key, encoding="utf-8")
+        os.chmod(path, 0o600)
+    except OSError:
+        # 書けない場合もその場限りの鍵で動かす（再起動でログインは切れる）。
+        pass
+    return key
+
+
 def _needs_first_run_setup(base_dir: str) -> bool:
     """初回セットアップが必要かどうかを返す。
 
@@ -1350,13 +1383,13 @@ def _pbr_sync_status(db_path: str) -> dict:
         "last_purge": state.get("last_purge") or None,
         # 取り込める材料があるか（クロール結果、または手動インポート）。
         "has_data": crawl["has_data"],
-        # クロール結果が正常終了していない場合は自動取り込みを止める。
+        # 自動取り込みを止めるべきか（クロールが異常終了 / ファイルが整定中）。
+        # 手動の同期ボタンはこれに関係なく実行できる。
         "blocked": crawl["blocked"],
-        # 未取り込みの変更があるか（自動取り込みの判定に使う）。
-        # クロール結果と手動インポートの両方の更新を指紋で見る。
+        # 取り込み済みの内容と一致しているか。クロール結果と手動インポートの
+        # 両方の更新を指紋で見る。blocked とは独立（整定中でも内容が同じなら最新）。
         "up_to_date": bool(
             crawl["has_data"]
-            and not crawl["blocked"]
             and synced.get("signature")
             and synced["signature"] == crawl["signature"]
             and synced_format >= SYNC_FORMAT_VERSION
@@ -1590,8 +1623,14 @@ def create_app(
         # Google OAuth セッション + ルート
         from starlette.middleware.sessions import SessionMiddleware
 
-        secret_key = os.environ.get("SECRET_KEY", "dev-secret-change-me-in-production")
-        app.add_middleware(SessionMiddleware, secret_key=secret_key, https_only=False)
+        secret_key = _session_secret(_base_dir)
+        # 公開 URL が https なら Cookie に Secure を付ける。付けないと、
+        # 何らかの理由で http に落ちたときにセッションが平文で流れる。
+        https_only = os.environ.get("BASE_URL", "").strip().startswith("https://")
+        app.add_middleware(
+            SessionMiddleware, secret_key=secret_key, https_only=https_only,
+            same_site="lax",
+        )
 
         from .auth import require_user, router as auth_router
 
@@ -2023,6 +2062,15 @@ def create_app(
 
         _save_server_config(_base_dir, cfg)
         return {"ok": True, "key_set": bool(cs_key)}
+
+    @app.get("/api/health")
+    def health() -> dict:
+        """死活監視用（認証不要）。
+
+        クラウドのヘルスチェックはログイン前に叩かれるので、認証を通さない。
+        個人情報は返さず、プロセスが応答できることだけを示す。
+        """
+        return {"status": "ok"}
 
     @app.get("/api/meta")
     def meta(request: Request) -> dict:

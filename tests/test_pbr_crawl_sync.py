@@ -10,6 +10,8 @@
 - 残高照合は情報提供のみ（同期は失敗させない）
 """
 import json
+import os
+import time
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -22,6 +24,7 @@ from crypto_summary.sources.jp.pbr_crawl import (
     ARTIFACT_NAME,
     ENV_VAR,
     MARKER_NAME,
+    SETTLE_SECONDS,
     VIEWER_LEDGER_NAME,
     VIEWER_TRANSFERS_NAME,
     PbrSyncError,
@@ -69,14 +72,23 @@ def _marker(**overrides) -> dict:
     return data
 
 
+def _write_settled(path: Path, text: str) -> None:
+    """ファイルを書き、更新直後の「整定待ち」に入らないよう時刻を戻す。
+
+    実運用でファイルを見るのは大抵は書かれてしばらく後なので、そちらを既定に
+    してテストを決定的にする。整定待ち自体は専用のテストで確認する。
+    """
+    path.write_text(text, encoding="utf-8")
+    old = time.time() - SETTLE_SECONDS - 60
+    os.utime(path, (old, old))
+
+
 @pytest.fixture
 def crawl_dir(tmp_path: Path) -> Path:
     d = tmp_path / "outputs"
     d.mkdir()
-    (d / ARTIFACT_NAME).write_text(
-        json.dumps(_artifact(), ensure_ascii=False), encoding="utf-8")
-    (d / MARKER_NAME).write_text(
-        json.dumps(_marker()), encoding="utf-8")
+    _write_settled(d / ARTIFACT_NAME, json.dumps(_artifact(), ensure_ascii=False))
+    _write_settled(d / MARKER_NAME, json.dumps(_marker()))
     return d
 
 
@@ -86,25 +98,24 @@ def db_path(tmp_path: Path) -> Path:
 
 
 def _write_artifact(crawl_dir: Path, **sections) -> None:
-    (crawl_dir / ARTIFACT_NAME).write_text(
-        json.dumps(_artifact(**sections), ensure_ascii=False), encoding="utf-8")
+    _write_settled(crawl_dir / ARTIFACT_NAME,
+                   json.dumps(_artifact(**sections), ensure_ascii=False))
 
 
 def _write_marker(crawl_dir: Path, **overrides) -> None:
-    (crawl_dir / MARKER_NAME).write_text(
-        json.dumps(_marker(**overrides)), encoding="utf-8")
+    _write_settled(crawl_dir / MARKER_NAME, json.dumps(_marker(**overrides)))
 
 
 def _write_viewer_transfers(crawl_dir: Path, rows: list[dict], *, wrap=True) -> None:
     body = {"version": 2, "rows": rows} if wrap else rows
-    (crawl_dir / VIEWER_TRANSFERS_NAME).write_text(
-        json.dumps(body, ensure_ascii=False), encoding="utf-8")
+    _write_settled(crawl_dir / VIEWER_TRANSFERS_NAME,
+                   json.dumps(body, ensure_ascii=False))
 
 
 def _write_viewer_ledger(crawl_dir: Path, rows: list[dict], *, wrap=True) -> None:
     body = {"version": 2, "rows": rows} if wrap else rows
-    (crawl_dir / VIEWER_LEDGER_NAME).write_text(
-        json.dumps(body, ensure_ascii=False), encoding="utf-8")
+    _write_settled(crawl_dir / VIEWER_LEDGER_NAME,
+                   json.dumps(body, ensure_ascii=False))
 
 
 def _transfer_row(date, currency, kubun, amount) -> dict:
@@ -175,6 +186,30 @@ def test_read_crawl_status_partial_is_unhealthy(crawl_dir):
     status = read_crawl_status(crawl_dir)
     assert status["healthy"] is False
     assert any("ETH" in w for w in status["warnings"])
+
+
+def test_settling_blocks_auto_sync_but_not_manual(crawl_dir, db_path):
+    """ファイル同期で届いた直後は自動取り込みを見送る（手動は実行できる）。"""
+    now = time.time()
+    for name in (ARTIFACT_NAME, MARKER_NAME):
+        os.utime(crawl_dir / name, (now, now))
+
+    status = read_crawl_status(crawl_dir)
+    assert status["settling"] is True
+    assert status["blocked"] is True
+    assert any("整定" in w for w in status["warnings"])
+
+    # 手動の同期は整定待ちに関係なく実行できる
+    assert sync_pbr_crawl(db_path, crawl_dir)["parsed"] == 3
+
+
+def test_not_settling_once_files_are_old(crawl_dir):
+    old = time.time() - SETTLE_SECONDS - 60
+    for name in (ARTIFACT_NAME, MARKER_NAME):
+        os.utime(crawl_dir / name, (old, old))
+    status = read_crawl_status(crawl_dir)
+    assert status["settling"] is False
+    assert status["blocked"] is False
 
 
 def test_read_crawl_status_missing_dir(tmp_path):

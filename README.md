@@ -237,7 +237,7 @@ cp .env.example .env
 | 変数 | 用途 |
 |---|---|
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | Google OAuth 認証 |
-| `SECRET_KEY` | セッション署名キー（`python -c "import secrets; print(secrets.token_hex(32))"` で生成） |
+| `SECRET_KEY` | セッション署名キー。未設定なら `DATA_DIR/_session_key` に自動生成される（明示する場合は `python -c "import secrets; print(secrets.token_hex(32))"`） |
 | `CS_SECRET_KEY` | API キー暗号化マスター鍵（`crypto-summary account gen-key` で生成）。Web 画面からのキー登録に必要 |
 | `BASE_URL` | アプリの公開 URL |
 | `COINGECKO_API_KEY` | CoinGecko Demo キー（任意・レート制限緩和） |
@@ -251,6 +251,23 @@ docker compose up -d --build
 ```
 
 > ⚠️ `.env` の変更を反映するには `docker compose down && docker compose up -d` が必要です（`restart` では再読み込みされません）。
+
+---
+
+## クラウドで動かす
+
+アプリだけをクラウドのコンテナサービスへ置き、PBR Lending のクローラーは手元に
+残して、取得データ（`outputs`）をファイル同期で運ぶ構成にできます。
+
+- 手順と注意点: [`docs/deploy.md`](./docs/deploy.md)
+- 構成例: [`docker-compose.cloud.yml`](./docker-compose.cloud.yml)
+
+台帳が SQLite なので、**永続ブロックボリュームが付くサービス**（Fly.io / Render /
+Railway / 小さな VM）を選び、インスタンスは 1 台に固定します。ファイルシステムが
+揮発する Cloud Run や App Runner はそのままでは使えません。
+
+クローラーをクラウドに置かないのは、クロールが PBR Lending への手動ログインを
+伴う対話作業であり、noVNC が口座にログイン済みブラウザの全操作権限を与えるためです。
 
 ---
 

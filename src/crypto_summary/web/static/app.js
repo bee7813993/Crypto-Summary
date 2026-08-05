@@ -2060,6 +2060,8 @@ function _renderPbrSyncCard() {
 
   if (_pbrStatus.up_to_date) {
     lines.push(`<span class="status-ok">${escapeHtml(t("pbr.statusUpToDate"))}</span>`);
+  } else if (crawl.settling) {
+    lines.push(`<span class="status-ok">${escapeHtml(t("pbr.statusSettling"))}</span>`);
   } else if (_pbrStatus.blocked) {
     lines.push(`<span class="status-warn">${escapeHtml(t("pbr.statusUnhealthy"))}</span>`);
   } else if (_pbrStatus.has_data) {

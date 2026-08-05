@@ -1,0 +1,62 @@
+# クラウドのコンテナサービス向けの構成。
+#
+# ローカル版 (docker-compose.yml) との違い:
+#   - クローラー (PBRLending-History-Check) は含めない。
+#     クロールは PBR Lending への手動ログインが要る対話作業で、noVNC は
+#     口座にログイン済みブラウザの全操作権限を与えるため、クラウドに置かない。
+#     クローラーは手元で動かし、その outputs をファイル同期でここへ運ぶ。
+#   - ホストのディレクトリではなく名前付きボリュームを使う。
+#   - PBR_CRAWL_DIR をデータボリュームの中に置く。ファイル同期の宛先がここ。
+#
+# 使い方:
+#   docker compose -f docker-compose.cloud.yml up -d --build
+#
+# 実サービスへ載せる場合は、このファイルをそのまま使うのではなく
+# 「必要な設定の一覧」として読んでください（多くのサービスは compose を
+# 直接受け付けず、レジストリへ push したイメージとサービス定義を使います）。
+# 詳細は docs/deploy.md を参照。
+
+services:
+  app:
+    build: .
+    image: crypto-summary-app:latest
+    ports:
+      - "8000:8000"
+    volumes:
+      # 台帳・設定・セッション鍵・同期記録。バックアップ対象はここだけ。
+      # PBR のクロール結果もこの中 (/data/pbr-outputs) へ同期する。
+      - cs-data:/data
+    environment:
+      # --- 必須 ---
+      # 公開 URL。OAuth のリダイレクト URI の組み立てと、
+      # https のときセッション Cookie に Secure を付ける判定に使う。
+      - "BASE_URL=${BASE_URL:?公開URLを設定してください（例 https://cs.example.com）}"
+      - DATA_DIR=/data
+      # セッション署名鍵。未設定なら /data/_session_key に自動生成される。
+      # 複数環境で同じセッションを使いたい場合だけ明示する。
+      - SECRET_KEY=${SECRET_KEY:-}
+
+      # --- ログイン（マルチユーザー） ---
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET:-}
+      - ADMIN_EMAILS=${ADMIN_EMAILS:-}
+
+      # --- API キーの暗号化マスター鍵 ---
+      - CS_SECRET_KEY=${CS_SECRET_KEY:-}
+
+      # --- 任意 ---
+      - COINGECKO_API_KEY=${COINGECKO_API_KEY:-}
+
+      # --- PBR Lending 連携 ---
+      # ファイル同期でクローラーの outputs を運び込む先。
+      # 手元のクローラー側 outputs ディレクトリと同期させる。
+      - PBR_CRAWL_DIR=/data/pbr-outputs
+      # クローラーのビューアは手元にあるので、利用者のブラウザから見える URL。
+      # 手元で見るだけなら既定 (http://127.0.0.1:4173) のままでよい。
+      # ただしこのアプリを https で公開している場合、http の iframe は
+      # mixed content でブロックされる（「新しいタブで開く」は使える）。
+      - PBR_VIEWER_URL=${PBR_VIEWER_URL:-}
+    restart: unless-stopped
+
+volumes:
+  cs-data:
