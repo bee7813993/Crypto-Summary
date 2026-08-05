@@ -35,6 +35,8 @@ from ..sources.api.bybit import BybitApiSource
 from ..sources.csv_import import EXCHANGE_SOURCES
 from ..sources.jp.pbr_crawl import (
     ENV_VAR as _PBR_CRAWL_ENV,
+    LEGACY_SOURCES as PBR_LEGACY_SOURCES,
+    SOURCE_ID as PBR_SOURCE_ID,
     SYNC_FORMAT_VERSION,
     PbrSyncError,
     load_sync_state,
@@ -112,7 +114,14 @@ _DEFAULT_PREFS: dict[str, Any] = {
     # PBR Lending の日次利息を残高・ポートフォリオ・エクスポートに含めるか。
     # 取引自体は常に取り込まれ、ここでは算入するかだけを切り替える。
     "include_daily_interest": True,
+    # PBR Lending クローラー連携の UI を出すか。
+    # None = 自動判定（その利用者に PBR のデータがあれば出す）。
+    # 全員が PBR Lending の口座を持つとは限らないので、既定では出さない。
+    "pbr_sync_enabled": None,
 }
+
+#: None（自動）を取りうる設定。bool へ丸めずに保存する。
+_TRISTATE_PREFS = frozenset({"pbr_sync_enabled"})
 
 _prefs_cache: dict[str, dict[str, Any]] = {}
 
@@ -144,8 +153,11 @@ def _save_prefs(db_path: str, prefs: dict[str, Any]) -> dict[str, Any]:
     """表示設定を保存してキャッシュを更新する。既知のキーのみ受け付ける。"""
     merged = dict(_load_prefs(db_path))
     for key in _DEFAULT_PREFS:
-        if key in prefs:
-            merged[key] = bool(prefs[key])
+        if key not in prefs:
+            continue
+        value = prefs[key]
+        # 三値の設定は None（自動）をそのまま残す
+        merged[key] = None if (key in _TRISTATE_PREFS and value is None) else bool(value)
     _prefs_cache[db_path] = merged
     _prefs_path(db_path).write_text(
         json.dumps(merged, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -1354,17 +1366,50 @@ def _pbr_viewer_url() -> str:
     return os.environ.get(_PBR_VIEWER_ENV, "").strip() or _DEFAULT_PBR_VIEWER_URL
 
 
+def _has_pbr_data(db_path: str) -> bool:
+    """その利用者の台帳に PBR Lending の取引があるか。"""
+    ledger = Ledger(db_path)
+    try:
+        return any(ledger.count(src) for src in (PBR_SOURCE_ID, *PBR_LEGACY_SOURCES))
+    finally:
+        ledger.close()
+
+
+def _pbr_enabled(db_path: str, has_data: bool | None = None) -> bool:
+    """この利用者に PBR Lending 連携の UI を出すか。
+
+    全員が PBR Lending の口座を持つわけではないので、既定では出さない。
+    設定が未指定（None）のときは、既に PBR のデータがあるかで判断する
+    （以前から使っている利用者は設定し直さなくてよい）。
+    """
+    pref = _load_prefs(db_path).get("pbr_sync_enabled")
+    if pref is not None:
+        return bool(pref)
+    return _has_pbr_data(db_path) if has_data is None else has_data
+
+
 def _pbr_sync_status(db_path: str) -> dict:
     """クロール結果の状態と最終同期の記録を返す。
 
-    未設定はエラーにしない（UI 側がカードとタブごと隠す）。
+    連携が使えない・使わない場合もエラーにしない（UI 側が表示を落とす）。
+      available : サーバー側にクロール出力ディレクトリの設定があるか
+      enabled   : この利用者が連携を使うか（利用者ごとの設定）
+      configured: 両方満たすか。UI はこれでカードとタブの表示を決める
     """
     directory = resolve_crawl_dir()
     state = load_sync_state(db_path)
     last_sync = state.get("last_sync") or None
-    if directory is None:
+    available = directory is not None
+    # PBR の取引を持っているか。連携の既定値の判断と、PBR 固有の設定を
+    # 出すかどうかの判断に使う（口座を持たない利用者には出さない）。
+    has_pbr_data = _has_pbr_data(db_path)
+    enabled = _pbr_enabled(db_path, has_pbr_data) if available else False
+
+    if not available or not enabled:
         return {
-            "configured": False, "crawl_dir": None, "viewer_url": None,
+            "available": available, "enabled": enabled, "configured": False,
+            "has_pbr_data": has_pbr_data,
+            "crawl_dir": None, "viewer_url": None,
             "crawl": None, "last_sync": last_sync,
             "last_purge": state.get("last_purge") or None,
             "has_data": False, "blocked": False, "up_to_date": False,
@@ -1375,7 +1420,10 @@ def _pbr_sync_status(db_path: str) -> dict:
     # 取り込み規則が変わっている場合は、同じ入力でも取り込み直す。
     synced_format = synced.get("format_version", 1)
     return {
+        "available": True,
+        "enabled": True,
         "configured": True,
+        "has_pbr_data": has_pbr_data,
         "crawl_dir": str(directory),
         "viewer_url": _pbr_viewer_url(),
         "crawl": crawl,

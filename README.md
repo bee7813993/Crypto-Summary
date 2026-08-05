@@ -130,12 +130,21 @@ PBR Lending は**当年分の公式取引履歴 CSV を出さない**。当年�
 クローラー [PBRLending-History-Check](https://github.com/) で取得し、その正規化 JSON
 （`outputs/pbrlending_crawled.latest.json`）を直接読み込んで取り込む。
 
-`.env` にクローラーの出力ディレクトリを設定すると連携が有効になる:
+連携を使うには 2 つの条件が要る。
+
+**1. サーバー側**: `.env` にクローラーの出力ディレクトリを設定する。
 
 ```bash
 PBR_CRAWL_DIR=J:/Git/PBRLending-History-Check/outputs
 PBR_VIEWER_URL=http://127.0.0.1:4173   # 省略可（既定値）
 ```
+
+**2. 利用者側**: インポート画面の「集計の設定」で
+「PBR Lending クローラー連携を使う」をオンにする。
+
+全員が PBR Lending の口座を持つわけではないので、**既定では連携の UI を出さない**。
+すでに PBR のデータがある利用者は、設定しなくても自動的に有効になる。
+オフにしても取り込み済みのデータは残る（表示の切り替えだけ）。
 
 - 画面を開いたときに**新しいクロール結果があれば自動で取り込む**
 - インポート画面の「PBR Lending クローラー同期」カードから手動実行もできる

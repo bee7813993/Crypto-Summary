@@ -221,6 +221,9 @@ var TRANSLATIONS = {
     "prefs.dailyInterestHint": "PBR Lending の新システムは利息を日ごとに付与します。オフにすると取引履歴には残りますが、残高と税務エクスポートから除外されます。",
     "prefs.saved": "設定を保存しました",
     "prefs.saveFail": "設定の保存に失敗しました: {error}",
+    "prefs.pbrSync": "PBR Lending クローラー連携を使う",
+    "prefs.pbrSyncHint": "オンにすると、インポート画面に同期カードが、サイドバーに「PBR クローラー」タブが出ます。オフにしても取り込み済みのデータは残ります。",
+    "prefs.none": "切り替えられる設定はありません。",
 
     // PBR Lending クローラー連携
     "nav.pbrViewer": "PBR クローラー",
@@ -577,6 +580,9 @@ var TRANSLATIONS = {
     "prefs.dailyInterestHint": "PBR Lending's new system grants interest daily. Turning this off keeps the rows in the transaction list but excludes them from balances and tax exports.",
     "prefs.saved": "Settings saved",
     "prefs.saveFail": "Failed to save settings: {error}",
+    "prefs.pbrSync": "Use the PBR Lending crawler integration",
+    "prefs.pbrSyncHint": "Turning this on shows the sync card on the import page and a \"PBR crawler\" tab in the sidebar. Turning it off keeps any data already imported.",
+    "prefs.none": "There are no settings to change.",
 
     // PBR Lending crawler integration
     "nav.pbrViewer": "PBR crawler",

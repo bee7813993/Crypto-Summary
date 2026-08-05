@@ -2017,6 +2017,7 @@ async function loadPbrSyncStatus() {
   }
   _renderPbrNav();
   _renderPbrSyncCard();
+  _renderPrefsVisibility();
   return _pbrStatus;
 }
 
@@ -2236,18 +2237,41 @@ async function loadPrefs() {
     // 読めない場合は既定（含める）のまま
     box.checked = true;
   }
+  _renderPrefsVisibility();
 }
 
-document.getElementById("prefs-daily-interest")?.addEventListener("change", async (ev) => {
-  const box = ev.currentTarget;
+// PBR Lending を使っていない利用者には、PBR 固有の設定を出さない。
+// 表示の判断材料は /api/sync/pbr/status（利用者ごとの状態）から取る。
+function _renderPrefsVisibility() {
+  const st = _pbrStatus || {};
+  const daily = document.getElementById("prefs-daily-interest-row");
+  const pbr = document.getElementById("prefs-pbr-sync-row");
+  const empty = document.getElementById("prefs-empty");
+  if (!daily || !pbr || !empty) return;
+
+  // 日次利息の設定は PBR のデータがある人にだけ意味がある
+  const showDaily = !!st.has_pbr_data;
+  // 連携の入切は、サーバー側にクロール出力の設定があるときだけ選べる
+  const showPbr = !!st.available;
+
+  daily.classList.toggle("hidden", !showDaily);
+  pbr.classList.toggle("hidden", !showPbr);
+  empty.classList.toggle("hidden", showDaily || showPbr);
+
+  const box = document.getElementById("prefs-pbr-sync");
+  if (box) box.checked = !!st.enabled;
+}
+
+// 設定を保存し、結果を表示する（成功時は onSaved を呼ぶ）。
+async function _savePref(key, value, box, onSaved) {
   const result = document.getElementById("prefs-result");
-  const desired = box.checked;
+  const previous = !box.checked;
   box.disabled = true;
   try {
     const resp = await fetch("/api/prefs", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ prefs: { include_daily_interest: desired } }),
+      body: JSON.stringify({ prefs: { [key]: value } }),
     });
     if (!resp.ok) {
       const err = await resp.json().catch(() => ({}));
@@ -2256,17 +2280,30 @@ document.getElementById("prefs-daily-interest")?.addEventListener("change", asyn
     result.className = "settings-result ok";
     result.textContent = t("prefs.saved");
     result.classList.remove("hidden");
-    // 残高が変わるので集計を作り直す
-    loadImportAccountsTable();
-    _txAccountsLoaded = false;
+    if (onSaved) await onSaved();
   } catch (e) {
-    box.checked = !desired;
+    box.checked = previous;
     result.className = "settings-result err";
     result.textContent = t("prefs.saveFail", { error: e.message });
     result.classList.remove("hidden");
   } finally {
     box.disabled = false;
   }
+}
+
+document.getElementById("prefs-daily-interest")?.addEventListener("change", (ev) => {
+  const box = ev.currentTarget;
+  _savePref("include_daily_interest", box.checked, box, () => {
+    // 残高が変わるので集計を作り直す
+    loadImportAccountsTable();
+    _txAccountsLoaded = false;
+  });
+});
+
+document.getElementById("prefs-pbr-sync")?.addEventListener("change", (ev) => {
+  const box = ev.currentTarget;
+  // 連携カードとナビの表示が変わるので状態を取り直す
+  _savePref("pbr_sync_enabled", box.checked, box, () => loadPbrSyncStatus());
 });
 
 // 管理者設定ページ: スキャン用キーのステータスを管理者設定ページに反映する。

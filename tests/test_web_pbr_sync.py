@@ -82,8 +82,38 @@ def client(db_path, monkeypatch) -> TestClient:
     return TestClient(web_app.create_app(db_path))
 
 
-def _configure(monkeypatch, crawl_dir: Path) -> None:
+def _configure(monkeypatch, crawl_dir: Path, client=None) -> None:
+    """サーバー側の設定を入れ、利用者側の連携も有効にする。
+
+    連携は利用者ごとの設定で、既定では出さない（全員が PBR Lending の口座を
+    持つわけではないため）。テストの大半は「使う利用者」の視点なので有効にする。
+    """
     monkeypatch.setenv(ENV_VAR, str(crawl_dir))
+    if client is not None:
+        _enable(client)
+
+
+def _enable(client, enabled: bool = True) -> None:
+    r = client.put("/api/prefs", json={"prefs": {"pbr_sync_enabled": enabled}})
+    assert r.status_code == 200
+
+
+def _pbr_row():
+    """PBR の取引 1 件（連携の既定値の自動判定に使う）。"""
+    from datetime import datetime, timezone
+    from decimal import Decimal
+
+    from crypto_summary.core.models import CanonicalTx, TxType
+
+    return CanonicalTx(
+        id=CanonicalTx.make_id("pbr", "seed"),
+        source="pbr",
+        timestamp=datetime(2025, 12, 30, tzinfo=timezone.utc),
+        type=TxType.DEPOSIT,
+        received_asset="BTC",
+        received_amount=Decimal("0.1"),
+        label="pbr_deposit",
+    )
 
 
 # ---- 配備まわり ----
@@ -135,10 +165,92 @@ def test_sync_when_not_configured_is_422(client):
     assert r.status_code == 422
 
 
+# ---- 利用者ごとの有効／無効 ----
+#
+# 全員が PBR Lending の口座を持つわけではないので、既定では連携の UI を出さない。
+
+def test_hidden_by_default_for_a_user_without_pbr_data(client, crawl_dir, monkeypatch):
+    """サーバー側に設定があっても、PBR を使っていない利用者には出さない。"""
+    monkeypatch.setenv(ENV_VAR, str(crawl_dir))
+
+    d = client.get("/api/sync/pbr/status").json()
+
+    assert d["available"] is True      # サーバー側の設定はある
+    assert d["enabled"] is False       # この利用者は使わない
+    assert d["configured"] is False    # → UI は出さない
+    assert d["has_pbr_data"] is False
+    assert d["crawl"] is None          # クロール結果の中身も返さない
+
+
+def test_shown_after_user_enables_it(client, crawl_dir, monkeypatch):
+    monkeypatch.setenv(ENV_VAR, str(crawl_dir))
+    _enable(client)
+
+    d = client.get("/api/sync/pbr/status").json()
+
+    assert d["enabled"] is True
+    assert d["configured"] is True
+    assert d["crawl"]["healthy"] is True
+
+
+def test_shown_automatically_when_user_already_has_pbr_data(
+    client, crawl_dir, db_path, monkeypatch
+):
+    """既に PBR のデータがある利用者は、設定しなくても出す（移行時の配慮）。"""
+    monkeypatch.setenv(ENV_VAR, str(crawl_dir))
+    ledger = Ledger(db_path)
+    try:
+        ledger.upsert(_pbr_row())
+    finally:
+        ledger.close()
+
+    d = client.get("/api/sync/pbr/status").json()
+
+    assert d["has_pbr_data"] is True
+    assert d["enabled"] is True
+    assert d["configured"] is True
+
+
+def test_user_can_turn_it_off_even_with_data(client, crawl_dir, db_path, monkeypatch):
+    """データがあっても、明示的にオフにすれば出さない（データは消えない）。"""
+    monkeypatch.setenv(ENV_VAR, str(crawl_dir))
+    ledger = Ledger(db_path)
+    try:
+        ledger.upsert(_pbr_row())
+    finally:
+        ledger.close()
+    _enable(client, False)
+
+    d = client.get("/api/sync/pbr/status").json()
+    assert d["enabled"] is False
+    assert d["configured"] is False
+    assert d["has_pbr_data"] is True   # 設定は表示だけの話で、データは残る
+
+    ledger = Ledger(db_path)
+    try:
+        assert ledger.count("pbr") == 1
+    finally:
+        ledger.close()
+
+
+def test_available_is_false_without_server_setting(client):
+    d = client.get("/api/sync/pbr/status").json()
+    assert d["available"] is False
+    assert d["configured"] is False
+
+
+def test_pref_roundtrip(client):
+    assert client.get("/api/prefs").json()["prefs"]["pbr_sync_enabled"] is None
+    _enable(client)
+    assert client.get("/api/prefs").json()["prefs"]["pbr_sync_enabled"] is True
+    _enable(client, False)
+    assert client.get("/api/prefs").json()["prefs"]["pbr_sync_enabled"] is False
+
+
 # ---- 状態 ----
 
 def test_status_when_configured(client, crawl_dir, monkeypatch):
-    _configure(monkeypatch, crawl_dir)
+    _configure(monkeypatch, crawl_dir, client)
     d = client.get("/api/sync/pbr/status").json()
     assert d["configured"] is True
     assert d["crawl"]["healthy"] is True
@@ -149,14 +261,14 @@ def test_status_when_configured(client, crawl_dir, monkeypatch):
 
 
 def test_viewer_url_from_env(client, crawl_dir, monkeypatch):
-    _configure(monkeypatch, crawl_dir)
+    _configure(monkeypatch, crawl_dir, client)
     monkeypatch.setenv(_VIEWER_ENV, "http://127.0.0.1:4174")
     d = client.get("/api/sync/pbr/status").json()
     assert d["viewer_url"] == "http://127.0.0.1:4174"
 
 
 def test_status_up_to_date_after_sync(client, crawl_dir, monkeypatch):
-    _configure(monkeypatch, crawl_dir)
+    _configure(monkeypatch, crawl_dir, client)
     client.post("/api/sync/pbr", json={})
     d = client.get("/api/sync/pbr/status").json()
     assert d["up_to_date"] is True
@@ -166,7 +278,7 @@ def test_status_up_to_date_after_sync(client, crawl_dir, monkeypatch):
 
 def test_status_not_up_to_date_after_new_crawl(client, crawl_dir, monkeypatch):
     """新しいクロール結果があれば up_to_date が False に戻る（自動取り込みの判定）。"""
-    _configure(monkeypatch, crawl_dir)
+    _configure(monkeypatch, crawl_dir, client)
     client.post("/api/sync/pbr", json={})
     _write_settled(crawl_dir / MARKER_NAME,
                    json.dumps({**_MARKER, "runId": "2026-03-06T10:00:00.000Z"}))
@@ -175,7 +287,7 @@ def test_status_not_up_to_date_after_new_crawl(client, crawl_dir, monkeypatch):
 
 def test_status_not_up_to_date_after_manual_import(client, crawl_dir, monkeypatch):
     """クロールせずに手動インポートしただけでも、取り込み対象として検知する。"""
-    _configure(monkeypatch, crawl_dir)
+    _configure(monkeypatch, crawl_dir, client)
     client.post("/api/sync/pbr", json={})
     assert client.get("/api/sync/pbr/status").json()["up_to_date"] is True
 
@@ -193,7 +305,7 @@ def test_status_not_up_to_date_after_manual_import(client, crawl_dir, monkeypatc
 
 def test_status_without_crawl_but_with_manual_import(client, crawl_dir, monkeypatch):
     """クロール結果が無くても、手動インポートがあれば取り込める状態と判定する。"""
-    _configure(monkeypatch, crawl_dir)
+    _configure(monkeypatch, crawl_dir, client)
     (crawl_dir / ARTIFACT_NAME).unlink()
     _write_settled(crawl_dir / VIEWER_TRANSFERS_NAME,
                        json.dumps({"version": 2, "rows": [{
@@ -212,7 +324,7 @@ def test_status_without_crawl_but_with_manual_import(client, crawl_dir, monkeypa
 
 
 def test_status_has_no_data_when_directory_is_empty(client, crawl_dir, monkeypatch):
-    _configure(monkeypatch, crawl_dir)
+    _configure(monkeypatch, crawl_dir, client)
     (crawl_dir / ARTIFACT_NAME).unlink()
     (crawl_dir / MARKER_NAME).unlink()
     d = client.get("/api/sync/pbr/status").json()
@@ -224,7 +336,7 @@ def test_status_not_up_to_date_when_format_is_old(
     client, crawl_dir, db_path, monkeypatch
 ):
     """取り込み規則が変わったら、同じクロール結果でも取り込み直す。"""
-    _configure(monkeypatch, crawl_dir)
+    _configure(monkeypatch, crawl_dir, client)
     client.post("/api/sync/pbr", json={})
     assert client.get("/api/sync/pbr/status").json()["up_to_date"] is True
 
@@ -239,7 +351,7 @@ def test_status_not_up_to_date_when_format_is_old(
 # ---- 同期 ----
 
 def test_sync_imports_rows(client, crawl_dir, db_path, monkeypatch):
-    _configure(monkeypatch, crawl_dir)
+    _configure(monkeypatch, crawl_dir, client)
     r = client.post("/api/sync/pbr", json={})
     assert r.status_code == 200
     d = r.json()
@@ -257,7 +369,7 @@ def test_sync_imports_rows(client, crawl_dir, db_path, monkeypatch):
 
 
 def test_sync_dry_run_changes_nothing(client, crawl_dir, db_path, monkeypatch):
-    _configure(monkeypatch, crawl_dir)
+    _configure(monkeypatch, crawl_dir, client)
     d = client.post("/api/sync/pbr", json={"dry_run": True}).json()
     assert d["dry_run"] is True
     ledger = Ledger(db_path)
@@ -268,7 +380,7 @@ def test_sync_dry_run_changes_nothing(client, crawl_dir, db_path, monkeypatch):
 
 
 def test_unhealthy_crawl_is_409_then_force_succeeds(client, crawl_dir, monkeypatch):
-    _configure(monkeypatch, crawl_dir)
+    _configure(monkeypatch, crawl_dir, client)
     _write_settled(crawl_dir / MARKER_NAME,
                    json.dumps({**_MARKER, "phase": "partial",
                                "failedCurrencies": ["ETH"]}))
@@ -281,7 +393,7 @@ def test_unhealthy_crawl_is_409_then_force_succeeds(client, crawl_dir, monkeypat
 
 
 def test_missing_artifact_is_422(client, crawl_dir, monkeypatch):
-    _configure(monkeypatch, crawl_dir)
+    _configure(monkeypatch, crawl_dir, client)
     (crawl_dir / ARTIFACT_NAME).unlink()
     r = client.post("/api/sync/pbr", json={"force": True})
     assert r.status_code == 422
@@ -290,7 +402,7 @@ def test_missing_artifact_is_422(client, crawl_dir, monkeypatch):
 # ---- 年次パージ ----
 
 def test_purge_removes_year(client, crawl_dir, db_path, monkeypatch):
-    _configure(monkeypatch, crawl_dir)
+    _configure(monkeypatch, crawl_dir, client)
     client.post("/api/sync/pbr", json={})
 
     r = client.post("/api/sync/pbr/purge", json={"year": 2026})
@@ -318,7 +430,7 @@ def test_pbr_crawl_is_hidden_from_upload_dropdown(client):
 
 
 def test_batch_list_labels_the_sync(client, crawl_dir, monkeypatch):
-    _configure(monkeypatch, crawl_dir)
+    _configure(monkeypatch, crawl_dir, client)
     client.post("/api/sync/pbr", json={})
     batches = client.get("/api/import/batches").json()["batches"]
     assert [b["exchange_label"] for b in batches] == ["PBR Lending（クローラー同期）"]

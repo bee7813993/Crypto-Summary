@@ -771,16 +771,24 @@
         </section>
 
         <!-- 集計の表示設定 -->
-        <section class="card import-section">
+        <section class="card import-section" id="prefs-section">
           <h2 data-i18n="prefs.title">集計の設定</h2>
           <p class="card-hint" data-i18n="prefs.hint">取引の取り込み方は変わりません。残高・資産推移・エクスポートに含めるかだけを切り替えます。</p>
-          <div class="settings-row">
+          <div class="settings-row hidden" id="prefs-daily-interest-row">
             <label class="settings-label" style="display:flex;align-items:center;gap:8px;cursor:pointer">
               <input id="prefs-daily-interest" type="checkbox" />
               <span data-i18n="prefs.dailyInterest">日次利息を残高・エクスポートに含める</span>
             </label>
             <p class="settings-hint" data-i18n="prefs.dailyInterestHint">PBR Lending の新システムは利息を日ごとに付与します。オフにすると取引履歴には残りますが、残高と税務エクスポートから除外されます。</p>
           </div>
+          <div class="settings-row hidden" id="prefs-pbr-sync-row">
+            <label class="settings-label" style="display:flex;align-items:center;gap:8px;cursor:pointer">
+              <input id="prefs-pbr-sync" type="checkbox" />
+              <span data-i18n="prefs.pbrSync">PBR Lending クローラー連携を使う</span>
+            </label>
+            <p class="settings-hint" data-i18n="prefs.pbrSyncHint">オンにすると、インポート画面に同期カードが、サイドバーに「PBR クローラー」タブが出ます。オフにしても取り込み済みのデータは残ります。</p>
+          </div>
+          <p class="settings-hint hidden" id="prefs-empty" data-i18n="prefs.none">切り替えられる設定はありません。</p>
           <div id="prefs-result" class="settings-result hidden"></div>
         </section>
       </div>
