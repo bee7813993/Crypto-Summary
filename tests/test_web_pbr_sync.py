@@ -98,16 +98,19 @@ def _enable(client, enabled: bool = True) -> None:
     assert r.status_code == 200
 
 
-def _pbr_row():
-    """PBR の取引 1 件（連携の既定値の自動判定に使う）。"""
+def _pbr_row(source: str = "pbr"):
+    """PBR の取引 1 件（連携の既定値の自動判定に使う）。
+
+    source="pbr" は公式 CSV 由来、"pbr_crawl" はクローラー由来。
+    """
     from datetime import datetime, timezone
     from decimal import Decimal
 
     from crypto_summary.core.models import CanonicalTx, TxType
 
     return CanonicalTx(
-        id=CanonicalTx.make_id("pbr", "seed"),
-        source="pbr",
+        id=CanonicalTx.make_id(source, "seed"),
+        source=source,
         timestamp=datetime(2025, 12, 30, tzinfo=timezone.utc),
         type=TxType.DEPOSIT,
         received_asset="BTC",
@@ -193,21 +196,57 @@ def test_shown_after_user_enables_it(client, crawl_dir, monkeypatch):
     assert d["crawl"]["healthy"] is True
 
 
-def test_shown_automatically_when_user_already_has_pbr_data(
+def test_hidden_for_a_user_who_only_imports_the_annual_csv(
     client, crawl_dir, db_path, monkeypatch
 ):
-    """既に PBR のデータがある利用者は、設定しなくても出す（移行時の配慮）。"""
+    """年次の公式 CSV を取り込むだけの利用者にはクローラーの UI を出さない。
+
+    口座を持っていても、年に一度 CSV を取り込むだけならクローラーは要らない。
+    """
     monkeypatch.setenv(ENV_VAR, str(crawl_dir))
     ledger = Ledger(db_path)
     try:
-        ledger.upsert(_pbr_row())
+        ledger.upsert(_pbr_row())          # 公式 CSV 由来（source=pbr）
     finally:
         ledger.close()
 
     d = client.get("/api/sync/pbr/status").json()
 
-    assert d["has_pbr_data"] is True
+    assert d["has_pbr_data"] is True    # PBR 固有の設定は出してよい
+    assert d["used_crawl"] is False     # クローラーは使っていない
+    assert d["enabled"] is False
+    assert d["configured"] is False
+
+
+def test_shown_automatically_for_a_user_who_used_the_crawler(
+    client, crawl_dir, db_path, monkeypatch
+):
+    """クローラー連携を使ったことがある利用者は、設定しなくても出す。"""
+    monkeypatch.setenv(ENV_VAR, str(crawl_dir))
+    ledger = Ledger(db_path)
+    try:
+        ledger.upsert(_pbr_row(source="pbr_crawl"))
+    finally:
+        ledger.close()
+
+    d = client.get("/api/sync/pbr/status").json()
+
+    assert d["used_crawl"] is True
     assert d["enabled"] is True
+    assert d["configured"] is True
+
+
+def test_still_shown_after_purging_the_crawl_year(client, crawl_dir, monkeypatch):
+    """年次パージで pbr_crawl が空になっても、同期の記録があれば出し続ける。"""
+    _configure(monkeypatch, crawl_dir, client)
+    client.post("/api/sync/pbr", json={})
+    client.post("/api/sync/pbr/purge", json={"year": 2026})
+    # 設定を未指定へ戻し、自動判定だけで決めさせる
+    client.put("/api/prefs", json={"prefs": {"pbr_sync_enabled": None}})
+
+    d = client.get("/api/sync/pbr/status").json()
+
+    assert d["used_crawl"] is True
     assert d["configured"] is True
 
 
@@ -216,7 +255,7 @@ def test_user_can_turn_it_off_even_with_data(client, crawl_dir, db_path, monkeyp
     monkeypatch.setenv(ENV_VAR, str(crawl_dir))
     ledger = Ledger(db_path)
     try:
-        ledger.upsert(_pbr_row())
+        ledger.upsert(_pbr_row(source="pbr_crawl"))
     finally:
         ledger.close()
     _enable(client, False)
@@ -228,7 +267,7 @@ def test_user_can_turn_it_off_even_with_data(client, crawl_dir, db_path, monkeyp
 
     ledger = Ledger(db_path)
     try:
-        assert ledger.count("pbr") == 1
+        assert ledger.count("pbr_crawl") == 1
     finally:
         ledger.close()
 

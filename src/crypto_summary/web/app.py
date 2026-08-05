@@ -1366,26 +1366,35 @@ def _pbr_viewer_url() -> str:
     return os.environ.get(_PBR_VIEWER_ENV, "").strip() or _DEFAULT_PBR_VIEWER_URL
 
 
-def _has_pbr_data(db_path: str) -> bool:
-    """その利用者の台帳に PBR Lending の取引があるか。"""
+def _pbr_data_flags(db_path: str) -> tuple[bool, bool]:
+    """(PBR の取引があるか, クローラー連携を使ったことがあるか) を返す。
+
+    この 2 つは別物。公式の年間 CSV を取り込むだけの利用者は前者だけが真で、
+    クローラーは要らない。連携の UI を出すかは後者で判断する。
+    """
     ledger = Ledger(db_path)
     try:
-        return any(ledger.count(src) for src in (PBR_SOURCE_ID, *PBR_LEGACY_SOURCES))
+        from_crawl = bool(ledger.count(PBR_SOURCE_ID))
+        from_csv = any(ledger.count(src) for src in PBR_LEGACY_SOURCES)
     finally:
         ledger.close()
+    # 年次パージ後などで pbr_crawl が空でも、同期の記録があれば使っている。
+    synced_before = bool(load_sync_state(db_path).get("last_sync"))
+    return (from_crawl or from_csv), (from_crawl or synced_before)
 
 
-def _pbr_enabled(db_path: str, has_data: bool | None = None) -> bool:
-    """この利用者に PBR Lending 連携の UI を出すか。
+def _pbr_enabled(db_path: str, used_crawl: bool | None = None) -> bool:
+    """この利用者に PBR Lending クローラー連携の UI を出すか。
 
-    全員が PBR Lending の口座を持つわけではないので、既定では出さない。
-    設定が未指定（None）のときは、既に PBR のデータがあるかで判断する
+    全員が PBR Lending の口座を持つわけではなく、口座があっても年次の公式 CSV を
+    取り込むだけならクローラーは要らない。そのため既定では出さない。
+    設定が未指定（None）のときは、クローラー連携を使った実績があるかで判断する
     （以前から使っている利用者は設定し直さなくてよい）。
     """
     pref = _load_prefs(db_path).get("pbr_sync_enabled")
     if pref is not None:
         return bool(pref)
-    return _has_pbr_data(db_path) if has_data is None else has_data
+    return _pbr_data_flags(db_path)[1] if used_crawl is None else used_crawl
 
 
 def _pbr_sync_status(db_path: str) -> dict:
@@ -1400,15 +1409,15 @@ def _pbr_sync_status(db_path: str) -> dict:
     state = load_sync_state(db_path)
     last_sync = state.get("last_sync") or None
     available = directory is not None
-    # PBR の取引を持っているか。連携の既定値の判断と、PBR 固有の設定を
-    # 出すかどうかの判断に使う（口座を持たない利用者には出さない）。
-    has_pbr_data = _has_pbr_data(db_path)
-    enabled = _pbr_enabled(db_path, has_pbr_data) if available else False
+    # has_pbr_data: PBR 固有の設定（日次利息の算入）を出すかの判断に使う。
+    # used_crawl : クローラー連携の UI を出すかの既定値の判断に使う。
+    has_pbr_data, used_crawl = _pbr_data_flags(db_path)
+    enabled = _pbr_enabled(db_path, used_crawl) if available else False
 
     if not available or not enabled:
         return {
             "available": available, "enabled": enabled, "configured": False,
-            "has_pbr_data": has_pbr_data,
+            "has_pbr_data": has_pbr_data, "used_crawl": used_crawl,
             "crawl_dir": None, "viewer_url": None,
             "crawl": None, "last_sync": last_sync,
             "last_purge": state.get("last_purge") or None,
@@ -1424,6 +1433,7 @@ def _pbr_sync_status(db_path: str) -> dict:
         "enabled": True,
         "configured": True,
         "has_pbr_data": has_pbr_data,
+        "used_crawl": used_crawl,
         "crawl_dir": str(directory),
         "viewer_url": _pbr_viewer_url(),
         "crawl": crawl,
