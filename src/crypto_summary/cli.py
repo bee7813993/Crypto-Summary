@@ -712,10 +712,15 @@ def sync_pbr_cmd(
 
     window = preview["window"]
     deleted = {k: v for k, v in preview["deleted"].items() if k != "total"}
+    viewer_note = (
+        f"（うち {preview['parsed_viewer']} 件はビューアへ手動インポートした過年度データ）"
+        if preview.get("parsed_viewer") else ""
+    )
     console.print(
         f"クロール結果: [cyan]{preview['crawl_dir']}[/cyan]\n"
         f"  対象期間 : {window['start'][:10]} 〜 {window['end_exclusive'][:10]}（末日を含まない）\n"
-        f"  取り込み : {preview['parsed']} 件\n"
+        f"  クロール : {preview['crawl_window_start'][:10]} 以降\n"
+        f"  取り込み : {preview['parsed']} 件{viewer_note}\n"
         f"  洗い替え : {preview['deleted']['total']} 件"
         f"{'（' + ', '.join(f'{k}={v}' for k, v in sorted(deleted.items())) + '）' if deleted else ''}"
     )

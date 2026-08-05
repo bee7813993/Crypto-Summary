@@ -19,6 +19,7 @@ from crypto_summary.sources.jp.pbr_crawl import (  # noqa: E402
     ARTIFACT_NAME,
     ENV_VAR,
     MARKER_NAME,
+    sync_state_path,
 )
 from crypto_summary.web import app as web_app  # noqa: E402
 
@@ -123,6 +124,22 @@ def test_status_not_up_to_date_after_new_crawl(client, crawl_dir, monkeypatch):
     client.post("/api/sync/pbr", json={})
     (crawl_dir / MARKER_NAME).write_text(
         json.dumps({**_MARKER, "runId": "2026-03-06T10:00:00.000Z"}), encoding="utf-8")
+    assert client.get("/api/sync/pbr/status").json()["up_to_date"] is False
+
+
+def test_status_not_up_to_date_when_format_is_old(
+    client, crawl_dir, db_path, monkeypatch
+):
+    """取り込み規則が変わったら、同じクロール結果でも取り込み直す。"""
+    _configure(monkeypatch, crawl_dir)
+    client.post("/api/sync/pbr", json={})
+    assert client.get("/api/sync/pbr/status").json()["up_to_date"] is True
+
+    path = sync_state_path(db_path)
+    state = json.loads(path.read_text(encoding="utf-8"))
+    state["last_sync"]["format_version"] = 0      # 旧バージョンで同期した記録
+    path.write_text(json.dumps(state), encoding="utf-8")
+
     assert client.get("/api/sync/pbr/status").json()["up_to_date"] is False
 
 

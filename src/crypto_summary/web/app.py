@@ -34,6 +34,7 @@ from ..sources.api.bybit import BybitApiSource
 from ..sources.csv_import import EXCHANGE_SOURCES
 from ..sources.jp.pbr_crawl import (
     ENV_VAR as _PBR_CRAWL_ENV,
+    SYNC_FORMAT_VERSION,
     PbrSyncError,
     load_sync_state,
     purge_pbr_crawl_year,
@@ -1338,6 +1339,8 @@ def _pbr_sync_status(db_path: str) -> dict:
 
     crawl = read_crawl_status(directory)
     synced_run = (last_sync or {}).get("run_id")
+    # 取り込み規則が変わっている場合は、同じクロール結果でも取り込み直す。
+    synced_format = (last_sync or {}).get("format_version", 1)
     return {
         "configured": True,
         "crawl_dir": str(directory),
@@ -1347,7 +1350,9 @@ def _pbr_sync_status(db_path: str) -> dict:
         "last_purge": state.get("last_purge") or None,
         # 未取り込みのクロール結果があるか（自動取り込みの判定に使う）。
         "up_to_date": bool(
-            crawl["healthy"] and synced_run and synced_run == crawl["run_id"]
+            crawl["healthy"]
+            and synced_run and synced_run == crawl["run_id"]
+            and synced_format >= SYNC_FORMAT_VERSION
         ),
     }
 

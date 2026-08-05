@@ -1801,11 +1801,28 @@ function showDeleteDialog(txId, desc, onSuccess) {
     t("status.txDelConfirmBody", { desc }));
 }
 
-function showBatchDeleteDialog(batchId, desc) {
+function showBatchDeleteDialog(batchId, desc, batch = null) {
   _clearDialogState();
   _batchDeleteId = batchId;
-  _openDeleteDialog(t("status.csvDelConfirmTitle"),
-    t("status.csvDelConfirmBody", { desc }));
+  let msg = t("status.csvDelConfirmBody", { desc });
+  const warning = _batchDeleteWarning(batch);
+  if (warning) msg += "\n\n⚠ " + warning;
+  _openDeleteDialog(t("status.csvDelConfirmTitle"), msg);
+}
+
+// PBR のバッチには、クローラー同期では戻せない期間の取引が含まれることがある。
+// 削除すると資産が丸ごと欠けるため、消える前に知らせる。
+function _batchDeleteWarning(batch) {
+  if (!batch || !_pbrStatus || !_pbrStatus.configured) return null;
+  if (!String(batch.source || "").startsWith("pbr")) return null;
+  if (!batch.first_ts || !batch.existing_count) return null;
+
+  // 同期が取り込む期間の開始日。未同期ならカバー範囲が分からないので、
+  // PBR のバッチ削除は一律に注意喚起する。
+  const coverFrom = ((_pbrStatus.last_sync || {}).window || {}).start;
+  if (!coverFrom) return t("pbr.batchDeleteWarnUnknown");
+  if (batch.first_ts >= coverFrom) return null;
+  return t("pbr.batchDeleteWarn", { from: coverFrom.slice(0, 10) });
 }
 
 document.getElementById("delete-confirm").addEventListener("click", async () => {
@@ -2114,7 +2131,8 @@ async function runPbrSync({ force = false, auto = false } = {}) {
     if (result) {
       result.className = "settings-result ok";
       result.textContent = (auto ? t("pbr.autoSyncDone") + " " : "")
-        + t("pbr.syncDone", { parsed: d.parsed, deleted: d.deleted.total });
+        + t("pbr.syncDone", { parsed: d.parsed, deleted: d.deleted.total })
+        + (d.parsed_viewer ? " " + t("pbr.viewerImported", { count: d.parsed_viewer }) : "");
     }
     _renderPbrRecon(d.reconciliation);
     if (d.skip_reasons && Object.keys(d.skip_reasons).length) {
@@ -2498,7 +2516,7 @@ async function loadImportBatches() {
       `;
       tr.querySelector(".tx-link-btn").addEventListener("click", () => {
         const desc = `${b.exchange_label} / ${b.filename || "-"}（${t("filter.count", { count: b.existing_count })}）`;
-        showBatchDeleteDialog(b.id, desc);
+        showBatchDeleteDialog(b.id, desc, b);
       });
       _appendDetailToggle(tr, [
         { label: t("th.importedAt"), value: fmtDate(b.imported_at + "Z") },

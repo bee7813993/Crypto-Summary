@@ -682,7 +682,8 @@ html.light .tx-type-transfer { background: #d1fae5; color: #065f46; }
   max-width: 480px;
 }
 .dialog-title { font-size: 16px; font-weight: 600; margin-bottom: 12px; }
-.dialog-msg { font-size: 13px; color: var(--text-dim); margin-bottom: 20px; line-height: 1.6; }
+/* 警告を段落で足すことがあるので textContent の改行をそのまま活かす */
+.dialog-msg { font-size: 13px; color: var(--text-dim); margin-bottom: 20px; line-height: 1.6; white-space: pre-line; }
 .dialog-actions { display: flex; gap: 12px; align-items: center; }
 
 /* 取引後残高セル（複数資産対応） */

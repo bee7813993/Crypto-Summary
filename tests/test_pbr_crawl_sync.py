@@ -22,6 +22,8 @@ from crypto_summary.sources.jp.pbr_crawl import (
     ARTIFACT_NAME,
     ENV_VAR,
     MARKER_NAME,
+    VIEWER_LEDGER_NAME,
+    VIEWER_TRANSFERS_NAME,
     PbrSyncError,
     load_sync_state,
     purge_pbr_crawl_year,
@@ -91,6 +93,33 @@ def _write_artifact(crawl_dir: Path, **sections) -> None:
 def _write_marker(crawl_dir: Path, **overrides) -> None:
     (crawl_dir / MARKER_NAME).write_text(
         json.dumps(_marker(**overrides)), encoding="utf-8")
+
+
+def _write_viewer_transfers(crawl_dir: Path, rows: list[dict], *, wrap=True) -> None:
+    body = {"version": 2, "rows": rows} if wrap else rows
+    (crawl_dir / VIEWER_TRANSFERS_NAME).write_text(
+        json.dumps(body, ensure_ascii=False), encoding="utf-8")
+
+
+def _write_viewer_ledger(crawl_dir: Path, rows: list[dict], *, wrap=True) -> None:
+    body = {"version": 2, "rows": rows} if wrap else rows
+    (crawl_dir / VIEWER_LEDGER_NAME).write_text(
+        json.dumps(body, ensure_ascii=False), encoding="utf-8")
+
+
+def _transfer_row(date, currency, kubun, amount) -> dict:
+    return {"日付": date, "通貨種別": currency, "区分": kubun,
+            "数量": amount, "備考": "PBRLending 旧システム 貸出"}
+
+
+def _ledger_row(date, currency, **columns) -> dict:
+    row = {"日付": date, "通貨種別": currency, "貸出数量": "0",
+           "総単日受取予定利息": "0.00001", "返還受取利息（利確数量）": "0",
+           "プレミアム移行受取利息（利確数量）": "0",
+           "プレミアム満期受取利息（利確数量）": "0",
+           "運営からの付与数量（利確数量）": "0", "備考": ""}
+    row.update(columns)
+    return row
 
 
 def _seed(db_path: Path, *rows: CanonicalTx) -> None:
@@ -234,6 +263,164 @@ def test_past_year_sync_keeps_official_rows(crawl_dir, db_path):
 
     assert "pbr" not in result["deleted"]
     assert _sources(db_path) == {"pbr": 1, "pbr_crawl": 3}
+
+
+# ---- ビューアの手動インポート（過年度の公式データ） ----
+
+_OLD_DEPOSITS = [
+    _transfer_row("2025-09-29", "BTC", "入庫", "0.1"),
+    _transfer_row("2026-01-13", "USDC", "入庫", "3000"),
+    _transfer_row("2026-03-02", "BTC", "システム移行", "0"),
+]
+
+
+def test_viewer_transfers_fill_in_pre_crawl_period(crawl_dir, db_path):
+    """クロールがカバーしない旧システム期間はビューアの手動インポートから補う。"""
+    _write_viewer_transfers(crawl_dir, _OLD_DEPOSITS)
+
+    result = sync_pbr_crawl(db_path, crawl_dir)
+
+    assert result["parsed_viewer"] == 2       # システム移行は記録しない
+    assert result["window"]["start"] == "2025-09-29T00:00:00+00:00"
+    assert result["crawl_window_start"] == "2026-03-03T00:00:00+00:00"
+
+    ledger = Ledger(db_path)
+    try:
+        bal = ledger.balances(source="pbr_crawl")
+        labels = {t.label for t in ledger.all(limit=None)}
+    finally:
+        ledger.close()
+    assert bal["BTC"] == Decimal("0.10003")   # 入庫 0.1 + 日次利息 0.00003
+    assert bal["USDC"] == Decimal("3000")
+    assert "pbr_deposit" in labels
+
+
+def test_viewer_ledger_realized_interest_is_imported(crawl_dir, db_path):
+    """日次レポート側は利確列だけを取り込む（予定利息は取らない）。"""
+    _write_viewer_ledger(crawl_dir, [
+        _ledger_row("2025-11-04", "BTC",
+                    **{"プレミアム移行受取利息（利確数量）": "0.00188895"}),
+        _ledger_row("2025-11-05", "BTC"),   # 予定利息のみ → 記録しない
+    ])
+
+    result = sync_pbr_crawl(db_path, crawl_dir)
+
+    assert result["parsed_viewer"] == 1
+    ledger = Ledger(db_path)
+    try:
+        rows = [t for t in ledger.all(limit=None)
+                if t.label == "premium_migration_interest"]
+    finally:
+        ledger.close()
+    assert len(rows) == 1
+    assert rows[0].received_amount == Decimal("0.00188895")
+
+
+def test_viewer_rows_inside_crawl_window_are_ignored(crawl_dir, db_path):
+    """クロールがカバーする期間はクロール結果が正。ビューア側は読まない。"""
+    _write_viewer_ledger(crawl_dir, [
+        _ledger_row("2026-03-04", "BTC",
+                    **{"返還受取利息（利確数量）": "9.99"}),
+    ])
+    _write_viewer_transfers(crawl_dir, [
+        _transfer_row("2026-03-04", "BTC", "入庫", "5"),
+    ])
+
+    result = sync_pbr_crawl(db_path, crawl_dir)
+
+    assert result["parsed_viewer"] == 0
+    ledger = Ledger(db_path)
+    try:
+        assert ledger.balances(source="pbr_crawl")["BTC"] == Decimal("0.00003")
+    finally:
+        ledger.close()
+
+
+def test_official_import_year_is_not_read_from_viewer(crawl_dir, db_path):
+    """公式 CSV を直接取り込み済みの年は、ビューア側から二重に読まない。"""
+    _write_viewer_transfers(crawl_dir, _OLD_DEPOSITS)
+    _seed(db_path, _tx("2025-09-29", "pbr", "pbr_deposit"))   # 公式CSV由来
+
+    result = sync_pbr_crawl(db_path, crawl_dir)
+
+    assert result["skip_reasons"].get("official_import_exists:2025") == 1
+    assert result["parsed_viewer"] == 1       # 2026-01-13 の USDC だけ
+    assert _sources(db_path) == {"pbr": 1, "pbr_crawl": 4}
+
+
+def test_official_import_year_rows_survive_sync(crawl_dir, db_path):
+    """過年度に直接取り込んだ公式データは洗い替えで消えない。"""
+    _seed(db_path, _tx("2025-09-29", "pbr", "pbr_deposit"))
+    _write_viewer_transfers(crawl_dir, _OLD_DEPOSITS)
+
+    sync_pbr_crawl(db_path, crawl_dir)
+    sync_pbr_crawl(db_path, crawl_dir)
+
+    ledger = Ledger(db_path)
+    try:
+        assert ledger.count("pbr") == 1
+    finally:
+        ledger.close()
+
+
+def test_viewer_sync_is_idempotent(crawl_dir, db_path):
+    _write_viewer_transfers(crawl_dir, _OLD_DEPOSITS)
+    _write_viewer_ledger(crawl_dir, [
+        _ledger_row("2025-11-04", "BTC",
+                    **{"プレミアム移行受取利息（利確数量）": "0.00188895"}),
+    ])
+
+    first = sync_pbr_crawl(db_path, crawl_dir)
+    ids = _all_ids(db_path)
+    second = sync_pbr_crawl(db_path, crawl_dir)
+
+    assert second["parsed"] == first["parsed"]
+    assert second["deleted"]["pbr_crawl"] == first["parsed"]
+    assert _all_ids(db_path) == ids
+
+
+def test_viewer_legacy_bare_array_is_supported(crawl_dir, db_path):
+    """旧形式（version なしの素の配列）でも読める。"""
+    _write_viewer_transfers(crawl_dir, _OLD_DEPOSITS, wrap=False)
+    assert sync_pbr_crawl(db_path, crawl_dir)["parsed_viewer"] == 2
+
+
+def test_missing_viewer_files_are_not_an_error(crawl_dir, db_path):
+    result = sync_pbr_crawl(db_path, crawl_dir)
+    assert result["parsed_viewer"] == 0
+    assert result["ok"] is True
+
+
+def test_broken_viewer_file_is_ignored(crawl_dir, db_path):
+    (crawl_dir / VIEWER_TRANSFERS_NAME).write_text("{ broken", encoding="utf-8")
+    result = sync_pbr_crawl(db_path, crawl_dir)
+    assert result["parsed_viewer"] == 0
+    assert result["ok"] is True
+
+
+def test_viewer_withdrawal_sign(crawl_dir, db_path):
+    _write_viewer_transfers(crawl_dir, [
+        _transfer_row("2025-10-01", "XRP", "出庫", "-50"),
+    ])
+    sync_pbr_crawl(db_path, crawl_dir)
+    ledger = Ledger(db_path)
+    try:
+        row = next(t for t in ledger.all(limit=None) if t.label == "pbr_withdrawal")
+    finally:
+        ledger.close()
+    assert row.type == TxType.WITHDRAW
+    assert row.sent_amount == Decimal("50")
+
+
+def test_purge_year_removes_viewer_rows_too(crawl_dir, db_path):
+    """年次パージは、その年のビューア由来行も含めて削除する。"""
+    _write_viewer_transfers(crawl_dir, _OLD_DEPOSITS)
+    sync_pbr_crawl(db_path, crawl_dir)
+
+    result = purge_pbr_crawl_year(db_path, 2025)
+
+    assert result["deleted"] == 1             # 2025-09-29 の入庫
+    assert _sources(db_path)["pbr_crawl"] == 4
 
 
 def test_manual_rows_in_window_are_kept(crawl_dir, db_path):

@@ -54,6 +54,11 @@ from ..base import CsvSourceAdapter
 ARTIFACT_NAME = "pbrlending_crawled.latest.json"
 MARKER_NAME = "last_crawl.json"
 
+#: ビューアに手動インポートした公式 CSV の保存先。
+#: クロールは当年分しか持たないため、過年度の公式データはここにしか無い。
+VIEWER_LEDGER_NAME = "viewer_ledger.json"
+VIEWER_TRANSFERS_NAME = "viewer_transfers.json"
+
 #: outputs ディレクトリを指す環境変数
 ENV_VAR = "PBR_CRAWL_DIR"
 
@@ -67,6 +72,12 @@ LEGACY_SOURCES: tuple[str, ...] = ("pbr",)
 
 #: 残高照合の許容誤差(丸め差)
 RECON_TOLERANCE = Decimal("0.000001")
+
+#: 取り込み結果の形式。取り込む対象や変換規則を変えたらこれを上げる。
+#: 同じクロール結果でも結果が変わるため、記録済みの版が古ければ再同期する。
+#:   1: クロール結果 (pbrlending_crawled.latest.json) のみ
+#:   2: ビューアへ手動インポートした過年度データ (viewer_*.json) も取り込む
+SYNC_FORMAT_VERSION = 2
 
 _DATE_FMT = "%Y-%m-%d"
 _ZERO = Decimal("0")
@@ -91,6 +102,25 @@ _TRANSFER_TYPES: dict[str, tuple[TxType, str]] = {
 _TRANSFER_SKIP_TYPES = frozenset({"システム移行"})
 
 _EVENT_KEYS = ("daily_ranges", "wallet_events", "transfer_events")
+
+# ビューアの入出金 (viewer_transfers.json) の区分 → (TxType, label)。
+# 公式の入出金履歴 CSV と同じ 5 列なので pbr_transfers と同じ扱いにする。
+_VIEWER_TRANSFER_TYPES: dict[str, tuple[TxType, str]] = {
+    "入庫": (TxType.DEPOSIT, "pbr_deposit"),
+    "出庫": (TxType.WITHDRAW, "pbr_withdrawal"),
+    "利息": (TxType.REWARD, "daily_interest"),
+    "返還利息": (TxType.REWARD, "return_interest"),
+    "プレミアム満期": (TxType.REWARD, "premium_maturity_interest"),
+}
+
+# ビューアの日次レポート (viewer_ledger.json) の利確列 → label。
+# 予定利息の列は「未受取」なので取らない (pbr_lending と同じ判断)。
+_VIEWER_LEDGER_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("返還受取利息（利確数量）",          "return_interest"),
+    ("プレミアム移行受取利息（利確数量）", "premium_migration_interest"),
+    ("プレミアム満期受取利息（利確数量）", "premium_maturity_interest"),
+    ("運営からの付与数量（利確数量）",     "admin_grant"),
+)
 
 
 def normalize_amount(value: str | Decimal | int | float) -> str:
@@ -308,6 +338,179 @@ class PbrCrawlJsonSource(CsvSourceAdapter):
             fields["received_asset"] = asset
             fields["received_amount"] = Decimal(amount_str)
         return CanonicalTx(**fields)
+
+
+class PbrViewerStateSource(CsvSourceAdapter):
+    """ビューアに手動インポートされた公式データ (viewer_*.json) を読む。
+
+    クロール結果は当年分しか持たないため、過年度の公式データはビューアに
+    手動インポートしたものが唯一の情報源になる。ファイルは公式 CSV と同じ
+    列構成なので、pbr_transfers / pbr_lending と同じ意味論で変換する。
+
+    二重計上を避けるための 2 つの制約:
+      1. ``before`` より前の行だけを採用する。クロールがカバーする期間は
+         クロール結果を正とし、ビューア側の同じ期間は読まない。
+         （viewer_ledger.json はクロール分と手動分が混在した表示用の状態）
+      2. ``skip_years`` に入っている年は丸ごと読まない。呼び出し側が
+         「公式 CSV を Crypto-Summary に直接取り込み済みの年」を渡す。
+    """
+
+    def load(self, path: Path) -> list[CanonicalTx]:  # pragma: no cover - 未使用
+        raise NotImplementedError("load_viewer_state を使ってください")
+
+    def load_viewer_state(
+        self, crawl_dir: Path, *, before: datetime, skip_years: frozenset[int],
+    ) -> list[CanonicalTx]:
+        self._reset_skips()
+        occurrences: dict[str, int] = {}
+        txs: list[CanonicalTx] = []
+        txs.extend(self._transfer_txs(
+            _viewer_rows(crawl_dir / VIEWER_TRANSFERS_NAME),
+            before, skip_years, occurrences,
+        ))
+        txs.extend(self._ledger_txs(
+            _viewer_rows(crawl_dir / VIEWER_LEDGER_NAME),
+            before, skip_years, occurrences,
+        ))
+        txs.sort(key=lambda t: (t.timestamp, t.id))
+        return txs
+
+    def _in_scope(
+        self, row: dict, before: datetime, skip_years: frozenset[int],
+    ) -> str | None:
+        """採用する行なら日付文字列を、対象外なら None を返す。"""
+        raw_date = str(row.get("日付", "")).strip()
+        try:
+            day = _date.fromisoformat(raw_date)
+        except ValueError:
+            return None
+        if day.year in skip_years:
+            # 公式 CSV を直接取り込み済みの年。二重計上になるので読まない。
+            self._skip(f"official_import_exists:{day.year}")
+            return None
+        if _utc_midnight(day.isoformat()) >= before:
+            # クロールがカバーする期間。クロール結果を正とする。
+            return None
+        return day.isoformat()
+
+    def _transfer_txs(
+        self, rows: list[dict], before: datetime,
+        skip_years: frozenset[int], occurrences: dict[str, int],
+    ) -> list[CanonicalTx]:
+        txs: list[CanonicalTx] = []
+        for row in sorted(rows, key=_viewer_sort_key):
+            day_str = self._in_scope(row, before, skip_years)
+            if day_str is None:
+                continue
+            kind = str(row.get("区分", "")).strip()
+            if kind in _TRANSFER_SKIP_TYPES:
+                continue
+            if kind in _INTERNAL_MOVE_TYPES:
+                self._skip("internal_move")
+                continue
+            mapped = _VIEWER_TRANSFER_TYPES.get(kind)
+            if mapped is None:
+                self._skip(f"unknown_kubun:{kind}")
+                continue
+            amount = _decimal_or_none(row.get("数量"))
+            if amount is None or amount == _ZERO:
+                continue
+            tx_type, label = mapped
+            txs.append(self._build_viewer_tx(
+                day_str, kind, row.get("通貨種別"), abs(amount), occurrences,
+                tx_type=tx_type, label=label, origin=VIEWER_TRANSFERS_NAME,
+            ))
+        return txs
+
+    def _ledger_txs(
+        self, rows: list[dict], before: datetime,
+        skip_years: frozenset[int], occurrences: dict[str, int],
+    ) -> list[CanonicalTx]:
+        txs: list[CanonicalTx] = []
+        for row in sorted(rows, key=_viewer_sort_key):
+            day_str = self._in_scope(row, before, skip_years)
+            if day_str is None:
+                continue
+            for column, label in _VIEWER_LEDGER_COLUMNS:
+                amount = _decimal_or_none(row.get(column))
+                if amount is None or amount <= _ZERO:
+                    continue
+                txs.append(self._build_viewer_tx(
+                    day_str, column, row.get("通貨種別"), amount, occurrences,
+                    tx_type=TxType.REWARD, label=label,
+                    origin=VIEWER_LEDGER_NAME,
+                ))
+        return txs
+
+    def _build_viewer_tx(
+        self, day_str: str, kind: str, currency, amount: Decimal,
+        occurrences: dict[str, int], *,
+        tx_type: TxType, label: str, origin: str,
+    ) -> CanonicalTx:
+        asset = str(currency or "").upper()
+        amount_str = normalize_amount(amount)
+        # raw_key の構造はクロール由来と同じ。同じ日・同じ区分・同じ額の行が
+        # 複数あっても潰れないよう 2 件目以降に連番を付ける。
+        base_key = f"{day_str}|{kind}|{asset}|{amount_str}"
+        seen = occurrences.get(base_key, 0) + 1
+        occurrences[base_key] = seen
+        raw_key = base_key if seen == 1 else f"{base_key}|#{seen}"
+
+        fields: dict = {
+            "id": CanonicalTx.make_id(self.source_id, raw_key),
+            "source": self.source_id,
+            "timestamp": _utc_midnight(day_str),
+            "type": tx_type,
+            "label": label,
+            "raw": {
+                "日付": day_str, "通貨種別": asset, "区分": kind,
+                "数量": amount_str, "由来": origin,
+            },
+        }
+        if tx_type is TxType.WITHDRAW:
+            fields["sent_asset"] = asset
+            fields["sent_amount"] = Decimal(amount_str)
+        else:
+            fields["received_asset"] = asset
+            fields["received_amount"] = Decimal(amount_str)
+        return CanonicalTx(**fields)
+
+
+def _viewer_rows(path: Path) -> list[dict]:
+    """ビューアの状態ファイルを読む。
+
+    ``{"version": 2, "rows": [...]}`` と、旧形式の素の配列の両方に対応する。
+    ファイルが無い・壊れている場合は空リストを返す（連携は任意機能なので
+    ビューアを使っていなくても同期を止めない）。
+    """
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    rows = data.get("rows") if isinstance(data, dict) else data
+    return [r for r in (rows or []) if isinstance(r, dict)]
+
+
+def _viewer_sort_key(row: dict) -> tuple:
+    """入力順に依存しない ID を作るための並び順。"""
+    return (
+        str(row.get("日付", "")),
+        str(row.get("通貨種別", "")),
+        str(row.get("区分", "")),
+        str(row.get("数量", "")),
+    )
+
+
+def _decimal_or_none(value) -> Decimal | None:
+    if value is None:
+        return None
+    text = str(value).strip().replace(",", "")
+    if not text:
+        return None
+    try:
+        return Decimal(text)
+    except InvalidOperation:
+        return None
 
 
 # ======================================================================
@@ -580,7 +783,7 @@ def sync_pbr_crawl(
             "クロール結果から取引を 1 件も取り出せませんでした（洗い替えは中止）。",
         )
 
-    start = min(t.timestamp for t in txs)
+    crawl_start = min(t.timestamp for t in txs)
     last_row = max(t.timestamp for t in txs)
     end_date = data.get("end_date")
     end_ts = _utc_midnight(end_date) if isinstance(end_date, str) and end_date else last_row
@@ -588,26 +791,59 @@ def sync_pbr_crawl(
 
     delete_sources = _delete_sources(end_exclusive)
     batch_id = f"batch:{uuid.uuid4().hex[:12]}"
-    result: dict = {
-        "ok": True,
-        "dry_run": dry_run,
-        "forced": bool(force and not status["healthy"]),
-        "run_id": status["run_id"],
-        "crawl_dir": str(directory),
-        "window": {
-            "start": start.isoformat(),
-            "end_exclusive": end_exclusive.isoformat(),
-        },
-        "parsed": len(txs),
-        "skipped": adapter.skipped,
-        "skip_reasons": dict(adapter.skip_reasons),
-        "crawl_warnings": status["crawl_warnings"],
-        "sync_warnings": sync_warnings,
-    }
 
     ledger = Ledger(db_path)
     try:
-        counts = ledger.count_in_window(delete_sources, start, end_exclusive)
+        # 公式 CSV を直接取り込み済みの年は、ビューア側の同じデータを読まない。
+        official_years = frozenset(
+            ledger.years_with_source(list(LEGACY_SOURCES)))
+        viewer = PbrViewerStateSource(SOURCE_ID)
+        viewer_txs = viewer.load_viewer_state(
+            directory, before=crawl_start, skip_years=official_years)
+        txs = txs + viewer_txs
+
+        start = min(crawl_start, *(t.timestamp for t in viewer_txs)) \
+            if viewer_txs else crawl_start
+        skip_reasons = dict(adapter.skip_reasons)
+        for reason, count in viewer.skip_reasons.items():
+            skip_reasons[reason] = skip_reasons.get(reason, 0) + count
+
+        result: dict = {
+            "ok": True,
+            "dry_run": dry_run,
+            "forced": bool(force and not status["healthy"]),
+            "run_id": status["run_id"],
+            "crawl_dir": str(directory),
+            "window": {
+                "start": start.isoformat(),
+                "end_exclusive": end_exclusive.isoformat(),
+            },
+            "crawl_window_start": crawl_start.isoformat(),
+            "parsed": len(txs),
+            "parsed_viewer": len(viewer_txs),
+            "skipped": adapter.skipped + viewer.skipped,
+            "skip_reasons": skip_reasons,
+            "crawl_warnings": status["crawl_warnings"],
+            "sync_warnings": sync_warnings,
+        }
+
+        # 自前のデータ (pbr_crawl) は取り込む全期間を洗い替える。
+        # 公式 CSV 由来 (pbr) はクロールがカバーする期間だけに限る。
+        # ビューア由来の期間まで消すと、直接取り込んだ過年度データを失う。
+        delete_specs: list[tuple[list[str], datetime, datetime]] = [
+            ([SOURCE_ID], start, end_exclusive)
+        ]
+        legacy = [s for s in delete_sources if s != SOURCE_ID]
+        if legacy:
+            delete_specs.append((legacy, crawl_start, end_exclusive))
+
+        counts: dict[str, int] = {}
+        for sources, spec_start, spec_end in delete_specs:
+            for src, n in ledger.count_in_window(
+                sources, spec_start, spec_end
+            ).items():
+                counts[src] = counts.get(src, 0) + n
+
         if dry_run:
             result["deleted"] = {**counts, "total": sum(counts.values())}
             result["inserted"] = 0
@@ -615,8 +851,8 @@ def sync_pbr_crawl(
                 ledger, data.get("balance_snapshots") or [])
             return result
 
-        stats = ledger.replace_source_window(
-            delete_sources, start, end_exclusive, txs,
+        stats = ledger.replace_windows(
+            delete_specs, txs,
             batch_id=batch_id,
             source=SOURCE_ID,
             exchange=SOURCE_ID,
@@ -636,9 +872,12 @@ def sync_pbr_crawl(
 
     _save_sync_state(db_path, last_sync={
         "run_id": status["run_id"],
+        "format_version": SYNC_FORMAT_VERSION,
         "synced_at": datetime.now(timezone.utc).isoformat(),
         "window": result["window"],
+        "crawl_window_start": result["crawl_window_start"],
         "parsed": result["parsed"],
+        "parsed_viewer": result["parsed_viewer"],
         "deleted": result["deleted"],
         "inserted": result["inserted"],
         "batch_id": batch_id,

@@ -208,6 +208,28 @@ class Ledger:
         ).fetchall()
         return {src: cnt for src, cnt in rows}
 
+    def years_with_source(self, sources: list[str]) -> set[int]:
+        """指定ソースの取引が存在する年の集合を返す。
+
+        「この年はすでに取り込み済みか」を判定して、別経路からの二重取り込みを
+        避けるために使う。
+        """
+        if not sources:
+            return set()
+        placeholders = ",".join("?" for _ in sources)
+        rows = self._conn.execute(
+            f"SELECT DISTINCT substr(timestamp, 1, 4) FROM transactions "
+            f"WHERE source IN ({placeholders})",
+            list(sources),
+        ).fetchall()
+        years: set[int] = set()
+        for (year,) in rows:
+            try:
+                years.add(int(year))
+            except (TypeError, ValueError):
+                continue
+        return years
+
     def delete_by_source_window(
         self, sources: list[str], start: datetime, end_exclusive: datetime,
         *, keep_manual: bool = True, commit: bool = True,
@@ -231,11 +253,9 @@ class Ledger:
             self._conn.commit()
         return cur.rowcount
 
-    def replace_source_window(
+    def replace_windows(
         self,
-        delete_sources: list[str],
-        start: datetime,
-        end_exclusive: datetime,
+        delete_specs: list[tuple[list[str], datetime, datetime]],
         txs: list[CanonicalTx],
         *,
         batch_id: str,
@@ -247,16 +267,21 @@ class Ledger:
     ) -> dict[str, int]:
         """期間削除 → 再投入を単一トランザクションで行う。
 
+        delete_specs は (ソース一覧, 開始, 終了[排他]) の並び。ソースごとに
+        削除範囲を変えられる（自前のデータは全期間、他ソースは一部だけ、など）。
+
         戻り値: {"deleted": 削除件数, "inserted": 新規追加件数, "parsed": 投入件数}
 
         upsert() はトランザクションごとに commit するため、ここでは同じ SQL を
         インラインで使う。途中で失敗した場合は削除も含めて全て巻き戻す。
         """
         try:
-            deleted = self.delete_by_source_window(
-                delete_sources, start, end_exclusive,
-                keep_manual=keep_manual, commit=False,
-            )
+            deleted = 0
+            for sources, start, end_exclusive in delete_specs:
+                deleted += self.delete_by_source_window(
+                    sources, start, end_exclusive,
+                    keep_manual=keep_manual, commit=False,
+                )
             if prune_batch_source:
                 # 洗い替えで無効になった過去バッチを消す（毎回1件に保つ）。
                 self._conn.execute(
