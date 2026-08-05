@@ -150,6 +150,7 @@ from .jp.bitlend import BitLendCsvSource                   # noqa: E402
 from .jp.pbr_lending import PbrLendingCsvSource            # noqa: E402
 from .jp.pbr_transfers import PbrTransfersCsvSource        # noqa: E402
 from .jp.pbr_auto import PbrAutoCsvSource                  # noqa: E402
+from .jp.pbr_crawl import PbrCrawlJsonSource               # noqa: E402
 from .jp.bitflyer import (                                 # noqa: E402
     BitflyerTradeCsvSource,
     BitflyerCollateralCsvSource,
@@ -164,6 +165,7 @@ EXCHANGE_SOURCES: dict[str, type[CsvSourceAdapter]] = {
     "pbr":             PbrAutoCsvSource,
     "pbr_lending":     PbrLendingCsvSource,
     "pbr_transfers":   PbrTransfersCsvSource,
+    "pbr_crawl":       PbrCrawlJsonSource,
     "bitflyer":             BitflyerTradeCsvSource,
     "bitflyer_collateral":  BitflyerCollateralCsvSource,
     "bitflyer_conversion":  BitflyerConversionCsvSource,

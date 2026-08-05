@@ -32,6 +32,15 @@ from ..sinks.summ_csv import link_nexo_transfers, to_summ_csv_string
 from ..sinks.summ_csv import to_summ_rows as _to_summ_rows_inner
 from ..sources.api.bybit import BybitApiSource
 from ..sources.csv_import import EXCHANGE_SOURCES
+from ..sources.jp.pbr_crawl import (
+    ENV_VAR as _PBR_CRAWL_ENV,
+    PbrSyncError,
+    load_sync_state,
+    purge_pbr_crawl_year,
+    read_crawl_status,
+    resolve_crawl_dir,
+    sync_pbr_crawl,
+)
 
 _STATIC_DIR = Path(__file__).parent / "static"
 _DUST = Decimal("0.00000001")
@@ -635,6 +644,7 @@ _EXCHANGE_LABELS: dict[str, str] = {
     "pbr": "PBR Lending（自動判定）",
     "pbr_lending": "PBR Lending（貸出日次レポート）",
     "pbr_transfers": "PBR Lending（入出金履歴）",
+    "pbr_crawl": "PBR Lending（クローラー同期）",
     "binance": "Binance（スポット）",
     "universal": "汎用CSV",
 }
@@ -648,7 +658,8 @@ _IMPORT_EXCHANGE_ORDER: list[str] = [
 
 # UI のインポート選択肢には出さないが、内部・既存バッチ・CLI 用に登録は残す取引所。
 # PBR Lending は "pbr"（自動判定）に集約したため、個別形式は隠す。
-_HIDDEN_IMPORT_EXCHANGES: set[str] = {"pbr_lending", "pbr_transfers"}
+# pbr_crawl はファイルのアップロードではなく専用の同期ボタン（/api/sync/pbr）から使う。
+_HIDDEN_IMPORT_EXCHANGES: set[str] = {"pbr_lending", "pbr_transfers", "pbr_crawl"}
 
 
 def _import_exchanges() -> dict:
@@ -1294,6 +1305,91 @@ def _sync_all(db_path: str, system_db: str | None = None) -> dict:
     }
 
 
+# ---------------------------------------------------------------------------
+# PBR Lending クローラー連携
+# ---------------------------------------------------------------------------
+
+#: クローラーのビューア画面 URL（iframe 埋め込み・別タブで開く用）。
+#: 解決するのはユーザーのブラウザなので、本体が Docker 内でもホストの
+#: 127.0.0.1 に届く。
+_PBR_VIEWER_ENV = "PBR_VIEWER_URL"
+_DEFAULT_PBR_VIEWER_URL = "http://127.0.0.1:4173"
+
+
+def _pbr_viewer_url() -> str:
+    return os.environ.get(_PBR_VIEWER_ENV, "").strip() or _DEFAULT_PBR_VIEWER_URL
+
+
+def _pbr_sync_status(db_path: str) -> dict:
+    """クロール結果の状態と最終同期の記録を返す。
+
+    未設定はエラーにしない（UI 側がカードとタブごと隠す）。
+    """
+    directory = resolve_crawl_dir()
+    state = load_sync_state(db_path)
+    last_sync = state.get("last_sync") or None
+    if directory is None:
+        return {
+            "configured": False, "crawl_dir": None, "viewer_url": None,
+            "crawl": None, "last_sync": last_sync,
+            "last_purge": state.get("last_purge") or None,
+            "up_to_date": False,
+        }
+
+    crawl = read_crawl_status(directory)
+    synced_run = (last_sync or {}).get("run_id")
+    return {
+        "configured": True,
+        "crawl_dir": str(directory),
+        "viewer_url": _pbr_viewer_url(),
+        "crawl": crawl,
+        "last_sync": last_sync,
+        "last_purge": state.get("last_purge") or None,
+        # 未取り込みのクロール結果があるか（自動取り込みの判定に使う）。
+        "up_to_date": bool(
+            crawl["healthy"] and synced_run and synced_run == crawl["run_id"]
+        ),
+    }
+
+
+#: 同期エラーコード → HTTP ステータス。
+#: 409 は「force で上書きできる」ことを意味する。
+_PBR_ERROR_STATUS = {
+    "not_configured": 422,
+    "artifact_missing": 422,
+    "artifact_invalid": 422,
+    "no_rows": 422,
+    "marker_missing": 409,
+    "unhealthy": 409,
+}
+
+
+def _pbr_sync_run(db_path: str, body: dict[str, Any]) -> dict:
+    """クロール結果を取り込む（対象期間を洗い替える）。"""
+    force = bool(body.get("force"))
+    dry_run = bool(body.get("dry_run"))
+    try:
+        return sync_pbr_crawl(db_path, None, force=force, dry_run=dry_run)
+    except PbrSyncError as e:
+        status = _PBR_ERROR_STATUS.get(e.code, 422)
+        detail = e.message
+        if status == 409:
+            detail += "（force を指定すると強制的に同期できます）"
+        raise HTTPException(status_code=status, detail=detail)
+
+
+def _pbr_purge(db_path: str, body: dict[str, Any]) -> dict:
+    """指定年のクロール由来データを削除する（公式CSVへの移行時）。"""
+    raw_year = body.get("year")
+    try:
+        year = int(raw_year)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=422, detail="年を指定してください")
+    if not 2000 <= year <= 2100:
+        raise HTTPException(status_code=422, detail=f"対象外の年です: {year}")
+    return purge_pbr_crawl_year(db_path, year)
+
+
 _RANGE_DAYS: dict[str, int | None] = {
     "7d": 7, "30d": 30, "90d": 90, "1y": 365, "all": None,
 }
@@ -1670,6 +1766,18 @@ def create_app(
     @app.post("/api/sync-all")
     def sync_all(db: str = Depends(get_db_path)) -> dict:
         return _sync_all(db, system_db=system_store_path())
+
+    @app.get("/api/sync/pbr/status")
+    def pbr_sync_status(db: str = Depends(get_db_path)) -> dict:
+        return _pbr_sync_status(db)
+
+    @app.post("/api/sync/pbr")
+    def pbr_sync(body: dict[str, Any], db: str = Depends(get_db_path)) -> dict:
+        return _pbr_sync_run(db, body)
+
+    @app.post("/api/sync/pbr/purge")
+    def pbr_sync_purge(body: dict[str, Any], db: str = Depends(get_db_path)) -> dict:
+        return _pbr_purge(db, body)
 
     @app.get("/api/system-keys")
     def get_system_keys(admin: dict = Depends(require_admin)) -> dict:

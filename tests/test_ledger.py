@@ -255,3 +255,129 @@ def test_exclude_labels_none_is_noop(ledger):
     ledger.upsert(_reward_tx("3", "daily_interest"))
     assert ledger.balances(exclude_labels=None)["BTC"] == Decimal("0.001")
     assert ledger.balances(exclude_labels=set())["BTC"] == Decimal("0.001")
+
+
+# ---- 期間洗い替え（外部ツール連携の再取得） ----
+
+def _dated_tx(day: int, source: str = "pbr", month: int = 3,
+              tx_id: str | None = None) -> CanonicalTx:
+    """2026-<month>-<day> UTC 深夜の REWARD 行。"""
+    return CanonicalTx(
+        id=tx_id or CanonicalTx.make_id(source, f"{month}-{day}"),
+        source=source,
+        timestamp=datetime(2026, month, day, tzinfo=timezone.utc),
+        type=TxType.REWARD,
+        received_asset="BTC",
+        received_amount=Decimal("0.001"),
+        label="daily_interest",
+    )
+
+
+_W_START = datetime(2026, 3, 3, tzinfo=timezone.utc)
+_W_END = datetime(2026, 3, 6, tzinfo=timezone.utc)
+
+
+def test_count_in_window_by_source(ledger):
+    ledger.upsert(_dated_tx(3))                        # 窓内
+    ledger.upsert(_dated_tx(4))                        # 窓内
+    ledger.upsert(_dated_tx(4, source="pbr_crawl"))    # 窓内 別ソース
+    ledger.upsert(_dated_tx(9))                        # 窓外
+    counts = ledger.count_in_window(["pbr", "pbr_crawl"], _W_START, _W_END)
+    assert counts == {"pbr": 2, "pbr_crawl": 1}
+
+
+def test_window_boundaries_are_start_inclusive_end_exclusive(ledger):
+    ledger.upsert(_dated_tx(2))   # 窓の直前
+    ledger.upsert(_dated_tx(3))   # start ちょうど → 対象
+    ledger.upsert(_dated_tx(5))   # 窓内
+    ledger.upsert(_dated_tx(6))   # end ちょうど → 対象外
+    deleted = ledger.delete_by_source_window(["pbr"], _W_START, _W_END)
+    assert deleted == 2
+    remaining = sorted(t.timestamp.day for t in ledger.all())
+    assert remaining == [2, 6]
+
+
+def test_delete_by_source_window_ignores_other_sources(ledger):
+    ledger.upsert(_dated_tx(4))
+    ledger.upsert(_dated_tx(4, source="gmo"))
+    ledger.delete_by_source_window(["pbr"], _W_START, _W_END)
+    assert ledger.count("pbr") == 0
+    assert ledger.count("gmo") == 1
+
+
+def test_delete_by_source_window_cleans_exports_and_batch_txs(ledger):
+    tx = _dated_tx(4)
+    ledger.upsert(tx)
+    ledger.mark_exported([tx.id], "koinly")
+    ledger.record_import_batch("b1", "pbr", "pbr", "old.csv", [tx.id])
+
+    ledger.delete_by_source_window(["pbr"], _W_START, _W_END)
+
+    assert ledger._conn.execute("SELECT COUNT(*) FROM exports").fetchone()[0] == 0
+    assert ledger._conn.execute("SELECT COUNT(*) FROM batch_txs").fetchone()[0] == 0
+    # バッチ記録自体は履歴として残る
+    assert len(ledger.list_import_batches()) == 1
+
+
+def test_delete_by_source_window_keeps_manual_rows(ledger):
+    ledger.upsert(_dated_tx(4, tx_id="manual:abc123"))
+    ledger.upsert(_dated_tx(5))
+    deleted = ledger.delete_by_source_window(["pbr"], _W_START, _W_END)
+    assert deleted == 1
+    assert [t.id for t in ledger.all()] == ["manual:abc123"]
+
+
+def test_replace_source_window_swaps_rows(ledger):
+    ledger.upsert(_dated_tx(1))                       # 窓外: 残る
+    ledger.upsert(_dated_tx(4))                       # 窓内 レガシー: 消える
+    fresh = [_dated_tx(4, source="pbr_crawl"), _dated_tx(5, source="pbr_crawl")]
+
+    stats = ledger.replace_source_window(
+        ["pbr", "pbr_crawl"], _W_START, _W_END, fresh,
+        batch_id="b1", source="pbr_crawl", exchange="pbr_crawl",
+        filename="crawl.json", prune_batch_source="pbr_crawl",
+    )
+
+    assert stats == {"deleted": 1, "inserted": 2, "parsed": 2}
+    assert ledger.count("pbr") == 1
+    assert ledger.count("pbr_crawl") == 2
+    batches = ledger.list_import_batches()
+    assert [b["id"] for b in batches] == ["b1"]
+    assert batches[0]["existing_count"] == 2
+
+
+def test_replace_source_window_is_idempotent(ledger):
+    fresh = [_dated_tx(4, source="pbr_crawl"), _dated_tx(5, source="pbr_crawl")]
+    ledger.replace_source_window(
+        ["pbr_crawl"], _W_START, _W_END, fresh,
+        batch_id="b1", source="pbr_crawl", exchange="pbr_crawl",
+        filename="crawl.json", prune_batch_source="pbr_crawl",
+    )
+    stats = ledger.replace_source_window(
+        ["pbr_crawl"], _W_START, _W_END, fresh,
+        batch_id="b2", source="pbr_crawl", exchange="pbr_crawl",
+        filename="crawl.json", prune_batch_source="pbr_crawl",
+    )
+    assert stats["deleted"] == 2
+    assert stats["inserted"] == 2
+    assert ledger.count("pbr_crawl") == 2
+    # 古いバッチは prune され常に 1 件
+    assert [b["id"] for b in ledger.list_import_batches()] == ["b2"]
+
+
+def test_replace_source_window_rolls_back_on_failure(ledger):
+    ledger.upsert(_dated_tx(4))
+    ledger.record_import_batch("dup", "pbr", "pbr", "x.csv", [])
+    fresh = [_dated_tx(4, source="pbr_crawl")]
+
+    with pytest.raises(Exception):
+        # batch_id が既存と衝突して INSERT に失敗する
+        ledger.replace_source_window(
+            ["pbr", "pbr_crawl"], _W_START, _W_END, fresh,
+            batch_id="dup", source="pbr_crawl", exchange="pbr_crawl",
+            filename="crawl.json",
+        )
+
+    # 削除も投入も巻き戻っている
+    assert ledger.count("pbr") == 1
+    assert ledger.count("pbr_crawl") == 0

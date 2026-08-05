@@ -100,6 +100,9 @@
         <a class="nav-link" data-page="import" href="#import">
           <span class="nav-icon">↑</span><span data-i18n="nav.import">インポート</span>
         </a>
+        <a class="nav-link hidden" id="nav-pbr-viewer" data-page="pbr-viewer" href="#pbr-viewer">
+          <span class="nav-icon">◧</span><span data-i18n="nav.pbrViewer">PBR クローラー</span>
+        </a>
         <a class="nav-link hidden" id="nav-admin" data-page="admin" href="#admin">
           <span class="nav-icon">⚙</span><span data-i18n="nav.admin">管理者設定</span>
         </a>
@@ -680,6 +683,49 @@
           </div>
         </section>
 
+        <!-- PBR Lending クローラー同期 -->
+        <section class="card import-section hidden" id="pbr-sync-section">
+          <h2 data-i18n="pbr.title">PBR Lending クローラー同期</h2>
+          <p class="card-hint" data-i18n="pbr.hint">ローカルのクローラーが取得した当年データを取り込みます。対象期間を毎回まるごと入れ替えるため、何度実行しても重複しません。</p>
+
+          <div id="pbr-sync-status" class="settings-hint"></div>
+
+          <div class="settings-actions">
+            <button id="pbr-sync-btn" class="settings-save-btn" data-i18n="btn.pbrSync">⟳ クロール結果を同期</button>
+            <label class="settings-label" style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-left:12px">
+              <input id="pbr-sync-force" type="checkbox" />
+              <span data-i18n="pbr.force">クロールが未完了でも同期する</span>
+            </label>
+          </div>
+          <div id="pbr-sync-result" class="settings-result hidden"></div>
+
+          <div class="table-wrap hidden" id="pbr-recon-wrap">
+            <table id="pbr-recon-table">
+              <thead>
+                <tr>
+                  <th data-i18n="pbr.thCurrency">資産</th>
+                  <th class="num" data-i18n="pbr.thLedger">台帳残高</th>
+                  <th class="num" data-i18n="pbr.thSnapshot">サイト実残高</th>
+                  <th class="num" data-i18n="pbr.thDrift">差分</th>
+                  <th class="num" data-i18n="pbr.thAccrued">未収利息（参考）</th>
+                  <th data-i18n="pbr.thStatus">状態</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+            <p class="settings-hint" data-i18n="pbr.reconHint">差分は「契約内で発生済みだが、まだ付与されていない利息」で説明できることが多い。未収利息を超える差分は要確認。</p>
+          </div>
+
+          <div class="settings-row" style="margin-top:16px;border-top:1px solid #30363d;padding-top:16px">
+            <label class="settings-label" data-i18n="pbr.purgeLabel">年次パージ（公式CSVへ移行する年）</label>
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+              <input id="pbr-purge-year" class="settings-input" type="number" min="2000" max="2100" style="max-width:120px" />
+              <button id="pbr-purge-btn" class="action-btn" data-i18n="btn.pbrPurge">この年の同期データを削除</button>
+            </div>
+            <p class="settings-hint" data-i18n="pbr.purgeHint">年が明けて公式の年間履歴CSVが公開されたら、その年のクロール由来データを削除してから公式CSVを取り込んでください。公式CSV由来のデータには触れません。</p>
+          </div>
+        </section>
+
         <!-- 既存口座の操作 -->
         <section class="card import-section">
           <h2 data-i18n="label.existingAccounts">既存の口座</h2>
@@ -736,6 +782,20 @@
             <p class="settings-hint" data-i18n="prefs.dailyInterestHint">PBR Lending の新システムは利息を日ごとに付与します。オフにすると取引履歴には残りますが、残高と税務エクスポートから除外されます。</p>
           </div>
           <div id="prefs-result" class="settings-result hidden"></div>
+        </section>
+      </div>
+
+      <!-- PBR クローラー画面（別アプリのビューアを埋め込む） -->
+      <div id="page-pbr-viewer" class="page hidden">
+        <h1 class="page-title" data-i18n="nav.pbrViewer">PBR クローラー</h1>
+        <section class="card import-section">
+          <p class="card-hint">
+            <span data-i18n="pbr.viewerHint">クロールの実行と取得結果の確認は、この画面（PBRLending-History-Check のビューア）で行います。取得後、インポート画面の「PBR Lending クローラー同期」で台帳へ取り込まれます。</span>
+            <a id="pbr-viewer-link" href="#" target="_blank" rel="noopener" data-i18n="pbr.viewerOpen">新しいタブで開く ↗</a>
+          </p>
+          <p class="settings-hint" data-i18n="pbr.viewerOffline">画面が表示されない場合は、クローラー側のビューアが起動しているか確認してください（npm run viewer / docker compose up）。</p>
+          <iframe id="pbr-viewer-frame" title="PBRLending-History-Check"
+            style="width:100%;height:calc(100vh - 260px);min-height:480px;border:1px solid #30363d;border-radius:6px;background:#fff"></iframe>
         </section>
       </div>
 

@@ -253,7 +253,7 @@ document.getElementById("mask-toggle").addEventListener("click", () => {
 
 // ---- ページナビゲーション ----
 
-const PAGES = ["dashboard", "accounts", "assets", "transactions", "import", "admin"];
+const PAGES = ["dashboard", "accounts", "assets", "transactions", "import", "pbr-viewer", "admin"];
 
 // ---- ハッシュルーター ----
 // URL ハッシュに状態を全て持たせ、リロード・ブックマーク・進む/戻るで復元可能にする。
@@ -322,6 +322,8 @@ function router() {
     );
   } else if (page === "import") {
     loadImportPage();
+  } else if (page === "pbr-viewer") {
+    showPbrViewer();
   } else if (page === "admin") {
     loadAdminPage();
   }
@@ -1774,6 +1776,7 @@ let _batchDeleteId = null;     // string               — CSVバッチ削除
 let _accountClearTarget = null; // string (表示名)      — 口座全消去
 let _apiDeleteSourceId = null; // string               — API口座登録削除
 let _walletDeleteSourceId = null; // string            — ウォレット登録削除
+let _pbrPurgeYear = null;      // number               — PBRクローラー同期の年次パージ
 
 function _clearDialogState() {
   _deleteCallback = null;
@@ -1781,6 +1784,7 @@ function _clearDialogState() {
   _accountClearTarget = null;
   _apiDeleteSourceId = null;
   _walletDeleteSourceId = null;
+  _pbrPurgeYear = null;
 }
 
 // タイトル・本文をセットしてダイアログを表示する（用途に応じてタイトルを変える）。
@@ -1806,6 +1810,38 @@ function showBatchDeleteDialog(batchId, desc) {
 
 document.getElementById("delete-confirm").addEventListener("click", async () => {
   document.getElementById("delete-dialog").classList.add("hidden");
+
+  // PBRクローラー同期データの年次パージ
+  if (_pbrPurgeYear) {
+    const year = _pbrPurgeYear;
+    _clearDialogState();
+    const result = document.getElementById("pbr-sync-result");
+    try {
+      const resp = await fetch("/api/sync/pbr/purge", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ year }),
+      });
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}));
+        throw new Error(err.detail || `HTTP ${resp.status}`);
+      }
+      const d = await resp.json();
+      result.className = "settings-result ok";
+      result.textContent = t("pbr.purgeDone", { year, count: d.deleted });
+      result.classList.remove("hidden");
+      // 自動同期がすぐ復元しないよう、この runId は試行済みのままにする
+      loadImportAccountsTable();
+      loadImportBatches();
+      _txAccountsLoaded = false;
+      loadPbrSyncStatus();
+    } catch (e) {
+      result.className = "settings-result err";
+      result.textContent = t("pbr.purgeFail", { error: e.message });
+      result.classList.remove("hidden");
+    }
+    return;
+  }
 
   // API口座登録削除
   if (_apiDeleteSourceId) {
@@ -1940,6 +1976,227 @@ async function loadImportPage() {
   loadApiAccountsTable();
   loadWalletsTable();
   loadPrefs();
+  loadPbrSyncStatus();
+}
+
+// ---- PBR Lending クローラー連携 -------------------------------------------
+//
+// クローラー（PBRLending-History-Check）は別アプリで、手動ログインを挟んで
+// 実行する。こちらは出力ファイルを読むだけなので、起動時に新しいクロール結果
+// （runId の変化）を見つけたら自動で取り込む。取り込みは対象期間の洗い替えで
+// 冪等なため、二重に走っても壊れない。
+
+let _pbrStatus = null;           // 直近に取得した /api/sync/pbr/status
+let _pbrAutoSyncTried = null;    // 自動同期を試した runId（1ロード1回に抑える）
+let _pbrSyncing = false;
+let _pbrViewerLoaded = false;
+
+// 状態を取得し、ナビ（クローラータブ）と同期カードの表示を更新する。
+async function loadPbrSyncStatus() {
+  try {
+    _pbrStatus = await fetchJSON("/api/sync/pbr/status");
+  } catch (e) {
+    _pbrStatus = null;
+  }
+  _renderPbrNav();
+  _renderPbrSyncCard();
+  return _pbrStatus;
+}
+
+function _renderPbrNav() {
+  const nav = document.getElementById("nav-pbr-viewer");
+  if (!nav) return;
+  const show = !!(_pbrStatus && _pbrStatus.configured && _pbrStatus.viewer_url);
+  nav.classList.toggle("hidden", !show);
+  const link = document.getElementById("pbr-viewer-link");
+  if (show && link) link.href = _pbrStatus.viewer_url;
+}
+
+// クロール日時と最終同期を 1 行ずつ表示する。
+function _renderPbrSyncCard() {
+  const section = document.getElementById("pbr-sync-section");
+  if (!section) return;
+  if (!_pbrStatus || !_pbrStatus.configured) {
+    section.classList.add("hidden");
+    return;
+  }
+  section.classList.remove("hidden");
+
+  const crawl = _pbrStatus.crawl || {};
+  const lastSync = _pbrStatus.last_sync;
+  const lines = [];
+
+  if (!crawl.artifact_found) {
+    lines.push(`<span class="status-warn">${escapeHtml(t("pbr.noArtifact"))}</span>`);
+  } else {
+    lines.push(escapeHtml(t("pbr.lastCrawl", {
+      when: _fmtDateTime(crawl.finished_at) || "-",
+      state: crawl.healthy ? t("pbr.crawlDone") : (crawl.phase || "?"),
+    })));
+  }
+  lines.push(escapeHtml(lastSync
+    ? t("pbr.lastSync", { when: _fmtDateTime(lastSync.synced_at) || "-", count: lastSync.parsed })
+    : t("pbr.neverSynced")));
+
+  if (crawl.artifact_found && !_pbrStatus.up_to_date) {
+    const key = crawl.healthy ? "pbr.statusBehind" : "pbr.statusUnhealthy";
+    const cls = crawl.healthy ? "status-ok" : "status-warn";
+    lines.push(`<span class="${cls}">${escapeHtml(t(key))}</span>`);
+  } else if (_pbrStatus.up_to_date) {
+    lines.push(`<span class="status-ok">${escapeHtml(t("pbr.statusUpToDate"))}</span>`);
+  }
+  (crawl.warnings || []).forEach((w) => {
+    lines.push(`<span class="status-warn">⚠ ${escapeHtml(w)}</span>`);
+  });
+
+  document.getElementById("pbr-sync-status").innerHTML = lines.join("<br>");
+
+  const yearInput = document.getElementById("pbr-purge-year");
+  if (yearInput && !yearInput.value && crawl.end_date) {
+    yearInput.value = crawl.end_date.slice(0, 4);
+  }
+  if (lastSync && lastSync.reconciliation) _renderPbrRecon(lastSync.reconciliation);
+}
+
+function _fmtDateTime(iso) {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (isNaN(d)) return iso;
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+const _PBR_RECON_CLASS = { ok: "status-ok", accrued_pending: "", warn: "status-warn" };
+
+function _renderPbrRecon(rows) {
+  const wrap = document.getElementById("pbr-recon-wrap");
+  const tbody = document.querySelector("#pbr-recon-table tbody");
+  if (!wrap || !tbody) return;
+  if (!rows || rows.length === 0) {
+    wrap.classList.add("hidden");
+    return;
+  }
+  tbody.innerHTML = rows.map((r) => `
+    <tr>
+      <td>${escapeHtml(r.currency)}</td>
+      <td class="num">${escapeHtml(r.ledger)}</td>
+      <td class="num">${escapeHtml(r.snapshot)}</td>
+      <td class="num">${escapeHtml(r.drift)}</td>
+      <td class="num">${escapeHtml(r.accrued_interest)}</td>
+      <td class="${_PBR_RECON_CLASS[r.status] || ""}">${escapeHtml(t("pbr.status." + r.status))}</td>
+    </tr>`).join("");
+  wrap.classList.remove("hidden");
+}
+
+// 取り込みを実行して画面を更新する。auto=true は起動時の自動取り込み。
+async function runPbrSync({ force = false, auto = false } = {}) {
+  if (_pbrSyncing) return null;
+  _pbrSyncing = true;
+  const result = document.getElementById("pbr-sync-result");
+  const btn = document.getElementById("pbr-sync-btn");
+  if (btn) btn.disabled = true;
+  if (result) {
+    result.className = "settings-result ok";
+    result.textContent = t("pbr.syncRunning");
+    result.classList.remove("hidden");
+  }
+  try {
+    const resp = await fetch("/api/sync/pbr", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ force }),
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      throw new Error(err.detail || `HTTP ${resp.status}`);
+    }
+    const d = await resp.json();
+    if (result) {
+      result.className = "settings-result ok";
+      result.textContent = (auto ? t("pbr.autoSyncDone") + " " : "")
+        + t("pbr.syncDone", { parsed: d.parsed, deleted: d.deleted.total });
+    }
+    _renderPbrRecon(d.reconciliation);
+    if (d.skip_reasons && Object.keys(d.skip_reasons).length) {
+      console.info("pbr sync skip reasons:", d.skip_reasons);
+    }
+    // 残高が変わるので関連する表を作り直す
+    loadImportAccountsTable();
+    loadImportBatches();
+    _txAccountsLoaded = false;
+    await loadPbrSyncStatus();
+    return d;
+  } catch (e) {
+    if (result) {
+      result.className = "settings-result err";
+      result.textContent = t("pbr.syncFail", { error: e.message });
+      result.classList.remove("hidden");
+    }
+    if (auto) console.warn("pbr auto sync failed:", e.message);
+    return null;
+  } finally {
+    _pbrSyncing = false;
+    if (btn) btn.disabled = false;
+  }
+}
+
+// 起動時に一度だけ: 未取り込みのクロール結果があれば自動で取り込む。
+// 失敗しても再試行しない（手動ボタンに委ねる）。
+async function autoSyncPbrIfNeeded() {
+  const status = await loadPbrSyncStatus();
+  if (!status || !status.configured) return;
+  const crawl = status.crawl || {};
+  if (!crawl.healthy || status.up_to_date) return;
+  if (_pbrAutoSyncTried === crawl.run_id) return;
+  _pbrAutoSyncTried = crawl.run_id;
+
+  const banner = _showPbrBanner(t("pbr.autoSyncRunning"));
+  const result = await runPbrSync({ auto: true });
+  if (banner) {
+    banner.textContent = result
+      ? t("pbr.autoSyncDone") + " " + t("pbr.syncDone", { parsed: result.parsed, deleted: result.deleted.total })
+      : t("pbr.autoSyncFail");
+    setTimeout(() => banner.remove(), result ? 6000 : 12000);
+  }
+  if (result) router();   // 表示中のページを取り込み後のデータで描き直す
+}
+
+// 画面上部に一時的な通知を出す（自動取り込みは非同期に走るため）。
+function _showPbrBanner(text) {
+  const host = document.querySelector(".main-content") || document.body;
+  const el = document.createElement("div");
+  el.className = "settings-result ok";
+  el.style.cssText = "margin:0 0 12px";
+  el.textContent = text;
+  host.prepend(el);
+  return el;
+}
+
+document.getElementById("pbr-sync-btn")?.addEventListener("click", () => {
+  const force = !!document.getElementById("pbr-sync-force")?.checked;
+  runPbrSync({ force });
+});
+
+document.getElementById("pbr-purge-btn")?.addEventListener("click", () => {
+  const year = Number(document.getElementById("pbr-purge-year")?.value);
+  if (!year) {
+    alert(t("pbr.purgeNeedYear"));
+    return;
+  }
+  _clearDialogState();
+  _pbrPurgeYear = year;
+  _openDeleteDialog(t("pbr.purgeConfirmTitle"), t("pbr.purgeConfirmBody", { year }));
+});
+
+// クローラー画面タブ: 初回表示時にだけ iframe を読み込む。
+function showPbrViewer() {
+  const frame = document.getElementById("pbr-viewer-frame");
+  const url = (_pbrStatus && _pbrStatus.viewer_url) || null;
+  if (!frame || !url) return;
+  if (!_pbrViewerLoaded) {
+    frame.src = url;
+    _pbrViewerLoaded = true;
+  }
 }
 
 // ---- 集計の表示設定 -------------------------------------------------------
@@ -2880,4 +3137,6 @@ async function loadMeta() {
   await _loadCoinIcons();
   // 初期描画は現在の URL ハッシュから（直リンク・リロードで状態復元）。
   router();
+  // クローラーの新しい取得結果があれば取り込む（描画を待たせない）。
+  autoSyncPbrIfNeeded();
 })();

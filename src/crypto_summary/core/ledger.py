@@ -170,6 +170,150 @@ class Ledger:
         self._conn.commit()
         return cur.rowcount > 0
 
+    # ------------------------------------------------------------------
+    # 期間洗い替え（外部ツールの再取得結果で一定期間を置き換える用途）
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _window_clause(
+        sources: list[str], keep_manual: bool
+    ) -> tuple[str, list]:
+        """期間 + ソース指定の WHERE 句と、その前段のパラメータを返す。
+
+        timestamp は ISO 文字列で保存されているため、同じ書式のパラメータとの
+        文字列比較で範囲指定できる（同一オフセット表記の行が対象）。
+        """
+        placeholders = ",".join("?" for _ in sources)
+        clause = (
+            f"source IN ({placeholders}) AND timestamp >= ? AND timestamp < ?"
+        )
+        if keep_manual:
+            # Web の手動入力は任意のタイムゾーンを持ちうる（文字列比較が効かない）。
+            # 外部ツール由来の洗い替えで巻き込まないよう常に残す。
+            clause += " AND id NOT LIKE 'manual:%'"
+        return clause, list(sources)
+
+    def count_in_window(
+        self, sources: list[str], start: datetime, end_exclusive: datetime,
+        *, keep_manual: bool = True,
+    ) -> dict[str, int]:
+        """指定期間・指定ソースの件数をソース別に返す（0 件のソースは含まない）。"""
+        if not sources:
+            return {}
+        clause, params = self._window_clause(sources, keep_manual)
+        rows = self._conn.execute(
+            f"SELECT source, COUNT(*) FROM transactions WHERE {clause} "
+            f"GROUP BY source",
+            params + [start.isoformat(), end_exclusive.isoformat()],
+        ).fetchall()
+        return {src: cnt for src, cnt in rows}
+
+    def delete_by_source_window(
+        self, sources: list[str], start: datetime, end_exclusive: datetime,
+        *, keep_manual: bool = True, commit: bool = True,
+    ) -> int:
+        """指定期間 [start, end_exclusive) の取引を削除する。削除件数を返す。
+
+        exports / batch_txs の紐付けも併せて消す。import_batches のレコード自体は
+        残す（他期間の取引を含むバッチの履歴を失わないため）。
+        """
+        if not sources:
+            return 0
+        clause, params = self._window_clause(sources, keep_manual)
+        params = params + [start.isoformat(), end_exclusive.isoformat()]
+        sel = f"SELECT id FROM transactions WHERE {clause}"
+        self._conn.execute(f"DELETE FROM exports WHERE tx_id IN ({sel})", params)
+        self._conn.execute(f"DELETE FROM batch_txs WHERE tx_id IN ({sel})", params)
+        cur = self._conn.execute(
+            f"DELETE FROM transactions WHERE {clause}", params
+        )
+        if commit:
+            self._conn.commit()
+        return cur.rowcount
+
+    def replace_source_window(
+        self,
+        delete_sources: list[str],
+        start: datetime,
+        end_exclusive: datetime,
+        txs: list[CanonicalTx],
+        *,
+        batch_id: str,
+        source: str,
+        exchange: str,
+        filename: str | None,
+        prune_batch_source: str | None = None,
+        keep_manual: bool = True,
+    ) -> dict[str, int]:
+        """期間削除 → 再投入を単一トランザクションで行う。
+
+        戻り値: {"deleted": 削除件数, "inserted": 新規追加件数, "parsed": 投入件数}
+
+        upsert() はトランザクションごとに commit するため、ここでは同じ SQL を
+        インラインで使う。途中で失敗した場合は削除も含めて全て巻き戻す。
+        """
+        try:
+            deleted = self.delete_by_source_window(
+                delete_sources, start, end_exclusive,
+                keep_manual=keep_manual, commit=False,
+            )
+            if prune_batch_source:
+                # 洗い替えで無効になった過去バッチを消す（毎回1件に保つ）。
+                self._conn.execute(
+                    "DELETE FROM batch_txs WHERE batch_id IN "
+                    "(SELECT id FROM import_batches WHERE source=?)",
+                    (prune_batch_source,),
+                )
+                self._conn.execute(
+                    "DELETE FROM import_batches WHERE source=?",
+                    (prune_batch_source,),
+                )
+            before = self.count(source)
+            now = datetime.utcnow().isoformat()
+            self._conn.executemany(
+                """
+                INSERT INTO transactions VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(id) DO UPDATE SET
+                    type            = excluded.type,
+                    received_asset  = excluded.received_asset,
+                    received_amount = excluded.received_amount,
+                    sent_asset      = excluded.sent_asset,
+                    sent_amount     = excluded.sent_amount,
+                    fee_asset       = excluded.fee_asset,
+                    fee_amount      = excluded.fee_amount,
+                    raw             = excluded.raw
+                """,
+                [
+                    (
+                        tx.id, tx.source, tx.timestamp.isoformat(), tx.type.value,
+                        tx.received_asset,
+                        str(tx.received_amount) if tx.received_amount is not None else None,
+                        tx.sent_asset,
+                        str(tx.sent_amount) if tx.sent_amount is not None else None,
+                        tx.fee_asset,
+                        str(tx.fee_amount) if tx.fee_amount is not None else None,
+                        tx.label, tx.tx_hash,
+                        json.dumps(tx.raw, default=str),
+                        now,
+                    )
+                    for tx in txs
+                ],
+            )
+            inserted = self.count(source) - before
+            self._conn.execute(
+                "INSERT INTO import_batches VALUES (?,?,?,?,?,?)",
+                (batch_id, source, exchange, filename, now, len(txs)),
+            )
+            self._conn.executemany(
+                "INSERT OR IGNORE INTO batch_txs VALUES (?,?)",
+                [(batch_id, tx.id) for tx in txs],
+            )
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
+        return {"deleted": deleted, "inserted": inserted, "parsed": len(txs)}
+
     def mark_exported(self, tx_ids: list[str], sink: str) -> None:
         now = datetime.utcnow().isoformat()
         self._conn.executemany(

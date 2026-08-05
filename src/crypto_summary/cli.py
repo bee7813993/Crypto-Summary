@@ -13,6 +13,13 @@ from .core.ledger import Ledger
 from .core.models import CanonicalTx, TxType
 from .core.prices import fetch_prices as _fetch_prices_core
 from .sources.csv_import import EXCHANGE_SOURCES
+from .sources.jp.pbr_crawl import (
+    ENV_VAR as _PBR_ENV_VAR,
+    SOURCE_ID as _PBR_SOURCE_ID,
+    PbrSyncError,
+    purge_pbr_crawl_year,
+    sync_pbr_crawl,
+)
 
 
 def _fetch_prices(assets: list[str], currency: str) -> dict[str, Decimal]:
@@ -558,6 +565,7 @@ def sources() -> None:
         "pbr":                  "PBR Lending（日次レポート・入出金履歴を自動判定）",
         "pbr_lending":          "PBR Lending 貸出日次レポート",
         "pbr_transfers":        "PBR Lending 入出金履歴",
+        "pbr_crawl":            "PBR Lending クローラー正規化JSON（取り込みは sync-pbr を使う）",
         "bitflyer":             "bitFlyer TradeHistory.csv（現物総合台帳）",
         "bitflyer_collateral":  "bitFlyer CollateralHistory.csv（FX/CFD 証拠金）",
         "bitflyer_conversion":  "bitFlyer ConversionHistory.csv（両替）",
@@ -605,6 +613,138 @@ def clear(ctx: click.Context, source: str | None, yes: bool) -> None:
     n = ledger.clear(source)
     ledger.close()
     console.print(f"[green]✓[/green] {n} 件を削除しました（{source or '全ソース'}）。")
+
+
+# ---------------------------------------------------------------------------
+# sync-pbr (PBRLending-History-Check のクロール結果を取り込む)
+# ---------------------------------------------------------------------------
+
+_RECON_STATUS_LABEL = {
+    "ok": "[green]一致[/green]",
+    "accrued_pending": "[cyan]未収利息の範囲内[/cyan]",
+    "warn": "[yellow]要確認[/yellow]",
+}
+
+
+def _print_reconciliation(rows: list[dict]) -> None:
+    """台帳残高とサイト実残高の突き合わせを表示する。"""
+    if not rows:
+        return
+    table = Table(title="PBR 残高照合", box=box.ROUNDED)
+    table.add_column("資産", style="cyan")
+    table.add_column("台帳残高", justify="right")
+    table.add_column("サイト実残高", justify="right")
+    table.add_column("差分", justify="right")
+    table.add_column("未収利息(参考)", justify="right")
+    table.add_column("状態")
+    for row in rows:
+        table.add_row(
+            row["currency"], row["ledger"], row["snapshot"], row["drift"],
+            row["accrued_interest"],
+            _RECON_STATUS_LABEL.get(row["status"], row["status"]),
+        )
+    console.print(table)
+    console.print(
+        "[dim]差分は「契約内で発生済みだが、まだ付与されていない利息」で説明できる"
+        "ことが多い。未収利息を超える差分は要確認。[/dim]"
+    )
+
+
+@cli.command("sync-pbr")
+@click.option(
+    "--crawl-dir", default=None,
+    type=click.Path(file_okay=False, path_type=Path),
+    help=f"PBRLending-History-Check の outputs ディレクトリ（省略時: 環境変数 {_PBR_ENV_VAR}）",
+)
+@click.option("--force", is_flag=True, default=False,
+              help="クロールが正常終了していなくても同期する")
+@click.option("--dry-run", is_flag=True, default=False,
+              help="削除・取り込みをせず、対象期間と件数だけ表示する")
+@click.option("--purge-year", type=int, default=None, metavar="YYYY",
+              help="公式CSVへ移行する年を指定して、その年のクロール由来データを削除する（同期はしない）")
+@click.option("--yes", "-y", is_flag=True, default=False,
+              help="確認プロンプトをスキップ")
+@click.pass_context
+def sync_pbr_cmd(
+    ctx: click.Context, crawl_dir: Path | None, force: bool,
+    dry_run: bool, purge_year: int | None, yes: bool,
+) -> None:
+    """PBR Lending のクロール結果を取り込む（対象期間を洗い替える）。
+
+    クローラーは同じ期間を何度でも取り直すため、追記ではなく期間ごと
+    置き換える。何度実行しても結果は同じ。
+    """
+    db = ctx.obj["db"]
+
+    if purge_year is not None:
+        start = datetime(purge_year, 1, 1, tzinfo=timezone.utc)
+        end = datetime(purge_year + 1, 1, 1, tzinfo=timezone.utc)
+        ledger = Ledger(db)
+        try:
+            target = ledger.count_in_window([_PBR_SOURCE_ID], start, end)
+        finally:
+            ledger.close()
+        n = target.get(_PBR_SOURCE_ID, 0)
+        if n == 0:
+            console.print(f"[yellow]{purge_year} 年のクロール由来データはありません。[/yellow]")
+            return
+        if not yes and not click.confirm(
+            f"{purge_year} 年のクロール由来データ {n} 件を削除します"
+            f"（公式CSV由来のデータには触れません）。よろしいですか？"
+        ):
+            console.print("[dim]キャンセルしました。[/dim]")
+            return
+        result = purge_pbr_crawl_year(db, purge_year)
+        console.print(
+            f"[green]✓[/green] {result['deleted']} 件を削除しました"
+            f"（{purge_year} 年 / source={_PBR_SOURCE_ID}）。\n"
+            f"[dim]公式の年間履歴CSVを import --exchange pbr で取り込んでください。[/dim]"
+        )
+        return
+
+    try:
+        preview = sync_pbr_crawl(db, crawl_dir, force=force, dry_run=True)
+    except PbrSyncError as e:
+        console.print(f"[red]{e.message}[/red]")
+        if e.code in ("marker_missing", "unhealthy"):
+            console.print("[dim]--force を付けると強制的に同期できます。[/dim]")
+        raise click.Abort()
+
+    window = preview["window"]
+    deleted = {k: v for k, v in preview["deleted"].items() if k != "total"}
+    console.print(
+        f"クロール結果: [cyan]{preview['crawl_dir']}[/cyan]\n"
+        f"  対象期間 : {window['start'][:10]} 〜 {window['end_exclusive'][:10]}（末日を含まない）\n"
+        f"  取り込み : {preview['parsed']} 件\n"
+        f"  洗い替え : {preview['deleted']['total']} 件"
+        f"{'（' + ', '.join(f'{k}={v}' for k, v in sorted(deleted.items())) + '）' if deleted else ''}"
+    )
+    for warning in preview["sync_warnings"] + preview["crawl_warnings"]:
+        console.print(f"[yellow]警告: {warning}[/yellow]")
+
+    if dry_run:
+        _print_reconciliation(preview["reconciliation"])
+        console.print("[dim]--dry-run のため変更していません。[/dim]")
+        return
+
+    if not yes and not click.confirm("この内容で同期しますか？"):
+        console.print("[dim]キャンセルしました。[/dim]")
+        return
+
+    try:
+        result = sync_pbr_crawl(db, crawl_dir, force=force)
+    except PbrSyncError as e:
+        console.print(f"[red]{e.message}[/red]")
+        raise click.Abort()
+
+    console.print(
+        f"[green]✓[/green] {result['parsed']} 件を取り込みました"
+        f"（削除 {result['deleted']['total']} 件 / 新規 {result['inserted']} 件）。"
+    )
+    if result["skip_reasons"]:
+        detail = ", ".join(f"{k}={v}" for k, v in sorted(result["skip_reasons"].items()))
+        console.print(f"[dim]対象外として除いた行: {result['skipped']} 件（{detail}）[/dim]")
+    _print_reconciliation(result["reconciliation"])
 
 
 # ---------------------------------------------------------------------------

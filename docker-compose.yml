@@ -1,3 +1,23 @@
+# PBR Lending クローラー（PBRLending-History-Check）も一緒に起動したい場合は
+# 下の include を有効にする（Docker Compose v2.20+ / Docker Desktop 4.22+）。
+# docker compose up -d で app（8000）とクローラーの viewer（4174 / noVNC 6080）が
+# まとめて起動し、どちらも restart: unless-stopped で自動復帰する。
+# app だけ起動したいときは docker compose up -d app。
+# クローラー側は ./outputs をホストにマウントしているので、コンテナ実行でも
+# ホストの outputs ディレクトリがそのまま連携ポイントになる。
+#
+# 有効化の前提:
+#   1. クローラー側に .env を作り PBR_VNC_PASSWORD を設定しておく
+#      （ファイルが無いと include 自体がエラーになる。パスワードは noVNC 用で必須）
+#   2. PBR_VIEWER_URL=http://127.0.0.1:4174 にする（クローラーの Docker 側ポート）
+#   3. クローラーをホストの npm run viewer で動かす運用なら include は不要
+#      （連携はファイル経由なので成立する。ビューア URL は既定の 4173）
+#
+# include:
+#   - path: J:/Git/PBRLending-History-Check/docker-compose.yml
+#     project_directory: J:/Git/PBRLending-History-Check
+#     env_file: J:/Git/PBRLending-History-Check/.env   # PBR_VNC_PASSWORD の解決用
+
 services:
   app:
     build: .
@@ -5,6 +25,9 @@ services:
       - "8000:8000"
     volumes:
       - ./data:/data
+      # PBR Lending クローラーの出力（読み取り専用）。連携する場合のみ有効化し、
+      # PBR_CRAWL_DIR=/pbr-outputs を設定する。Windows のパスは / 区切りで書く。
+      # - "J:/Git/PBRLending-History-Check/outputs:/pbr-outputs:ro"
     environment:
       # 起動時に必須なのは SECRET_KEY と DATA_DIR のみ。
       # 下記の OAuth / CS_SECRET_KEY / ADMIN_EMAILS / BASE_URL は
@@ -18,4 +41,7 @@ services:
       - ADMIN_EMAILS=${ADMIN_EMAILS:-}
       - BASE_URL=${BASE_URL:-}
       - COINGECKO_API_KEY=${COINGECKO_API_KEY:-}
+      # PBR Lending クローラー連携（上の volume を有効にした場合）
+      - PBR_CRAWL_DIR=${PBR_CRAWL_DIR:-}
+      - PBR_VIEWER_URL=${PBR_VIEWER_URL:-}
     restart: unless-stopped

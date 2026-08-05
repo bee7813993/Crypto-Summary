@@ -1,0 +1,436 @@
+"""PBR Lending クローラー同期（洗い替え）のテスト
+
+重点検証:
+- クロールが扱う期間だけを洗い替え、期間外（旧システム期間・他ソース）は残す
+- 削除期間は「展開後の取引が実在する期間」から決まる（システム移行日を含まない）
+- 何度実行しても結果が同じ（冪等）
+- クロールが正常終了していなければ既定では同期しない（force で上書き可）
+- 取引が 0 件になる入力では洗い替えを中止する（期間を空にしない）
+- 年次パージは pbr_crawl の当該年だけを消す
+- 残高照合は情報提供のみ（同期は失敗させない）
+"""
+import json
+from datetime import datetime, timezone
+from decimal import Decimal
+from pathlib import Path
+
+import pytest
+
+from crypto_summary.core.ledger import Ledger
+from crypto_summary.core.models import CanonicalTx, TxType
+from crypto_summary.sources.jp.pbr_crawl import (
+    ARTIFACT_NAME,
+    ENV_VAR,
+    MARKER_NAME,
+    PbrSyncError,
+    load_sync_state,
+    purge_pbr_crawl_year,
+    read_crawl_status,
+    sync_pbr_crawl,
+    sync_state_path,
+)
+
+
+# ---- フィクスチャ ----
+
+def _artifact(**sections) -> dict:
+    payload = {
+        "start_date": "2026-01-01",
+        "end_date": "2026-03-05",
+        "currencies": ["BTC"],
+        "daily_ranges": [{
+            "date_from": "2026-03-03", "date_to": "2026-03-05",
+            "currency": "BTC", "daily_expected_interest": "0.00001",
+        }],
+        "wallet_events": [],
+        "transfer_events": [{
+            "date": "2026-03-02", "currency": "BTC",
+            "type": "システム移行", "amount": "0",
+        }],
+        "balance_snapshots": [],
+        "warnings": [],
+    }
+    payload.update(sections)
+    return payload
+
+
+def _marker(**overrides) -> dict:
+    data = {
+        "runId": "2026-03-05T10:00:00.000Z",
+        "year": 2026,
+        "startedAt": "2026-03-05T10:00:00.000Z",
+        "finishedAt": "2026-03-05T10:03:00.000Z",
+        "phase": "done",
+        "failedCurrencies": [],
+    }
+    data.update(overrides)
+    return data
+
+
+@pytest.fixture
+def crawl_dir(tmp_path: Path) -> Path:
+    d = tmp_path / "outputs"
+    d.mkdir()
+    (d / ARTIFACT_NAME).write_text(
+        json.dumps(_artifact(), ensure_ascii=False), encoding="utf-8")
+    (d / MARKER_NAME).write_text(
+        json.dumps(_marker()), encoding="utf-8")
+    return d
+
+
+@pytest.fixture
+def db_path(tmp_path: Path) -> Path:
+    return tmp_path / "ledger.db"
+
+
+def _write_artifact(crawl_dir: Path, **sections) -> None:
+    (crawl_dir / ARTIFACT_NAME).write_text(
+        json.dumps(_artifact(**sections), ensure_ascii=False), encoding="utf-8")
+
+
+def _write_marker(crawl_dir: Path, **overrides) -> None:
+    (crawl_dir / MARKER_NAME).write_text(
+        json.dumps(_marker(**overrides)), encoding="utf-8")
+
+
+def _seed(db_path: Path, *rows: CanonicalTx) -> None:
+    ledger = Ledger(db_path)
+    try:
+        ledger.upsert_many(list(rows))
+    finally:
+        ledger.close()
+
+
+def _tx(day: str, source: str, label: str = "daily_interest",
+        tx_id: str | None = None) -> CanonicalTx:
+    return CanonicalTx(
+        id=tx_id or CanonicalTx.make_id(source, f"{label}|{day}"),
+        source=source,
+        timestamp=datetime.fromisoformat(day).replace(tzinfo=timezone.utc),
+        type=TxType.REWARD,
+        received_asset="BTC",
+        received_amount=Decimal("0.5"),
+        label=label,
+    )
+
+
+def _sources(db_path: Path) -> dict[str, int]:
+    ledger = Ledger(db_path)
+    try:
+        return {src: cnt for src, cnt, _ in ledger.sources()}
+    finally:
+        ledger.close()
+
+
+def _all_ids(db_path: Path) -> set[str]:
+    ledger = Ledger(db_path)
+    try:
+        return {t.id for t in ledger.all(limit=None)}
+    finally:
+        ledger.close()
+
+
+# ---- 状態の読み取り ----
+
+def test_read_crawl_status_healthy(crawl_dir):
+    status = read_crawl_status(crawl_dir)
+    assert status["healthy"] is True
+    assert status["run_id"] == "2026-03-05T10:00:00.000Z"
+    assert status["phase"] == "done"
+    assert status["end_date"] == "2026-03-05"
+    assert status["warnings"] == []
+
+
+def test_read_crawl_status_partial_is_unhealthy(crawl_dir):
+    _write_marker(crawl_dir, phase="partial", failedCurrencies=["ETH"])
+    status = read_crawl_status(crawl_dir)
+    assert status["healthy"] is False
+    assert any("ETH" in w for w in status["warnings"])
+
+
+def test_read_crawl_status_missing_dir(tmp_path):
+    status = read_crawl_status(tmp_path / "nope")
+    assert status["artifact_found"] is False
+    assert status["marker_found"] is False
+    assert status["healthy"] is False
+
+
+# ---- 洗い替えの範囲 ----
+
+def test_sync_replaces_window_and_keeps_everything_else(crawl_dir, db_path):
+    _seed(
+        db_path,
+        _tx("2025-12-30", "pbr", "pbr_deposit"),        # 旧システム: 残る
+        _tx("2026-02-15", "pbr", "premium_migration_interest"),  # 旧システム: 残る
+        _tx("2026-03-04", "pbr"),                        # 手作り CSV 由来: 消える
+        _tx("2026-03-04", "gmo"),                        # 別ソース: 残る
+    )
+
+    result = sync_pbr_crawl(db_path, crawl_dir)
+
+    assert result["ok"] is True
+    assert result["window"]["start"] == "2026-03-03T00:00:00+00:00"
+    assert result["window"]["end_exclusive"] == "2026-03-06T00:00:00+00:00"
+    assert result["deleted"]["pbr"] == 1
+    assert result["parsed"] == 3
+    assert _sources(db_path) == {"gmo": 1, "pbr": 2, "pbr_crawl": 3}
+
+
+def test_window_starts_at_first_emitted_row_not_raw_event(crawl_dir, db_path):
+    """システム移行(2026-03-02)は取引にならないので、その日は削除対象外。"""
+    _seed(db_path, _tx("2026-03-02", "pbr", "pbr_deposit"))
+    sync_pbr_crawl(db_path, crawl_dir)
+    assert _sources(db_path)["pbr"] == 1
+
+
+def test_sync_is_idempotent(crawl_dir, db_path):
+    first = sync_pbr_crawl(db_path, crawl_dir)
+    ids_after_first = _all_ids(db_path)
+
+    second = sync_pbr_crawl(db_path, crawl_dir)
+
+    assert second["deleted"]["pbr_crawl"] == first["parsed"]
+    assert second["parsed"] == first["parsed"]
+    assert _all_ids(db_path) == ids_after_first
+    assert _sources(db_path)["pbr_crawl"] == 3
+
+
+def test_sync_follows_corrections_in_recrawled_data(crawl_dir, db_path):
+    """再クロールで金額が変わったら、古い行は残らず新しい行に置き換わる。"""
+    sync_pbr_crawl(db_path, crawl_dir)
+    _write_artifact(crawl_dir, daily_ranges=[{
+        "date_from": "2026-03-03", "date_to": "2026-03-05",
+        "currency": "BTC", "daily_expected_interest": "0.00002",
+    }])
+
+    sync_pbr_crawl(db_path, crawl_dir)
+
+    ledger = Ledger(db_path)
+    try:
+        amounts = {t.received_amount for t in ledger.all(limit=None)}
+    finally:
+        ledger.close()
+    assert amounts == {Decimal("0.00002")}
+
+
+def test_past_year_sync_keeps_official_rows(crawl_dir, db_path):
+    """過去年の同期では公式CSV由来（pbr）に触れない。
+
+    年次パージ → 公式CSV取り込み のあとに古いクロール結果を同期しても、
+    公式データを失わないための保護。
+    """
+    _write_artifact(
+        crawl_dir,
+        end_date="2020-03-05",
+        daily_ranges=[{
+            "date_from": "2020-03-03", "date_to": "2020-03-05",
+            "currency": "BTC", "daily_expected_interest": "0.00001",
+        }],
+        transfer_events=[],
+    )
+    _seed(db_path, _tx("2020-03-04", "pbr"))   # 公式CSV由来
+
+    result = sync_pbr_crawl(db_path, crawl_dir)
+
+    assert "pbr" not in result["deleted"]
+    assert _sources(db_path) == {"pbr": 1, "pbr_crawl": 3}
+
+
+def test_manual_rows_in_window_are_kept(crawl_dir, db_path):
+    _seed(db_path, _tx("2026-03-04", "pbr", tx_id="manual:abc123"))
+    sync_pbr_crawl(db_path, crawl_dir)
+    assert "manual:abc123" in _all_ids(db_path)
+
+
+def test_batches_stay_at_one_per_sync(crawl_dir, db_path):
+    sync_pbr_crawl(db_path, crawl_dir)
+    sync_pbr_crawl(db_path, crawl_dir)
+    ledger = Ledger(db_path)
+    try:
+        batches = ledger.list_import_batches()
+    finally:
+        ledger.close()
+    assert len(batches) == 1
+    assert batches[0]["exchange"] == "pbr_crawl"
+    assert batches[0]["filename"] == ARTIFACT_NAME
+    assert batches[0]["existing_count"] == 3
+
+
+def test_cursor_is_advanced(crawl_dir, db_path):
+    sync_pbr_crawl(db_path, crawl_dir)
+    ledger = Ledger(db_path)
+    try:
+        assert ledger.get_cursor("pbr_crawl") == datetime(
+            2026, 3, 5, tzinfo=timezone.utc)
+    finally:
+        ledger.close()
+
+
+# ---- ヘルスチェック ----
+
+def test_unhealthy_crawl_is_refused(crawl_dir, db_path):
+    _write_marker(crawl_dir, phase="partial", failedCurrencies=["ETH"])
+    _seed(db_path, _tx("2026-03-04", "pbr"))
+
+    with pytest.raises(PbrSyncError) as exc:
+        sync_pbr_crawl(db_path, crawl_dir)
+
+    assert exc.value.code == "unhealthy"
+    assert _sources(db_path) == {"pbr": 1}   # 何も消えていない
+
+
+def test_force_overrides_health_check(crawl_dir, db_path):
+    _write_marker(crawl_dir, phase="partial", failedCurrencies=["ETH"])
+    result = sync_pbr_crawl(db_path, crawl_dir, force=True)
+    assert result["forced"] is True
+    assert result["parsed"] == 3
+    assert any("force" in w for w in result["sync_warnings"])
+
+
+def test_missing_marker_is_refused_but_forceable(crawl_dir, db_path):
+    (crawl_dir / MARKER_NAME).unlink()
+    with pytest.raises(PbrSyncError) as exc:
+        sync_pbr_crawl(db_path, crawl_dir)
+    assert exc.value.code == "marker_missing"
+    assert sync_pbr_crawl(db_path, crawl_dir, force=True)["parsed"] == 3
+
+
+def test_missing_artifact_is_not_forceable(crawl_dir, db_path):
+    (crawl_dir / ARTIFACT_NAME).unlink()
+    with pytest.raises(PbrSyncError) as exc:
+        sync_pbr_crawl(db_path, crawl_dir, force=True)
+    assert exc.value.code == "artifact_missing"
+
+
+def test_unconfigured_dir_raises(db_path, monkeypatch):
+    monkeypatch.delenv(ENV_VAR, raising=False)
+    with pytest.raises(PbrSyncError) as exc:
+        sync_pbr_crawl(db_path, None)
+    assert exc.value.code == "not_configured"
+
+
+def test_env_var_is_used_when_dir_omitted(crawl_dir, db_path, monkeypatch):
+    monkeypatch.setenv(ENV_VAR, str(crawl_dir))
+    assert sync_pbr_crawl(db_path, None)["parsed"] == 3
+
+
+def test_empty_result_aborts_without_deleting(crawl_dir, db_path):
+    _seed(db_path, _tx("2026-03-04", "pbr"))
+    _write_artifact(crawl_dir, daily_ranges=[], transfer_events=[])
+
+    with pytest.raises(PbrSyncError) as exc:
+        sync_pbr_crawl(db_path, crawl_dir)
+
+    assert exc.value.code == "no_rows"
+    assert _sources(db_path) == {"pbr": 1}
+
+
+def test_invalid_artifact_raises(crawl_dir, db_path):
+    (crawl_dir / ARTIFACT_NAME).write_text('{"foo": 1}', encoding="utf-8")
+    with pytest.raises(PbrSyncError) as exc:
+        sync_pbr_crawl(db_path, crawl_dir)
+    assert exc.value.code == "artifact_invalid"
+
+
+# ---- dry run ----
+
+def test_dry_run_changes_nothing(crawl_dir, db_path):
+    _seed(db_path, _tx("2026-03-04", "pbr"))
+
+    result = sync_pbr_crawl(db_path, crawl_dir, dry_run=True)
+
+    assert result["dry_run"] is True
+    assert result["deleted"] == {"pbr": 1, "total": 1}
+    assert result["parsed"] == 3
+    assert _sources(db_path) == {"pbr": 1}
+    assert not sync_state_path(db_path).exists()
+
+
+# ---- 残高照合 ----
+
+_SNAPSHOTS = [{
+    "date": "2026-03-05", "currency": "BTC",
+    "amount": "0.00003", "accrued_interest": "0",
+}]
+
+
+def test_reconciliation_ok_when_balances_match(crawl_dir, db_path):
+    _write_artifact(crawl_dir, balance_snapshots=_SNAPSHOTS)
+    result = sync_pbr_crawl(db_path, crawl_dir)
+    row = result["reconciliation"][0]
+    assert row["currency"] == "BTC"
+    assert row["status"] == "ok"
+    # 表示は末尾ゼロを落とした形（0E-10 のような読みにくい表記にしない）
+    assert row["drift"] == "0"
+    assert row["ledger"] == "0.00003"
+
+
+def test_reconciliation_accrued_pending(crawl_dir, db_path):
+    """差分が未収利息の範囲内なら「未付与の利息」として説明できる。"""
+    _write_artifact(crawl_dir, balance_snapshots=[{
+        "date": "2026-03-05", "currency": "BTC",
+        "amount": "0.00004", "accrued_interest": "0.00001",
+    }])
+    result = sync_pbr_crawl(db_path, crawl_dir)
+    assert result["reconciliation"][0]["status"] == "accrued_pending"
+
+
+def test_reconciliation_warns_when_drift_exceeds_accrued(crawl_dir, db_path):
+    _write_artifact(crawl_dir, balance_snapshots=[{
+        "date": "2026-03-05", "currency": "BTC",
+        "amount": "5", "accrued_interest": "0.00001",
+    }])
+    result = sync_pbr_crawl(db_path, crawl_dir)
+    assert result["reconciliation"][0]["status"] == "warn"
+    assert result["ok"] is True      # 照合の警告では同期を失敗させない
+
+
+def test_reconciliation_includes_legacy_pbr_rows(crawl_dir, db_path):
+    """照合対象は pbr + pbr_crawl の合算（旧システム期間の残高も含む）。"""
+    _seed(db_path, _tx("2026-02-15", "pbr", "pbr_deposit"))   # +0.5 BTC
+    _write_artifact(crawl_dir, balance_snapshots=[{
+        "date": "2026-03-05", "currency": "BTC",
+        "amount": "0.50003", "accrued_interest": "0",
+    }])
+    result = sync_pbr_crawl(db_path, crawl_dir)
+    assert result["reconciliation"][0]["status"] == "ok"
+
+
+# ---- サイドカー ----
+
+def test_sync_state_roundtrip(crawl_dir, db_path):
+    result = sync_pbr_crawl(db_path, crawl_dir)
+    state = load_sync_state(db_path)
+    assert sync_state_path(db_path).name == "ledger.pbr_sync.json"
+    assert state["last_sync"]["run_id"] == result["run_id"]
+    assert state["last_sync"]["parsed"] == 3
+    assert state["last_sync"]["window"] == result["window"]
+    assert state["last_sync"]["batch_id"] == result["batch_id"]
+
+
+def test_load_sync_state_missing_is_empty(db_path):
+    assert load_sync_state(db_path) == {}
+
+
+# ---- 年次パージ ----
+
+def test_purge_year_removes_only_that_years_crawl_rows(crawl_dir, db_path):
+    sync_pbr_crawl(db_path, crawl_dir)
+    _seed(
+        db_path,
+        _tx("2027-01-01", "pbr_crawl"),          # 翌年: 残る
+        _tx("2026-02-15", "pbr", "pbr_deposit"),  # 公式 CSV 由来: 残る
+    )
+
+    result = purge_pbr_crawl_year(db_path, 2026)
+
+    assert result == {"ok": True, "year": 2026, "deleted": 3}
+    assert _sources(db_path) == {"pbr": 1, "pbr_crawl": 1}
+    assert load_sync_state(db_path)["last_purge"]["year"] == 2026
+
+
+def test_resync_after_purge_restores_rows(crawl_dir, db_path):
+    sync_pbr_crawl(db_path, crawl_dir)
+    purge_pbr_crawl_year(db_path, 2026)
+    sync_pbr_crawl(db_path, crawl_dir)
+    assert _sources(db_path)["pbr_crawl"] == 3

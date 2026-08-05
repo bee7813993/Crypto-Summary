@@ -558,6 +558,10 @@ html.light .tx-type-transfer { background: #d1fae5; color: #065f46; }
 .settings-result.ok { background: #1a3a28; color: #3fb950; }
 .settings-result.err { background: #3a1a1a; color: #f85149; }
 
+/* 状態テキスト（PBR 同期の状況表示・残高照合の判定など） */
+.status-ok { color: var(--green); }
+.status-warn { color: var(--red); }
+
 /* ---- 取引履歴フィルター行 ---- */
 .tx-filters {
   display: flex;
