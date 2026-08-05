@@ -28,6 +28,7 @@ from crypto_summary.sources.jp.pbr_crawl import (  # noqa: E402
 from crypto_summary.web import app as web_app  # noqa: E402
 
 _VIEWER_ENV = "PBR_VIEWER_URL"
+_DEVICE_ID = "OVFICYT-2QFXQ7G-U4IPHBY-JCGVWYS-AHN7LCN-6PUI7OA-E4246CJ-KK3YXAJ"
 
 _ARTIFACT = {
     "start_date": "2026-01-01",
@@ -409,6 +410,82 @@ def test_status_not_up_to_date_when_format_is_old(
     path.write_text(json.dumps(state), encoding="utf-8")
 
     assert client.get("/api/sync/pbr/status").json()["up_to_date"] is False
+
+
+# ---- ファイル同期の相手登録（Syncthing） ----
+
+def test_syncthing_status_when_not_configured(client, crawl_dir, monkeypatch):
+    """Syncthing 未設定でもエラーにせず、状態として返す。"""
+    _configure(monkeypatch, crawl_dir, client)
+    monkeypatch.delenv("SYNCTHING_API_KEY", raising=False)
+
+    d = client.get("/api/sync/pbr/syncthing").json()
+
+    assert d["configured"] is False
+    assert d["reachable"] is False
+
+
+def test_syncthing_status_without_crawl_dir(client, monkeypatch):
+    monkeypatch.delenv(ENV_VAR, raising=False)
+    d = client.get("/api/sync/pbr/syncthing").json()
+    assert d["configured"] is False
+
+
+def test_syncthing_pair_registers_peer(client, crawl_dir, monkeypatch):
+    """相手を登録すると、取り込み先を受信専用フォルダとして用意する。"""
+    from crypto_summary.core import syncthing as st
+
+    _configure(monkeypatch, crawl_dir, client)
+    monkeypatch.setenv("SYNCTHING_API_KEY", "testkey")
+    calls = {}
+
+    def fake_pair(device_id, name, *, path, folder_type, ignores=None):
+        calls.update(device_id=device_id, name=name, path=path,
+                     folder_type=folder_type, ignores=ignores)
+        return {"device_id": device_id, "folder_id": st.FOLDER_ID,
+                "folder_path": path, "folder_type": folder_type}
+
+    monkeypatch.setattr(st, "pair", fake_pair)
+
+    r = client.post("/api/sync/pbr/syncthing/pair",
+                    json={"device_id": _DEVICE_ID, "name": "crawler"})
+
+    assert r.status_code == 200
+    assert calls["device_id"] == _DEVICE_ID
+    assert calls["path"] == str(crawl_dir)
+    assert calls["folder_type"] == "receiveonly"
+    # 受信側は除外設定を書かない（何を送るかは送信側が決める）
+    assert calls["ignores"] is None
+
+
+def test_syncthing_pair_rejects_bad_id(client, crawl_dir, monkeypatch):
+    _configure(monkeypatch, crawl_dir, client)
+    monkeypatch.setenv("SYNCTHING_API_KEY", "testkey")
+
+    r = client.post("/api/sync/pbr/syncthing/pair", json={"device_id": "SHORT"})
+
+    assert r.status_code == 422
+
+
+def test_syncthing_pair_needs_device_id(client, crawl_dir, monkeypatch):
+    _configure(monkeypatch, crawl_dir, client)
+    assert client.post("/api/sync/pbr/syncthing/pair", json={}).status_code == 422
+
+
+def test_syncthing_unreachable_is_502(client, crawl_dir, monkeypatch):
+    """繋がらないのは利用者の入力ミスではないので 422 と区別する。"""
+    from crypto_summary.core import syncthing as st
+
+    _configure(monkeypatch, crawl_dir, client)
+    monkeypatch.setenv("SYNCTHING_API_KEY", "testkey")
+
+    def boom(*a, **k):
+        raise st.SyncthingError("unreachable", "接続できません")
+
+    monkeypatch.setattr(st, "pair", boom)
+
+    r = client.post("/api/sync/pbr/syncthing/pair", json={"device_id": _DEVICE_ID})
+    assert r.status_code == 502
 
 
 # ---- 同期 ----

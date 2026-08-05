@@ -2018,6 +2018,7 @@ async function loadPbrSyncStatus() {
   _renderPbrNav();
   _renderPbrSyncCard();
   _renderPrefsVisibility();
+  loadSyncthing();
   return _pbrStatus;
 }
 
@@ -2119,6 +2120,166 @@ function _fmtBytes(n) {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
   return `${(n / 1024 / 1024).toFixed(1)} MB`;
+}
+
+// ---- ファイル同期の相手登録（Syncthing） --------------------------------
+//
+// Syncthing は双方が相手を登録しないと繋がらない。片側で相手の ID を入れると
+// もう片側に「承認待ち」として現れるので、そこを 1 クリックで済ませる。
+// フォルダのパス・種別・除外設定はサーバー側が知っているので自動で入る。
+
+let _stStatus = null;
+
+async function loadSyncthing() {
+  const box = document.getElementById("pbr-st-details");
+  if (!box) return;
+  // 管理者以外・PBR 連携が無効なときは出さない
+  if (!window._isAdmin || !(_pbrStatus || {}).configured) {
+    box.classList.add("hidden");
+    return;
+  }
+  try {
+    _stStatus = await fetchJSON("/api/sync/pbr/syncthing");
+  } catch (e) {
+    _stStatus = null;
+  }
+  box.classList.remove("hidden");
+  _renderSyncthing();
+}
+
+function _renderSyncthing() {
+  const body = document.getElementById("pbr-st-body");
+  if (!body) return;
+  const st = _stStatus;
+
+  if (!st || !st.configured) {
+    body.innerHTML = `<p class="settings-hint">${escapeHtml(t("st.notConfigured"))}</p>`;
+    return;
+  }
+  if (!st.reachable) {
+    body.innerHTML = `<p class="settings-hint status-warn">${
+      escapeHtml(st.error || t("st.unreachable"))}</p>`;
+    return;
+  }
+
+  const parts = [];
+
+  // 自分の ID（相手に貼ってもらう）
+  parts.push(`
+    <p class="settings-hint" style="margin:0 0 4px">${escapeHtml(t("st.myId"))}</p>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px">
+      <code style="font-size:11px;word-break:break-all;flex:1;min-width:220px">${
+        escapeHtml(st.my_device_id)}</code>
+      <button class="action-btn" id="pbr-st-copy">${escapeHtml(t("st.copy"))}</button>
+    </div>`);
+
+  // 承認待ち（相手が先に登録した場合）
+  (st.pending_devices || []).forEach((d) => {
+    // 相手が名前を持たないこともある。その場合は ID の先頭で識別できるようにする。
+    const label = d.name || (d.device_id || "").split("-")[0];
+    parts.push(`
+      <div class="import-note" style="margin-bottom:8px">
+        <strong>${escapeHtml(t("st.pending", { name: label }))}</strong><br>
+        <code style="font-size:11px;word-break:break-all">${escapeHtml(d.device_id)}</code>
+        <div style="margin-top:8px;display:flex;gap:8px">
+          <button class="settings-save-btn pbr-st-accept" data-id="${escapeHtml(d.device_id)}"
+            data-name="${escapeHtml(d.name || "")}">${escapeHtml(t("st.accept"))}</button>
+          <button class="action-btn pbr-st-dismiss" data-id="${escapeHtml(d.device_id)}">${
+            escapeHtml(t("st.dismiss"))}</button>
+        </div>
+      </div>`);
+  });
+
+  // 相手の ID を入力して登録
+  parts.push(`
+    <div class="settings-row" style="margin-bottom:8px">
+      <label class="settings-label">${escapeHtml(t("st.peerId"))}</label>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <input id="pbr-st-peer" class="settings-input" type="text" spellcheck="false"
+          placeholder="XXXXXXX-XXXXXXX-..." style="flex:1;min-width:260px;font-family:monospace;font-size:11px" />
+        <button class="settings-save-btn" id="pbr-st-pair">${escapeHtml(t("st.pair"))}</button>
+      </div>
+      <p class="settings-hint">${escapeHtml(t("st.peerIdHint"))}</p>
+    </div>`);
+
+  // 登録済みの相手と接続状況
+  if ((st.devices || []).length) {
+    parts.push(`<p class="settings-hint" style="margin:12px 0 4px">${
+      escapeHtml(t("st.peers"))}</p><ul style="margin:0 0 8px 18px;font-size:13px">` +
+      st.devices.map((d) => `<li>${escapeHtml(d.name || d.device_id)} — <span class="${
+        d.connected ? "status-ok" : ""}">${escapeHtml(
+          t(d.connected ? "st.connected" : "st.disconnected"))}</span></li>`).join("") +
+      `</ul>`);
+  }
+
+  // フォルダの状態（あるべき設定と食い違っていれば知らせる）
+  if (st.folder) {
+    const mismatch = st.folder.path !== st.expected_path || st.folder.type !== st.expected_type;
+    parts.push(`<p class="settings-hint${mismatch ? " status-warn" : ""}">${
+      escapeHtml(t("st.folder", {
+        id: st.folder_id, path: st.folder.path, type: st.folder.type,
+      }))}${mismatch ? "<br>" + escapeHtml(t("st.folderMismatch", {
+        path: st.expected_path, type: st.expected_type })) : ""}</p>`);
+  } else {
+    parts.push(`<p class="settings-hint">${escapeHtml(t("st.noFolder"))}</p>`);
+  }
+
+  body.innerHTML = parts.join("");
+  _wireSyncthingButtons();
+}
+
+function _wireSyncthingButtons() {
+  document.getElementById("pbr-st-copy")?.addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(_stStatus.my_device_id);
+      _stResult("ok", t("st.copied"));
+    } catch (e) {
+      _stResult("err", t("st.copyFail"));
+    }
+  });
+  document.getElementById("pbr-st-pair")?.addEventListener("click", () => {
+    const id = document.getElementById("pbr-st-peer").value.trim();
+    if (!id) return _stResult("err", t("st.needId"));
+    _stPair(id, "PBRLending-History-Check");
+  });
+  document.querySelectorAll(".pbr-st-accept").forEach((b) => {
+    b.addEventListener("click", () => _stPair(b.dataset.id, b.dataset.name));
+  });
+  document.querySelectorAll(".pbr-st-dismiss").forEach((b) => {
+    b.addEventListener("click", () => _stPost("/api/sync/pbr/syncthing/dismiss",
+      { device_id: b.dataset.id }, t("st.dismissed")));
+  });
+}
+
+function _stPair(deviceId, name) {
+  return _stPost("/api/sync/pbr/syncthing/pair",
+    { device_id: deviceId, name: name || undefined }, t("st.paired"));
+}
+
+async function _stPost(url, body, okMessage) {
+  try {
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      throw new Error(err.detail || `HTTP ${resp.status}`);
+    }
+    _stResult("ok", okMessage);
+    await loadSyncthing();
+  } catch (e) {
+    _stResult("err", e.message);
+  }
+}
+
+function _stResult(kind, text) {
+  const el = document.getElementById("pbr-st-result");
+  if (!el) return;
+  el.className = `settings-result ${kind}`;
+  el.textContent = text;
+  el.classList.remove("hidden");
 }
 
 function _fmtDateTime(iso) {

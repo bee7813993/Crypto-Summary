@@ -280,6 +280,11 @@ docker compose up -d --build
 
 - 手順と注意点: [`docs/deploy.md`](./docs/deploy.md)
 - 構成例: [`docker-compose.cloud.yml`](./docker-compose.cloud.yml)
+- 同期相手の登録（Syncthing）: [`docs/syncthing-pairing.md`](./docs/syncthing-pairing.md)
+
+Syncthing を使う場合、`SYNCTHING_URL` と `SYNCTHING_API_KEY` を設定すると、
+インポート画面から相手のデバイス ID を貼るだけで同期を設定できます
+（フォルダのパス・種別・除外設定はアプリが自動で入れます）。
 
 台帳が SQLite なので、**永続ブロックボリュームが付くサービス**（Fly.io / Render /
 Railway / 小さな VM）を選び、インスタンスは 1 台に固定します。ファイルシステムが

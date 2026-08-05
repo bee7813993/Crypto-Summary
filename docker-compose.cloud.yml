@@ -51,6 +51,13 @@ services:
       # ファイル同期でクローラーの outputs を運び込む先。
       # 手元のクローラー側 outputs ディレクトリと同期させる。
       - PBR_CRAWL_DIR=/data/pbr-outputs
+
+      # --- ファイル同期の相手登録（下の syncthing サービスを使う場合） ---
+      # 設定するとインポート画面から同期相手を登録できる（管理者のみ）。
+      # このキーは Syncthing 全体を操作できるので、手元の個人 Syncthing の
+      # ものではなく、下のサイドカー専用のキーを使うこと。
+      - SYNCTHING_URL=http://syncthing:8384
+      - SYNCTHING_API_KEY=${SYNCTHING_API_KEY:-}
       # クローラーのビューアは手元にあるので、利用者のブラウザから見える URL。
       # 手元で見るだけなら既定 (http://127.0.0.1:4173) のままでよい。
       # ただしこのアプリを https で公開している場合、http の iframe は
@@ -58,5 +65,32 @@ services:
       - PBR_VIEWER_URL=${PBR_VIEWER_URL:-}
     restart: unless-stopped
 
+  # 手元のクローラーから outputs を受け取る同期先。
+  # app と同じボリュームを見るので、届いたファイルはそのまま取り込まれる。
+  # 同期が不要なら（rsync などを使う、手元だけで完結する）このサービスは消してよい。
+  syncthing:
+    image: syncthing/syncthing:latest
+    hostname: crypto-summary
+    environment:
+      # app からの API 操作に使う。docker compose 実行時に .env で渡す:
+      #   SYNCTHING_API_KEY=$(python -c "import secrets;print(secrets.token_hex(24))")
+      - STGUIAPIKEY=${SYNCTHING_API_KEY:?SYNCTHING_API_KEY を設定してください}
+    volumes:
+      # /data/pbr-outputs を同期フォルダにする。app と同じボリューム。
+      - cs-data:/data
+      # Syncthing 自身の設定と鍵
+      - syncthing-config:/var/syncthing/config
+    ports:
+      # 同期の待受。ここだけは外から到達できる必要がある（NAT 越えは
+      # Syncthing のリレー／穴あけが面倒を見る）。
+      - "22000:22000/tcp"
+      - "22000:22000/udp"
+      # ローカル探索。同一 LAN でないなら閉じてよい。
+      - "21027:21027/udp"
+      # GUI は公開しない。設定はこのアプリの画面から行う。必要なら
+      # ssh トンネル等で 127.0.0.1:8384 に繋ぐ。
+    restart: unless-stopped
+
 volumes:
   cs-data:
+  syncthing-config:

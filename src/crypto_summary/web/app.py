@@ -25,6 +25,7 @@ from ..core.models import CanonicalTx, TxType
 from ..core.portfolio import assets_in_range, daily_balances
 from ..core.price_history import fetch_price_history
 from ..core.prices import COINGECKO_IDS, SUPPORTED_CURRENCIES, _coingecko_api_key, fetch_coin_icons, fetch_prices
+from ..core import syncthing
 from ..core.secrets import SecretStore, SecretStoreError
 from ..sinks.cryptact_csv import to_cryptact_csv_string
 from ..sinks.koinly_csv import to_koinly_csv_string
@@ -1486,6 +1487,56 @@ def _pbr_sync_run(db_path: str, body: dict[str, Any]) -> dict:
         raise HTTPException(status_code=status, detail=detail)
 
 
+# --- ファイル同期の相手登録（Syncthing） ---
+#
+# 同期するのはこのサーバーの PBR_CRAWL_DIR で、Syncthing もサーバーに 1 つ。
+# つまりサーバー全体の設定なので、システムキーと同じく管理者だけが操作する。
+
+def _pbr_syncthing_overview() -> dict:
+    """ペアリング画面に出す状態。未設定・未接続でも例外にしない。"""
+    directory = resolve_crawl_dir()
+    if directory is None:
+        return {"configured": False, "reachable": False,
+                "error": f"{_PBR_CRAWL_ENV} が未設定です。"}
+    return syncthing.overview(str(directory), "receiveonly")
+
+
+def _pbr_syncthing_pair(body: dict[str, Any]) -> dict:
+    """相手のデバイスを登録し、受信専用の同期フォルダを用意する。"""
+    directory = resolve_crawl_dir()
+    if directory is None:
+        raise HTTPException(
+            status_code=422, detail=f"{_PBR_CRAWL_ENV} が未設定です。")
+    device_id = (body.get("device_id") or "").strip()
+    if not device_id:
+        raise HTTPException(status_code=422, detail="デバイス ID を入力してください")
+    name = (body.get("name") or "PBRLending-History-Check").strip()
+    try:
+        # 受信側なので除外設定は入れない（送る側が何を送るかを決める）。
+        result = syncthing.pair(
+            device_id, name, path=str(directory), folder_type="receiveonly")
+    except syncthing.SyncthingError as e:
+        raise HTTPException(
+            status_code=422 if e.code == "invalid_device_id" else 502,
+            detail=e.message,
+        )
+    return {"ok": True, **result}
+
+
+def _pbr_syncthing_dismiss(body: dict[str, Any]) -> dict:
+    device_id = (body.get("device_id") or "").strip()
+    if not device_id:
+        raise HTTPException(status_code=422, detail="デバイス ID を指定してください")
+    try:
+        syncthing.dismiss_pending_device(device_id)
+    except syncthing.SyncthingError as e:
+        raise HTTPException(
+            status_code=422 if e.code == "invalid_device_id" else 502,
+            detail=e.message,
+        )
+    return {"ok": True}
+
+
 def _pbr_purge(db_path: str, body: dict[str, Any]) -> dict:
     """指定年のクロール由来データを削除する（公式CSVへの移行時）。"""
     raw_year = body.get("year")
@@ -1892,6 +1943,23 @@ def create_app(
     @app.post("/api/sync/pbr/purge")
     def pbr_sync_purge(body: dict[str, Any], db: str = Depends(get_db_path)) -> dict:
         return _pbr_purge(db, body)
+
+    # ファイル同期の相手登録。サーバー全体の設定なので管理者だけ。
+    @app.get("/api/sync/pbr/syncthing")
+    def pbr_syncthing(admin: dict = Depends(require_admin)) -> dict:
+        return _pbr_syncthing_overview()
+
+    @app.post("/api/sync/pbr/syncthing/pair")
+    def pbr_syncthing_pair(
+        body: dict[str, Any], admin: dict = Depends(require_admin)
+    ) -> dict:
+        return _pbr_syncthing_pair(body)
+
+    @app.post("/api/sync/pbr/syncthing/dismiss")
+    def pbr_syncthing_dismiss(
+        body: dict[str, Any], admin: dict = Depends(require_admin)
+    ) -> dict:
+        return _pbr_syncthing_dismiss(body)
 
     @app.get("/api/system-keys")
     def get_system_keys(admin: dict = Depends(require_admin)) -> dict:
