@@ -1359,11 +1359,16 @@ def _sync_all(db_path: str, system_db: str | None = None) -> dict:
 #: 解決するのはユーザーのブラウザなので、本体が Docker 内でもホストの
 #: 127.0.0.1 に届く。
 _PBR_VIEWER_ENV = "PBR_VIEWER_URL"
-_DEFAULT_PBR_VIEWER_URL = "http://127.0.0.1:4173"
 
 
-def _pbr_viewer_url() -> str:
-    return os.environ.get(_PBR_VIEWER_ENV, "").strip() or _DEFAULT_PBR_VIEWER_URL
+def _pbr_viewer_url() -> str | None:
+    """クローラーのビューア画面 URL。未設定なら None（タブを出さない）。
+
+    クラウドに置いた場合、クローラー操作はこのアプリの役目ではない
+    （クロールは手元の機械で行い、結果はファイル同期で届く）。既定値を
+    補わないことで、URL を書いたときだけタブが出る。
+    """
+    return os.environ.get(_PBR_VIEWER_ENV, "").strip() or None
 
 
 def _pbr_data_flags(db_path: str) -> tuple[bool, bool]:

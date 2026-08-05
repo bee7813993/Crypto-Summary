@@ -294,7 +294,6 @@ def test_status_when_configured(client, crawl_dir, monkeypatch):
     assert d["configured"] is True
     assert d["crawl"]["healthy"] is True
     assert d["crawl"]["run_id"] == _MARKER["runId"]
-    assert d["viewer_url"] == "http://127.0.0.1:4173"
     assert d["last_sync"] is None
     assert d["up_to_date"] is False   # まだ取り込んでいない
 
@@ -304,6 +303,31 @@ def test_viewer_url_from_env(client, crawl_dir, monkeypatch):
     monkeypatch.setenv(_VIEWER_ENV, "http://127.0.0.1:4174")
     d = client.get("/api/sync/pbr/status").json()
     assert d["viewer_url"] == "http://127.0.0.1:4174"
+
+
+def test_viewer_tab_is_off_without_url(client, crawl_dir, monkeypatch):
+    """URL を書かなければクローラー操作のタブを出さない。
+
+    クラウドに置く場合、クロールは手元の機械の役目で、結果はファイル同期で届く。
+    """
+    _configure(monkeypatch, crawl_dir, client)
+    assert client.get("/api/sync/pbr/status").json()["viewer_url"] is None
+
+
+def test_source_files_show_arrival(client, crawl_dir, monkeypatch):
+    """取り込み元ファイルの到着状況を返す（ファイル同期の確認用）。"""
+    _configure(monkeypatch, crawl_dir, client)
+
+    files = {f["name"]: f for f in client.get("/api/sync/pbr/status").json()["crawl"]["files"]}
+
+    assert files[ARTIFACT_NAME]["found"] is True
+    assert files[ARTIFACT_NAME]["role"] == "crawl"
+    assert files[ARTIFACT_NAME]["size"] > 0
+    assert files[ARTIFACT_NAME]["mtime"]
+    assert files[MARKER_NAME]["found"] is True
+    # まだ同期されていないファイルは未着として出す
+    assert files[VIEWER_TRANSFERS_NAME]["found"] is False
+    assert files[VIEWER_TRANSFERS_NAME]["mtime"] is None
 
 
 def test_status_up_to_date_after_sync(client, crawl_dir, monkeypatch):

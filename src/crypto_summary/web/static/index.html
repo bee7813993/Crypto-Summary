@@ -690,6 +690,25 @@
 
           <div id="pbr-sync-status" class="settings-hint"></div>
 
+          <details id="pbr-source-details" class="hidden" style="margin:12px 0">
+            <summary style="cursor:pointer;font-size:13px;color:#8b949e" data-i18n="pbr.sourceTitle">取り込み元ファイル</summary>
+            <p class="settings-hint" id="pbr-source-dir" style="margin:8px 0 4px"></p>
+            <div class="table-wrap">
+              <table id="pbr-source-table">
+                <thead>
+                  <tr>
+                    <th data-i18n="pbr.thFile">ファイル</th>
+                    <th data-i18n="pbr.thRole">役割</th>
+                    <th data-i18n="pbr.thArrived">最終更新</th>
+                    <th class="num" data-i18n="pbr.thSize">サイズ</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+            <p class="settings-hint" data-i18n="pbr.sourceHint">ファイル同期でこのディレクトリへ運ぶ運用の場合、ここで到着を確認できます。クロール結果が無くても、手動インポート分だけで取り込めます。</p>
+          </details>
+
           <div class="settings-actions">
             <button id="pbr-sync-btn" class="settings-save-btn" data-i18n="btn.pbrSync">⟳ クロール結果を同期</button>
             <label class="settings-label" style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-left:12px">

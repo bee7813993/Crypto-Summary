@@ -2071,6 +2071,11 @@ function _renderPbrSyncCard() {
   (crawl.warnings || []).forEach((w) => {
     lines.push(`<span class="status-warn">⚠ ${escapeHtml(w)}</span>`);
   });
+  if (!_pbrStatus.viewer_url) {
+    // ビューアの URL が無い構成（クラウドなど）。クロールは手元で行い、
+    // 結果はファイル同期で届く、という前提を明示する。
+    lines.push(escapeHtml(t("pbr.viewerNotLinked")));
+  }
 
   document.getElementById("pbr-sync-status").innerHTML = lines.join("<br>");
 
@@ -2079,6 +2084,41 @@ function _renderPbrSyncCard() {
     yearInput.value = crawl.end_date.slice(0, 4);
   }
   if (lastSync && lastSync.reconciliation) _renderPbrRecon(lastSync.reconciliation);
+  _renderPbrSourceFiles();
+}
+
+const _PBR_ROLE_KEY = { crawl: "pbr.roleCrawl", marker: "pbr.roleMarker", viewer: "pbr.roleViewer" };
+
+// 取り込み元ファイルの到着状況。ファイル同期で運ぶ運用のとき、
+// 何が届いていて何が来ていないかをここで確かめられる。
+function _renderPbrSourceFiles() {
+  const box = document.getElementById("pbr-source-details");
+  const tbody = document.querySelector("#pbr-source-table tbody");
+  if (!box || !tbody) return;
+  const crawl = (_pbrStatus || {}).crawl;
+  if (!crawl || !crawl.files) {
+    box.classList.add("hidden");
+    return;
+  }
+  document.getElementById("pbr-source-dir").textContent =
+    t("pbr.sourceDir", { dir: crawl.crawl_dir || "-" });
+  tbody.innerHTML = crawl.files.map((f) => `
+    <tr>
+      <td><code style="font-size:12px">${escapeHtml(f.name)}</code></td>
+      <td>${escapeHtml(t(_PBR_ROLE_KEY[f.role] || f.role))}</td>
+      <td class="${f.found ? "" : "status-warn"}">${
+        f.found ? escapeHtml(_fmtDateTime(f.mtime) || "-") : escapeHtml(t("pbr.notArrived"))
+      }</td>
+      <td class="num">${f.found ? _fmtBytes(f.size) : "-"}</td>
+    </tr>`).join("");
+  box.classList.remove("hidden");
+}
+
+function _fmtBytes(n) {
+  if (n == null) return "-";
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / 1024 / 1024).toFixed(1)} MB`;
 }
 
 function _fmtDateTime(iso) {

@@ -498,6 +498,33 @@ def _file_stamp(path: Path) -> str | None:
     return f"{int(st.st_mtime)}:{st.st_size}"
 
 
+#: 取り込み元として見るファイルと、その役割。
+#: ファイル同期で運ぶ場合、この一覧が「同期すべきファイル」でもある。
+_SOURCE_FILES: tuple[tuple[str, str], ...] = (
+    (ARTIFACT_NAME, "crawl"),        # クロール結果（当年分）
+    (MARKER_NAME, "marker"),         # クロールの成否
+    (VIEWER_TRANSFERS_NAME, "viewer"),  # 手動インポート（入出金）
+    (VIEWER_LEDGER_NAME, "viewer"),     # 手動インポート（日次レポート）
+)
+
+
+def _source_file_info(directory: Path, name: str, role: str) -> dict:
+    """取り込み元ファイル 1 件の状態（届いているか・いつ・サイズ）。"""
+    path = directory / name
+    try:
+        st = path.stat()
+    except OSError:
+        return {"name": name, "role": role, "found": False,
+                "mtime": None, "size": None}
+    return {
+        "name": name,
+        "role": role,
+        "found": True,
+        "mtime": datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).isoformat(),
+        "size": st.st_size,
+    }
+
+
 def _is_settling(paths: list[Path], within_seconds: int = SETTLE_SECONDS) -> bool:
     """直近に更新されたファイルがあるか。
 
@@ -615,6 +642,10 @@ def read_crawl_status(crawl_dir: str | Path) -> dict:
 
     status: dict = {
         "crawl_dir": str(directory),
+        # 取り込み元ファイルの到着状況。ファイル同期で運ぶ運用で、
+        # 何が届いていて何が来ていないかを画面で確かめられるようにする。
+        "files": [_source_file_info(directory, name, role)
+                  for name, role in _SOURCE_FILES],
         "artifact_found": artifact.is_file(),
         "artifact_mtime": None,
         "marker_found": marker.is_file(),
