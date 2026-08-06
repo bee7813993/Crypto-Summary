@@ -1498,7 +1498,8 @@ def _pbr_syncthing_overview() -> dict:
     if directory is None:
         return {"configured": False, "reachable": False,
                 "error": f"{_PBR_CRAWL_ENV} が未設定です。"}
-    return syncthing.overview(str(directory), "receiveonly")
+    return syncthing.overview(
+        syncthing.folder_path(str(directory)), "receiveonly")
 
 
 def _pbr_syncthing_pair(body: dict[str, Any]) -> dict:
@@ -1514,7 +1515,8 @@ def _pbr_syncthing_pair(body: dict[str, Any]) -> dict:
     try:
         # 受信側なので除外設定は入れない（送る側が何を送るかを決める）。
         result = syncthing.pair(
-            device_id, name, path=str(directory), folder_type="receiveonly")
+            device_id, name, path=syncthing.folder_path(str(directory)),
+            folder_type="receiveonly")
     except syncthing.SyncthingError as e:
         raise HTTPException(
             status_code=422 if e.code == "invalid_device_id" else 502,
@@ -1746,12 +1748,24 @@ def create_app(
             same_site="lax",
         )
 
-        from .auth import require_user, router as auth_router
+        from .auth import require_user, require_user_or_service, router as auth_router
 
         app.include_router(auth_router)
 
         def get_db_path(user: dict = Depends(require_user)) -> str:
             return str(_data_dir_path / f"{user['sub']}.db")
+
+        def get_db_path_read(user: dict = Depends(require_user_or_service)) -> str:
+            """読み取りルート用。サービストークン（Asset Summary 連携）も受け付ける。
+
+            サービス主体では DB を暗黙作成しない — 存在しない sub は 404。
+            （sqlite は接続しただけでファイルを作るため、ここで存在確認する。）
+            セッションユーザーは従来どおり lazy-create。
+            """
+            p = _data_dir_path / f"{user['sub']}.db"
+            if user.get("service") and not p.exists():
+                raise HTTPException(status_code=404, detail="この利用者の台帳がありません")
+            return str(p)
 
         # システム共通シークレットは data_dir 内の専用ストアに保存する。
         _system_db = str(_data_dir_path / "_system.db")
@@ -1775,6 +1789,9 @@ def create_app(
         def get_db_path() -> str:  # type: ignore[misc]
             return _fixed_db
 
+        # シングルユーザーでは元々認証なし — トークン・ヘッダーは無視して同じ DB。
+        get_db_path_read = get_db_path
+
         # シングルユーザーではシステムキーもユーザーDBに保存し、所有者が管理者。
         def system_store_path() -> str:
             return _fixed_db
@@ -1790,18 +1807,18 @@ def create_app(
     # ------------------------------------------------------------------
 
     @app.get("/api/summary")
-    def summary(currency: str = Query("USD"), db: str = Depends(get_db_path)) -> dict:
+    def summary(currency: str = Query("USD"), db: str = Depends(get_db_path_read)) -> dict:
         return _summary(db, currency)
 
     @app.get("/api/sources")
-    def sources(currency: str = Query("USD"), db: str = Depends(get_db_path)) -> dict:
+    def sources(currency: str = Query("USD"), db: str = Depends(get_db_path_read)) -> dict:
         return _sources(db, currency)
 
     @app.get("/api/account-assets")
     def account_assets(
         account: str = Query(...),
         currency: str = Query("USD"),
-        db: str = Depends(get_db_path),
+        db: str = Depends(get_db_path_read),
     ) -> dict:
         return _account_assets(account, db, currency)
 
@@ -1809,7 +1826,7 @@ def create_app(
     def asset_accounts(
         asset: str = Query(...),
         currency: str = Query("USD"),
-        db: str = Depends(get_db_path),
+        db: str = Depends(get_db_path_read),
     ) -> dict:
         return _asset_accounts(asset, db, currency)
 
@@ -2086,7 +2103,7 @@ def create_app(
         currency: str = Query("USD"),
         range: str = Query("90d"),
         scope: str = Query("total"),
-        db: str = Depends(get_db_path),
+        db: str = Depends(get_db_path_read),
     ) -> dict:
         return _portfolio_history(db, currency, range, scope)
 

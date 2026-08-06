@@ -23,9 +23,11 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      # 台帳・設定・セッション鍵・同期記録。バックアップ対象はここだけ。
-      # PBR のクロール結果もこの中 (/data/pbr-outputs) へ同期する。
+      # 台帳・設定・セッション鍵・同期記録。バックアップ対象はここ。
       - cs-data:/data
+      # 同期で届くファイル。ボリュームを分けているのは、同期サイドカーに
+      # 台帳を触らせないため（読むだけなので :ro）。
+      - pbr-outputs:/data/pbr-outputs:ro
     environment:
       # --- 必須 ---
       # 公開 URL。OAuth のリダイレクト URI の組み立てと、
@@ -66,7 +68,7 @@ services:
     restart: unless-stopped
 
   # 手元のクローラーから outputs を受け取る同期先。
-  # app と同じボリュームを見るので、届いたファイルはそのまま取り込まれる。
+  # app とは pbr-outputs ボリュームだけを共有する（台帳には触らせない）。
   # 同期が不要なら（rsync などを使う、手元だけで完結する）このサービスは消してよい。
   syncthing:
     image: syncthing/syncthing:latest
@@ -75,11 +77,16 @@ services:
       # app からの API 操作に使う。docker compose 実行時に .env で渡す:
       #   SYNCTHING_API_KEY=$(python -c "import secrets;print(secrets.token_hex(24))")
       - STGUIAPIKEY=${SYNCTHING_API_KEY:?SYNCTHING_API_KEY を設定してください}
+      # 名前付きボリュームは root 所有で作られるため、イメージ既定の
+      # PUID=1000 のままだと証明書を書けずに起動に失敗する。
+      - PUID=0
+      - PGID=0
     volumes:
-      # /data/pbr-outputs を同期フォルダにする。app と同じボリューム。
-      - cs-data:/data
-      # Syncthing 自身の設定と鍵
-      - syncthing-config:/var/syncthing/config
+      # Syncthing 自身の設定・鍵。イメージが期待するマウント点は /var/syncthing。
+      - syncthing-config:/var/syncthing
+      # 同期フォルダ。app と同じパスに見せることで、アプリが作る
+      # フォルダ設定のパスがそのまま通る（SYNCTHING_FOLDER_PATH 不要）。
+      - pbr-outputs:/data/pbr-outputs
     ports:
       # 同期の待受。ここだけは外から到達できる必要がある（NAT 越えは
       # Syncthing のリレー／穴あけが面倒を見る）。
@@ -87,10 +94,11 @@ services:
       - "22000:22000/udp"
       # ローカル探索。同一 LAN でないなら閉じてよい。
       - "21027:21027/udp"
-      # GUI は公開しない。設定はこのアプリの画面から行う。必要なら
-      # ssh トンネル等で 127.0.0.1:8384 に繋ぐ。
+      # GUI(8384) は公開しない。設定は app の画面から行う。
+      # コンテナ間は Host ヘッダ検査に引っかからない（GUI が 0.0.0.0 待受のため）。
     restart: unless-stopped
 
 volumes:
   cs-data:
+  pbr-outputs:
   syncthing-config:

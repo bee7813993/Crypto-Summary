@@ -6,8 +6,11 @@ PBR Lending のクロール結果を、クローラーを動かす機械から C
 
 **両側が同じ取り決めに従わないと繋がらない。** この文書がその契約。
 
-- 受信側の参照実装: [`src/crypto_summary/core/syncthing.py`](../src/crypto_summary/core/syncthing.py)
-- 送信側（PBRLending-History-Check）は未実装。この文書に従って実装する。
+- 受信側の実装: [`src/crypto_summary/core/syncthing.py`](../src/crypto_summary/core/syncthing.py)
+- 送信側の実装: PBRLending-History-Check の `tools/syncthing.mjs`
+
+両実装を実際に繋いで、契約どおり噛み合うことを確認済み（送信側で登録 →
+受信側で承認 → 接続 → 4 ファイルだけ転送 → 台帳へ 612 件取り込み）。
 
 ## 役割
 
@@ -119,6 +122,31 @@ Syncthing v2.0.16 / v2.1.2 で実機確認した内容。
 - 承認待ちがあれば「〜が接続を求めています」＋「承認」「却下」
 - 登録済みの相手と接続状況（接続中／未接続）
 - 同期フォルダのパスと種別。あるべき設定と食い違っていれば警告
+
+## Syncthing をコンテナで動かす場合
+
+同期先がコンテナの中にあるなら、Syncthing もコンテナで動かすのが素直。
+`docker-compose.cloud.yml` の `syncthing` サービスがその形。実測で分かった点:
+
+**GUI が `0.0.0.0` 待受ならホストヘッダ検査に引っかからない。**
+公式イメージは既定で `STGUIADDRESS=0.0.0.0:8384` なので、別コンテナから
+`http://syncthing:8384` を叩いて 200 が返る。逆にホストで `127.0.0.1:8384`
+に束ねた Syncthing へ `host.docker.internal` 経由で繋ぐと、API キーを付けても
+403 になる（DNS リバインディング対策のホストヘッダ検査）。ホスト側の
+Syncthing を使いたいなら `insecureSkipHostcheck` を有効にする必要がある。
+
+**マウント点は `/var/syncthing`。** `/var/syncthing/config` に当てると
+証明書を書けずに起動失敗する。
+
+**名前付きボリュームは root 所有で作られる。** イメージ既定の `PUID=1000` の
+ままだと書き込めないので `PUID=0` / `PGID=0` を渡す。
+
+**フォルダのパスは Syncthing コンテナから見た形で渡す。** アプリと
+Syncthing でマウント位置が違うと、存在しないパスのフォルダを作ってしまう。
+同じパスに見せるのが一番簡単。違う場合は `SYNCTHING_FOLDER_PATH` で上書きする。
+
+**同期サイドカーに台帳を触らせない。** ボリュームを分け、アプリ側は
+`:ro` で読むだけにする。同期で届くファイル以外は共有しない。
 
 ## 動作確認のしかた
 

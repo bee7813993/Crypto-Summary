@@ -22,10 +22,16 @@ from __future__ import annotations
 import os
 from typing import Any
 
-#: 接続先。Docker から見たホストは host.docker.internal などになる。
+#: 接続先。別コンテナで動かす場合はサービス名（http://syncthing:8384）。
 URL_ENV = "SYNCTHING_URL"
 API_KEY_ENV = "SYNCTHING_API_KEY"
 DEFAULT_URL = "http://127.0.0.1:8384"
+
+#: 同期フォルダのパスを *Syncthing から見た形* で上書きする。
+#: Syncthing を別コンテナで動かすとマウント位置が違うことがあり、
+#: アプリ側の PBR_CRAWL_DIR をそのまま渡すと存在しないパスになる。
+#: 未設定なら PBR_CRAWL_DIR と同じ（同じ場所に見えている構成）とみなす。
+FOLDER_PATH_ENV = "SYNCTHING_FOLDER_PATH"
 
 #: 同期に使うフォルダ ID。両側で同じ値を使う必要がある。
 #: 名前ではなく ID で結び付くので、固定値にしておくと設定が噛み合う。
@@ -59,6 +65,15 @@ class SyncthingError(Exception):
 
 def is_configured() -> bool:
     return bool(os.environ.get(API_KEY_ENV, "").strip())
+
+
+def folder_path(local_path: str) -> str:
+    """同期フォルダのパスを Syncthing から見た形で返す。
+
+    Syncthing が別コンテナのときは、こちらの取り込み先とマウント位置が
+    違うことがある。その場合は環境変数で上書きする。
+    """
+    return os.environ.get(FOLDER_PATH_ENV, "").strip() or local_path
 
 
 def _base_url() -> str:
