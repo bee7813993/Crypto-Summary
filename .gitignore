@@ -19,6 +19,10 @@ env/
 *.sqlite
 
 # Environment / secrets
+# データディレクトリごと除外する。中には台帳のほかに、暗号化マスター鍵や
+# Google のクライアントシークレットを平文で持つ _server_config.json、
+# 口座設定・同期記録が入る。*.db だけの除外では取りこぼす。
+data/
 .env
 .env.*
 !.env.example
