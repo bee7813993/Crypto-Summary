@@ -33,7 +33,17 @@ services:
       # 公開 URL。OAuth のリダイレクト URI の組み立てと、
       # https のときセッション Cookie に Secure を付ける判定に使う。
       - "BASE_URL=${BASE_URL:?公開URLを設定してください（例 https://cs.example.com）}"
-      - DATA_DIR=/data
+
+      # ログインの有無を決める。
+      #   DATA_DIR=/data  → マルチユーザー（Google ログイン必須）
+      #   DATA_DIR=（空） → シングルユーザー（ログイン無し。DB_PATH を使う）
+      #
+      # Google は localhost 以外のリダイレクト URI に http を認めないので、
+      # LAN の http://192.168.x.x:8000 でお試しする場合はシングルユーザーに
+      # する。その場合アプリは LAN 上の誰でも開けるので、信頼できる
+      # ネットワークに限ること。
+      - DATA_DIR=${DATA_DIR-/data}
+      - DB_PATH=${DB_PATH:-/data/ledger.db}
       # セッション署名鍵。未設定なら /data/_session_key に自動生成される。
       # 複数環境で同じセッションを使いたい場合だけ明示する。
       - SECRET_KEY=${SECRET_KEY:-}

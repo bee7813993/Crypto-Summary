@@ -2256,8 +2256,10 @@ def create_app(
 
 # uvicorn / Docker 用のモジュールレベルアプリインスタンス。
 # DATA_DIR が設定されていればマルチユーザーモード、なければシングルユーザーモード。
-_env_data_dir = os.environ.get("DATA_DIR")
-_env_db_path = os.environ.get("DB_PATH", "ledger.db")
+# Docker では未設定の変数も空文字で渡るため、空はシングルユーザー扱いにする
+# （空のまま通すと base_dir が "" のマルチユーザーとして起動してしまう）。
+_env_data_dir = os.environ.get("DATA_DIR", "").strip() or None
+_env_db_path = os.environ.get("DB_PATH", "").strip() or "ledger.db"
 app = create_app(
     db_path=_env_db_path,
     data_dir=_env_data_dir,
