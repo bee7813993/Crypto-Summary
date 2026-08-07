@@ -144,6 +144,20 @@ def connections() -> dict:
     return dict(_request("GET", "/rest/system/connections") or {})
 
 
+def folder_status() -> dict:
+    """同期フォルダの状態。デバイスが繋がっていても、フォルダが空振りして
+    いることがある（典型はパスの指定違い）ので、件数まで見えるようにする。"""
+    return dict(_request(
+        "GET", "/rest/db/status", params={"folder": FOLDER_ID}) or {})
+
+
+def folder_errors() -> list[dict]:
+    """同期フォルダのエラー一覧（無ければ空）。"""
+    data = _request(
+        "GET", "/rest/folder/errors", params={"folder": FOLDER_ID}) or {}
+    return list(data.get("errors") or [])
+
+
 def _default(kind: str) -> dict:
     """新規オブジェクトのテンプレート（Syncthing の版差を吸収する）。"""
     return dict(_request("GET", f"/rest/config/defaults/{kind}") or {})
@@ -296,6 +310,34 @@ def overview(path: str, folder_type: str) -> dict:
     ]
     folder = next((f for f in folders() if f.get("id") == FOLDER_ID), None)
 
+    status: dict = {}
+    if folder is not None:
+        try:
+            raw = folder_status()
+            status = {
+                "state": raw.get("state"),
+                "global_files": raw.get("globalFiles", 0),
+                "local_files": raw.get("localFiles", 0),
+                "need_files": raw.get("needFiles", 0),
+                "global_bytes": raw.get("globalBytes", 0),
+                "errors": raw.get("errors", 0) or raw.get("pullErrors", 0),
+                "messages": [
+                    e.get("error") for e in folder_errors() if e.get("error")
+                ][:3],
+            }
+        except SyncthingError:
+            # 状態が取れなくても、他の情報は出せるようにする
+            status = {}
+
+    # 相手と繋がっているのに 1 件も見えていない = どちらかのフォルダ設定が
+    # 噛み合っていない（多くはパスの指定違い）。気づけるように印を付ける。
+    any_connected = any(d["connected"] for d in known)
+    status["stalled"] = bool(
+        folder is not None and any_connected
+        and status.get("global_files", 0) == 0
+        and not status.get("errors")
+    )
+
     return {
         "configured": True,
         "url": _base_url(),
@@ -312,7 +354,9 @@ def overview(path: str, folder_type: str) -> dict:
                 d.get("deviceID") for d in folder.get("devices") or []
                 if d.get("deviceID") != me
             ],
+            **status,
         },
+        "stalled": status.get("stalled", False),
         # 画面に出す「あるべき設定」。実際の folder と食い違えば警告できる。
         "expected_path": path,
         "expected_type": folder_type,

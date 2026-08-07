@@ -28,6 +28,9 @@ def api(monkeypatch):
         "calls": [],
         "pending": {},
         "connections": {},
+        "folder_status": {"state": "idle", "globalFiles": 0, "localFiles": 0,
+                          "needFiles": 0, "errors": 0, "pullErrors": 0},
+        "folder_errors": [],
     }
 
     def fake_request(method, path, **kwargs):
@@ -61,6 +64,10 @@ def api(monkeypatch):
                 if f["id"] == body["id"]:
                     state["folders"][i] = body
             return None
+        if path == "/rest/db/status":
+            return state["folder_status"]
+        if path == "/rest/folder/errors":
+            return {"errors": state["folder_errors"]}
         if path == "/rest/config/defaults/device":
             return {"deviceID": "", "name": "", "autoAcceptFolders": False}
         if path == "/rest/config/defaults/folder":
@@ -174,3 +181,78 @@ def test_overview_when_unreachable(monkeypatch):
     assert ov["configured"] is True
     assert ov["reachable"] is False
     assert ov["error_code"] == "unreachable"
+
+
+# ---- フォルダの状態（繋がっていても空振りすることがある） ----
+
+def _paired(api, connected=True):
+    """相手と繋がっていて、同期フォルダもある状態を作る。"""
+    api["devices"].append({"deviceID": _ID_A, "name": "crawler"})
+    api["connections"][_ID_A] = {"connected": connected}
+    api["folders"].append({
+        "id": st.FOLDER_ID, "path": "/data/pbr-outputs", "type": "receiveonly",
+        "devices": [{"deviceID": _ID_ME}, {"deviceID": _ID_A}],
+    })
+
+
+def test_overview_reports_folder_state(api):
+    _paired(api)
+    api["folder_status"].update(
+        {"state": "syncing", "globalFiles": 4, "localFiles": 2, "needFiles": 2})
+
+    folder = st.overview("/data/pbr-outputs", "receiveonly")["folder"]
+
+    assert folder["state"] == "syncing"
+    assert folder["global_files"] == 4
+    assert folder["need_files"] == 2
+
+
+def test_stalled_when_connected_but_no_files(api):
+    """接続しているのに 0 件は、どちらかのフォルダ設定が噛み合っていない印。"""
+    _paired(api)
+
+    ov = st.overview("/data/pbr-outputs", "receiveonly")
+
+    assert ov["stalled"] is True
+    assert ov["folder"]["stalled"] is True
+
+
+def test_not_stalled_when_files_are_visible(api):
+    _paired(api)
+    api["folder_status"]["globalFiles"] = 4
+
+    assert st.overview("/data/pbr-outputs", "receiveonly")["stalled"] is False
+
+
+def test_not_stalled_when_peer_is_offline(api):
+    """未接続なら 0 件でも当然。設定の誤りとは区別する。"""
+    _paired(api, connected=False)
+
+    assert st.overview("/data/pbr-outputs", "receiveonly")["stalled"] is False
+
+
+def test_not_stalled_when_folder_has_errors(api):
+    """エラーが出ているなら原因はそちら。別の説明を出さない。"""
+    _paired(api)
+    api["folder_status"]["errors"] = 1
+
+    assert st.overview("/data/pbr-outputs", "receiveonly")["stalled"] is False
+
+
+def test_folder_errors_are_reported(api):
+    _paired(api)
+    api["folder_errors"] = [{"error": "permission denied", "path": "x"}]
+
+    folder = st.overview("/data/pbr-outputs", "receiveonly")["folder"]
+
+    assert folder["messages"] == ["permission denied"]
+
+
+def test_no_folder_means_no_stall_warning(api):
+    api["devices"].append({"deviceID": _ID_A, "name": "crawler"})
+    api["connections"][_ID_A] = {"connected": True}
+
+    ov = st.overview("/data/pbr-outputs", "receiveonly")
+
+    assert ov["folder"] is None
+    assert ov["stalled"] is False

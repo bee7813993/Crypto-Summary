@@ -2250,14 +2250,32 @@ function _renderSyncthing() {
       `</ul>`);
   }
 
-  // フォルダの状態（あるべき設定と食い違っていれば知らせる）
+  // フォルダの状態。繋がっていても空振りしていることがあるので件数まで出す。
   if (st.folder) {
-    const mismatch = st.folder.path !== st.expected_path || st.folder.type !== st.expected_type;
-    parts.push(`<p class="settings-hint${mismatch ? " status-warn" : ""}">${
-      escapeHtml(t("st.folder", {
-        id: st.folder_id, path: st.folder.path, type: st.folder.type,
-      }))}${mismatch ? "<br>" + escapeHtml(t("st.folderMismatch", {
-        path: st.expected_path, type: st.expected_type })) : ""}</p>`);
+    const f = st.folder;
+    const lines = [escapeHtml(t("st.folder", {
+      id: st.folder_id, path: f.path, type: f.type,
+    }))];
+    if (f.path !== st.expected_path || f.type !== st.expected_type) {
+      lines.push(`<span class="status-warn">${escapeHtml(t("st.folderMismatch", {
+        path: st.expected_path, type: st.expected_type }))}</span>`);
+    }
+    if (f.state) {
+      const label = t("st.state." + f.state);
+      lines.push(escapeHtml(t("st.folderState", {
+        state: label === "st.state." + f.state ? f.state : label,
+        files: f.global_files ?? 0,
+        need: f.need_files ?? 0,
+      })));
+    }
+    (f.messages || []).forEach((m) => {
+      lines.push(`<span class="status-warn">⚠ ${escapeHtml(m)}</span>`);
+    });
+    // 繋がっているのに 1 件も見えない = どちらかのパス指定が噛み合っていない
+    if (st.stalled) {
+      lines.push(`<span class="status-warn">${escapeHtml(t("st.stalled"))}</span>`);
+    }
+    parts.push(`<p class="settings-hint">${lines.join("<br>")}</p>`);
   } else {
     parts.push(`<p class="settings-hint">${escapeHtml(t("st.noFolder"))}</p>`);
   }
