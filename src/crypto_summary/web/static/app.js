@@ -2129,6 +2129,38 @@ function _fmtBytes(n) {
 // フォルダのパス・種別・除外設定はサーバー側が知っているので自動で入る。
 
 let _stStatus = null;
+let _stPollTimer = null;
+
+// 承認待ちは相手が登録した瞬間に現れる。こちらは待つ側なので、欄を開いて
+// いる間だけ定期的に取り直す（閉じているときに叩き続けても無駄なため）。
+const _ST_POLL_MS = 5000;
+
+function _startSyncthingPolling() {
+  if (_stPollTimer) return;
+  _stPollTimer = setInterval(() => {
+    const box = document.getElementById("pbr-st-details");
+    if (!box || !box.open || box.classList.contains("hidden")) {
+      _stopSyncthingPolling();
+      return;
+    }
+    loadSyncthing();
+  }, _ST_POLL_MS);
+}
+
+function _stopSyncthingPolling() {
+  if (!_stPollTimer) return;
+  clearInterval(_stPollTimer);
+  _stPollTimer = null;
+}
+
+document.getElementById("pbr-st-details")?.addEventListener("toggle", (ev) => {
+  if (ev.currentTarget.open) {
+    loadSyncthing();
+    _startSyncthingPolling();
+  } else {
+    _stopSyncthingPolling();
+  }
+});
 
 async function loadSyncthing() {
   const box = document.getElementById("pbr-st-details");
@@ -2171,7 +2203,13 @@ function _renderSyncthing() {
       <code style="font-size:11px;word-break:break-all;flex:1;min-width:220px">${
         escapeHtml(st.my_device_id)}</code>
       <button class="action-btn" id="pbr-st-copy">${escapeHtml(t("st.copy"))}</button>
+      <button class="action-btn" id="pbr-st-refresh">${escapeHtml(t("st.refresh"))}</button>
     </div>`);
+
+  // 承認待ちが無いときは、相手の操作を待っている状態だと分かるようにする
+  if (!(st.pending_devices || []).length) {
+    parts.push(`<p class="settings-hint">${escapeHtml(t("st.waiting"))}</p>`);
+  }
 
   // 承認待ち（相手が先に登録した場合）
   (st.pending_devices || []).forEach((d) => {
@@ -2237,13 +2275,16 @@ function _wireSyncthingButtons() {
       _stResult("err", t("st.copyFail"));
     }
   });
+  document.getElementById("pbr-st-refresh")?.addEventListener("click", () => {
+    loadSyncthing();
+  });
   document.getElementById("pbr-st-pair")?.addEventListener("click", () => {
     const id = document.getElementById("pbr-st-peer").value.trim();
     if (!id) return _stResult("err", t("st.needId"));
     _stPair(id, "PBRLending-History-Check");
   });
   document.querySelectorAll(".pbr-st-accept").forEach((b) => {
-    b.addEventListener("click", () => _stPair(b.dataset.id, b.dataset.name));
+    b.addEventListener("click", () => _stPair(b.dataset.id, b.dataset.name, true));
   });
   document.querySelectorAll(".pbr-st-dismiss").forEach((b) => {
     b.addEventListener("click", () => _stPost("/api/sync/pbr/syncthing/dismiss",
@@ -2251,9 +2292,12 @@ function _wireSyncthingButtons() {
   });
 }
 
-function _stPair(deviceId, name) {
+// approved=true は承認待ちからの承認。同じ API だが、こちらは相手の登録が
+// 済んでいるので「相手を待つ」案内を出すと誤解させる。
+function _stPair(deviceId, name, approved = false) {
   return _stPost("/api/sync/pbr/syncthing/pair",
-    { device_id: deviceId, name: name || undefined }, t("st.paired"));
+    { device_id: deviceId, name: name || undefined },
+    t(approved ? "st.approved" : "st.paired"));
 }
 
 async function _stPost(url, body, okMessage) {
