@@ -7,16 +7,24 @@
 # ホストの outputs ディレクトリがそのまま連携ポイントになる。
 #
 # 有効化の前提:
-#   1. クローラー側に .env を作り PBR_VNC_PASSWORD を設定しておく
-#      （ファイルが無いと include 自体がエラーになる。パスワードは noVNC 用で必須）
+#   1. この .env に PBR_REPO_DIR と PBR_VNC_PASSWORD を書く。
+#        PBR_REPO_DIR=J:/Git/PBRLending-History-Check   （Windows も / 区切り）
+#        PBR_VNC_PASSWORD=<好きなパスワード>            （noVNC ログイン用で必須）
+#      include した compose の変数は、呼び出す側＝この .env から解決される。
 #   2. PBR_VIEWER_URL=http://127.0.0.1:4174 にする（クローラーの Docker 側ポート）
-#   3. クローラーをホストの npm run viewer で動かす運用なら include は不要
+#   3. 既にクローラーを単独の compose プロジェクトとして起動している場合は、
+#      先に落としておく（同じ 4174 / 6080 を使うため）:
+#        docker compose -p pbrlending-history-check down
+#   4. クローラーをホストの npm run viewer で動かす運用なら include は不要
 #      （連携はファイル経由なので成立する。ビューア URL は既定の 4173）
 #
+# この 3 行を毎回書き換えたくない場合は docker-compose.override.yml に置く。
+# Compose が自動で読み、git 管理外なので環境ごとの差分を持ち込まない。
+# 手順は docs/pbr-setup.md を参照。
+#
 # include:
-#   - path: J:/Git/PBRLending-History-Check/docker-compose.yml
-#     project_directory: J:/Git/PBRLending-History-Check
-#     env_file: J:/Git/PBRLending-History-Check/.env   # PBR_VNC_PASSWORD の解決用
+#   - path: ${PBR_REPO_DIR}/docker-compose.yml
+#     project_directory: ${PBR_REPO_DIR}
 
 services:
   app:
@@ -26,15 +34,22 @@ services:
     volumes:
       - ./data:/data
       # PBR Lending クローラーの出力（読み取り専用）。連携する場合のみ有効化し、
-      # PBR_CRAWL_DIR=/pbr-outputs を設定する。Windows のパスは / 区切りで書く。
-      # - "J:/Git/PBRLending-History-Check/outputs:/pbr-outputs:ro"
+      # PBR_CRAWL_DIR=/pbr-outputs を .env に設定する。
+      # - "${PBR_REPO_DIR}/outputs:/pbr-outputs:ro"
     environment:
-      # 起動時に必須なのは SECRET_KEY と DATA_DIR のみ。
-      # 下記の OAuth / CS_SECRET_KEY / ADMIN_EMAILS / BASE_URL は
-      # 初回セットアップウィザード（ログイン前に表示）からも設定でき、
-      # 未設定（空）でも起動する。
-      - SECRET_KEY=${SECRET_KEY}
-      - DATA_DIR=/data
+      # ここはすべて未設定（空）でも起動する。
+      # OAuth / CS_SECRET_KEY / ADMIN_EMAILS / BASE_URL は
+      # 初回セットアップウィザード（ログイン前に表示）からも設定できる。
+      #
+      # セッション鍵。未設定ならデータディレクトリに生成して使い回す
+      # （固定値へのフォールバックはしない）。複数インスタンスで
+      # セッションを共有したい場合だけ明示する。
+      - SECRET_KEY=${SECRET_KEY:-}
+      # DATA_DIR=/data  → マルチユーザー（Google ログイン必須）
+      # DATA_DIR=（空） → シングルユーザー（ログイン無し。手元での試用向け）
+      # .env に書かなければ /data。空文字を書けば空のまま渡る（- は :- と違い
+      # 「未設定のときだけ既定値」なので、明示した空を潰さない）。
+      - DATA_DIR=${DATA_DIR-/data}
       - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
       - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET:-}
       - CS_SECRET_KEY=${CS_SECRET_KEY:-}
@@ -44,4 +59,52 @@ services:
       # PBR Lending クローラー連携（上の volume を有効にした場合）
       - PBR_CRAWL_DIR=${PBR_CRAWL_DIR:-}
       - PBR_VIEWER_URL=${PBR_VIEWER_URL:-}
+      # ファイル同期の相手登録（Syncthing）。設定するとインポート画面から
+      # 同期相手を登録できる（管理者のみ）。
+      #
+      # ローカル運用では outputs を直接マウントしているので同期は不要。
+      # 画面の動作を試したい場合は、下の syncthing サービスを有効にして
+      #   SYNCTHING_URL=http://syncthing:8384
+      # を .env に書く。
+      #
+      # ホストで動かしている Syncthing を指すことは基本できない。GUI が
+      # 127.0.0.1 待受だと、host.docker.internal 経由の要求は API キーを
+      # 付けても 403（DNS リバインディング対策のホストヘッダ検査）になる。
+      - SYNCTHING_URL=${SYNCTHING_URL:-}
+      - SYNCTHING_API_KEY=${SYNCTHING_API_KEY:-}
     restart: unless-stopped
+
+  # 同一マシンで動かす構成では不要（outputs を直接マウントしている）。
+  # このサービスは、アプリをクラウドへ置いて手元のクローラーから同期を張る
+  # 構成のための送信側。profiles により
+  #   docker compose --profile syncthing up -d viewer syncthing
+  # と明示したときだけ起動する（app は名指ししないので立ち上がらない）。
+  #
+  # ポートはホストで動かしている Syncthing と衝突しないようずらしてある
+  # （既定の 22000 を使うと "ports are not available" で起動できない）。
+  syncthing:
+    image: syncthing/syncthing:latest
+    profiles: ["syncthing"]
+    environment:
+      # 空のままだと Syncthing が自前で鍵を作ってしまい、アプリから操作できない。
+      # このサービスを使うなら .env に SYNCTHING_API_KEY を必ず書く。
+      # （:? の必須チェックは使えない。プロファイルが無効でも評価されるため、
+      #   同期を使わない利用者の docker compose up まで失敗してしまう）
+      - STGUIAPIKEY=${SYNCTHING_API_KEY:-}
+      # 名前付きボリュームは root 所有で作られる。イメージ既定の PUID=1000 の
+      # ままだと証明書を書けずに起動に失敗する。
+      - PUID=0
+      - PGID=0
+    volumes:
+      # イメージが期待するマウント点は /var/syncthing（config はこの中）
+      - syncthing-config:/var/syncthing
+      # クローラーの outputs を、アプリと同じパスに見せる。アプリが作る
+      # フォルダ設定のパスがそのまま Syncthing 側でも通る。
+      - "${PBR_REPO_DIR:-.}/outputs:/pbr-outputs"
+    ports:
+      - "32000:22000/tcp"
+      - "32000:22000/udp"
+    restart: unless-stopped
+
+volumes:
+  syncthing-config:

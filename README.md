@@ -278,9 +278,10 @@ docker compose up -d --build
 アプリだけをクラウドのコンテナサービスへ置き、PBR Lending のクローラーは手元に
 残して、取得データ（`outputs`）をファイル同期で運ぶ構成にできます。
 
-- 手順と注意点: [`docs/deploy.md`](./docs/deploy.md)
+- **起動までの手順（構成別）: [`docs/pbr-setup.md`](./docs/pbr-setup.md)**
+- 配備先の選び方・バックアップ: [`docs/deploy.md`](./docs/deploy.md)
 - 構成例: [`docker-compose.cloud.yml`](./docker-compose.cloud.yml)
-- 同期相手の登録（Syncthing）: [`docs/syncthing-pairing.md`](./docs/syncthing-pairing.md)
+- 同期相手の登録（Syncthing）の仕様: [`docs/syncthing-pairing.md`](./docs/syncthing-pairing.md)
 
 Syncthing を使う場合、`SYNCTHING_URL` と `SYNCTHING_API_KEY` を設定すると、
 インポート画面から相手のデバイス ID を貼るだけで同期を設定できます
@@ -328,3 +329,4 @@ pytest --cov=crypto_summary
 - プロジェクト設計: [`DESIGN.md`](./DESIGN.md)
 - コマンドリファレンス: [`docs/commands.md`](./docs/commands.md)
 - API キーのセットアップ: [`docs/api-keys.md`](./docs/api-keys.md)
+- PBR Lending 連携のセットアップ: [`docs/pbr-setup.md`](./docs/pbr-setup.md)

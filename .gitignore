@@ -28,6 +28,10 @@ data/
 !.env.example
 *.secrets.json
 
+# このマシン固有の compose 設定（クローラーのパスなど）。
+# Compose が docker-compose.yml に自動で重ねる。
+docker-compose.override.yml
+
 # Output files
 out/
 
