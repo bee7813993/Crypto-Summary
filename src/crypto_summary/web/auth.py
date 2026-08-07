@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 import os
+import re
+import secrets
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import RedirectResponse
@@ -99,3 +101,51 @@ def require_user(request: Request) -> dict:
     if not user:
         raise HTTPException(status_code=401, detail="Not authenticated")
     return user
+
+
+# ---------------------------------------------------------------------------
+# サービス間アクセス（Asset Summary からの読み取り専用）
+# ---------------------------------------------------------------------------
+
+# Google の sub は数字列。ここで形式を縛ることで
+# f"{sub}.db" のパス組み立てにトラバーサル文字列が混ざるのを防ぐ。
+_SUB_RE = re.compile(r"^[0-9]{1,64}$")
+
+
+def _service_token() -> str:
+    return os.environ.get("CS_SERVICE_TOKEN", "").strip()
+
+
+def service_request_sub(request: Request) -> str | None:
+    """有効なサービストークンならば X-CS-User の sub を返す。それ以外は None。
+
+    CS_SERVICE_TOKEN 未設定なら常に None（機能自体が無効で挙動不変）。
+    トークン不一致も None（セッション認証へフォールスルーし 401 になる —
+    「トークンが違う」ことを外部に教えない）。sub の形式不正のみ 400。
+    """
+    token = _service_token()
+    if not token:
+        return None
+    auth = request.headers.get("Authorization", "")
+    if not auth.startswith("Bearer "):
+        return None
+    # bytes で比較する — str 版 compare_digest は非 ASCII で TypeError を投げるため、
+    # 細工したヘッダーで 500 にさせない（不一致は静かに 401 へフォールスルー）。
+    candidate = auth[len("Bearer "):].strip().encode("utf-8", "replace")
+    if not secrets.compare_digest(candidate, token.encode("utf-8")):
+        return None
+    sub = request.headers.get("X-CS-User", "").strip()
+    if not _SUB_RE.fullmatch(sub):
+        raise HTTPException(status_code=400, detail="X-CS-User が不正です")
+    return sub
+
+
+def require_user_or_service(request: Request) -> dict:
+    """セッションユーザー、またはサービストークンの主体を返す（読み取り用）。
+
+    サービス主体は email 空のため require_admin には決して通らない。
+    """
+    sub = service_request_sub(request)
+    if sub is not None:
+        return {"sub": sub, "email": "", "name": "", "picture": "", "service": True}
+    return require_user(request)
