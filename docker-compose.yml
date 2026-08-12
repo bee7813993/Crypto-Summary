@@ -55,6 +55,9 @@ services:
       - CS_SECRET_KEY=${CS_SECRET_KEY:-}
       - ADMIN_EMAILS=${ADMIN_EMAILS:-}
       - BASE_URL=${BASE_URL:-}
+      # サブパス配信の接頭辞（例 /crypto）。未設定なら BASE_URL 先頭エントリの
+      # パス部分から決まるので、通常は書かなくてよい。
+      - CS_ROOT_PATH=${CS_ROOT_PATH:-}
       - COINGECKO_API_KEY=${COINGECKO_API_KEY:-}
       # PBR Lending クローラー連携（上の volume を有効にした場合）
       - PBR_CRAWL_DIR=${PBR_CRAWL_DIR:-}

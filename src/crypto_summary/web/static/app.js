@@ -160,8 +160,20 @@ function fmtPeriod(firstTs, lastTs) {
   return `${fmtDateOnly(firstTs)} 〜 ${fmtDateOnly(lastTs)}`;
 }
 
+/** アプリの公開位置を基準に URL を解決する（サブパス配信への対応）。
+ *
+ * サーバーが index.html に <base href="/crypto/"> のような基準を差し込むので、
+ * 先頭の / を落として document.baseURI 基準で解決すれば、ルート直下でも
+ * サブパスでも同じコードで正しい URL になる。base はパスだけなので、
+ * スキームとホストは今開いているページのものが使われる（https のページから
+ * http を読みにいってしまう事故が起きない）。
+ */
+function apiUrl(path) {
+  return new URL(String(path).replace(/^\/+/, ""), document.baseURI).toString();
+}
+
 async function fetchJSON(url) {
-  const res = await fetch(url);
+  const res = await fetch(apiUrl(url));
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
 }
@@ -1050,7 +1062,7 @@ document.getElementById("settings-save").addEventListener("click", async () => {
       groups[newName] = checkedIds;
     }
 
-    const resp = await fetch("/api/account-groups", {
+    const resp = await fetch(apiUrl("/api/account-groups"), {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ groups }),
@@ -1546,7 +1558,7 @@ document.getElementById("tx-export-btn").addEventListener("click", async () => {
   result.classList.remove("hidden");
 
   try {
-    const resp = await fetch(url);
+    const resp = await fetch(apiUrl(url));
     if (!resp.ok) {
       const err = await resp.json().catch(() => ({}));
       throw new Error(err.detail || `HTTP ${resp.status}`);
@@ -1648,7 +1660,7 @@ document.getElementById("tax-export-btn").addEventListener("click", async () => 
   result.classList.remove("hidden");
 
   try {
-    const resp = await fetch(url);
+    const resp = await fetch(apiUrl(url));
     if (!resp.ok) {
       const err = await resp.json().catch(() => ({}));
       throw new Error(err.detail || `HTTP ${resp.status}`);
@@ -1728,7 +1740,7 @@ document.getElementById("manual-save").addEventListener("click", async () => {
   }
 
   try {
-    const resp = await fetch("/api/transactions", {
+    const resp = await fetch(apiUrl("/api/transactions"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -1834,7 +1846,7 @@ document.getElementById("delete-confirm").addEventListener("click", async () => 
     _clearDialogState();
     const result = document.getElementById("pbr-sync-result");
     try {
-      const resp = await fetch("/api/sync/pbr/purge", {
+      const resp = await fetch(apiUrl("/api/sync/pbr/purge"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ year }),
@@ -1865,7 +1877,7 @@ document.getElementById("delete-confirm").addEventListener("click", async () => 
     const sourceId = _apiDeleteSourceId;
     _clearDialogState();
     try {
-      const resp = await fetch(`/api/account-apis/${encodeURIComponent(sourceId)}`, { method: "DELETE" });
+      const resp = await fetch(apiUrl(`/api/account-apis/${encodeURIComponent(sourceId)}`), { method: "DELETE" });
       if (!resp.ok) {
         const err = await resp.json().catch(() => ({}));
         throw new Error(err.detail || `HTTP ${resp.status}`);
@@ -1886,7 +1898,7 @@ document.getElementById("delete-confirm").addEventListener("click", async () => 
     const sourceId = _walletDeleteSourceId;
     _clearDialogState();
     try {
-      const resp = await fetch(`/api/wallets/${encodeURIComponent(sourceId)}`, { method: "DELETE" });
+      const resp = await fetch(apiUrl(`/api/wallets/${encodeURIComponent(sourceId)}`), { method: "DELETE" });
       if (!resp.ok) {
         const err = await resp.json().catch(() => ({}));
         throw new Error(err.detail || `HTTP ${resp.status}`);
@@ -1907,7 +1919,7 @@ document.getElementById("delete-confirm").addEventListener("click", async () => 
     const account = _accountClearTarget;
     _clearDialogState();
     try {
-      const resp = await fetch(`/api/sources/${encodeURIComponent(account)}`, { method: "DELETE" });
+      const resp = await fetch(apiUrl(`/api/sources/${encodeURIComponent(account)}`), { method: "DELETE" });
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
       const d = await resp.json();
       loadImportAccountsTable();
@@ -1928,7 +1940,7 @@ document.getElementById("delete-confirm").addEventListener("click", async () => 
     const batchId = _batchDeleteId;
     _clearDialogState();
     try {
-      const resp = await fetch(`/api/import/batches/${encodeURIComponent(batchId)}`, { method: "DELETE" });
+      const resp = await fetch(apiUrl(`/api/import/batches/${encodeURIComponent(batchId)}`), { method: "DELETE" });
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
       const d = await resp.json();
       loadImportBatches();
@@ -1949,7 +1961,7 @@ document.getElementById("delete-confirm").addEventListener("click", async () => 
   const { txId, onSuccess } = _deleteCallback;
   _clearDialogState();
   try {
-    const resp = await fetch(`/api/transactions/${encodeURIComponent(txId)}`, { method: "DELETE" });
+    const resp = await fetch(apiUrl(`/api/transactions/${encodeURIComponent(txId)}`), { method: "DELETE" });
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     if (onSuccess) onSuccess();
   } catch (e) {
@@ -2320,7 +2332,7 @@ function _stPair(deviceId, name, approved = false) {
 
 async function _stPost(url, body, okMessage) {
   try {
-    const resp = await fetch(url, {
+    const resp = await fetch(apiUrl(url), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -2387,7 +2399,7 @@ async function runPbrSync({ force = false, auto = false } = {}) {
     result.classList.remove("hidden");
   }
   try {
-    const resp = await fetch("/api/sync/pbr", {
+    const resp = await fetch(apiUrl("/api/sync/pbr"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ force }),
@@ -2531,7 +2543,7 @@ async function _savePref(key, value, box, onSaved) {
   const previous = !box.checked;
   box.disabled = true;
   try {
-    const resp = await fetch("/api/prefs", {
+    const resp = await fetch(apiUrl("/api/prefs"), {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ prefs: { [key]: value } }),
@@ -2644,7 +2656,7 @@ document.getElementById("admin-oauth-save-btn")?.addEventListener("click", async
   const googleId = (document.getElementById("admin-google-id")?.value || "").trim();
   const googleSecret = (document.getElementById("admin-google-secret")?.value || "").trim();
   try {
-    const resp = await fetch("/api/admin-config", {
+    const resp = await fetch(apiUrl("/api/admin-config"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ base_url: baseUrl, google_client_id: googleId, google_client_secret: googleSecret }),
@@ -2669,7 +2681,7 @@ document.getElementById("admin-emails-save-btn")?.addEventListener("click", asyn
   result.classList.add("hidden");
   const emails = (document.getElementById("admin-emails-input")?.value || "").trim();
   try {
-    const resp = await fetch("/api/admin-config", {
+    const resp = await fetch(apiUrl("/api/admin-config"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ admin_emails: emails }),
@@ -2698,7 +2710,7 @@ document.getElementById("admin-coingecko-save-btn")?.addEventListener("click", a
     return;
   }
   try {
-    const resp = await fetch("/api/admin-config", {
+    const resp = await fetch(apiUrl("/api/admin-config"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ coingecko_api_key: key }),
@@ -2870,7 +2882,7 @@ async function loadApiAccountsTable() {
         result.textContent = t("status.walletScanning", { id: a.source_id });
         result.classList.remove("hidden");
         try {
-          const resp = await fetch(`/api/account-apis/${encodeURIComponent(a.source_id)}/sync`, {
+          const resp = await fetch(apiUrl(`/api/account-apis/${encodeURIComponent(a.source_id)}/sync`), {
             method: "POST",
           });
           const d = await resp.json();
@@ -2938,7 +2950,7 @@ document.getElementById("import-csv-btn").addEventListener("click", async () => 
 
   try {
     const contentB64 = await readFileAsBase64(file);
-    const resp = await fetch("/api/import/csv", {
+    const resp = await fetch(apiUrl("/api/import/csv"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -2996,7 +3008,7 @@ document.getElementById("import-api-register-btn").addEventListener("click", asy
   }
 
   try {
-    const resp = await fetch("/api/account-apis", {
+    const resp = await fetch(apiUrl("/api/account-apis"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ exchange, source_id: sourceId, api_key: apiKey, api_secret: apiSecret, category }),
@@ -3057,7 +3069,7 @@ async function loadWalletsTable() {
         result.textContent = t("status.walletScanning", { id: w.source_id });
         result.classList.remove("hidden");
         try {
-          const resp = await fetch(`/api/wallets/${encodeURIComponent(w.source_id)}/sync`, {
+          const resp = await fetch(apiUrl(`/api/wallets/${encodeURIComponent(w.source_id)}/sync`), {
             method: "POST",
           });
           const d = await resp.json();
@@ -3110,7 +3122,7 @@ if (_systemKeysSaveBtn) {
     }
 
     try {
-      const resp = await fetch("/api/system-keys", {
+      const resp = await fetch(apiUrl("/api/system-keys"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
@@ -3149,7 +3161,7 @@ document.getElementById("import-wallet-btn").addEventListener("click", async () 
   }
 
   try {
-    const resp = await fetch("/api/wallets", {
+    const resp = await fetch(apiUrl("/api/wallets"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -3237,7 +3249,7 @@ document.getElementById("sync-all-btn").addEventListener("click", async () => {
   result.classList.remove("hidden");
   result.textContent = t("status.syncAllRunning");
   try {
-    const res = await fetch("/api/sync-all", { method: "POST" });
+    const res = await fetch(apiUrl("/api/sync-all"), { method: "POST" });
     const d = await res.json();
     if (!res.ok) throw new Error(d.detail || `HTTP ${res.status}`);
     if (d.total === 0) {
@@ -3363,7 +3375,7 @@ async function runSetupIfNeeded() {
     }
 
     try {
-      const resp = await fetch("/api/setup", {
+      const resp = await fetch(apiUrl("/api/setup"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -3391,7 +3403,7 @@ async function runSetupIfNeeded() {
   // スキップボタン
   document.getElementById("setup-skip-btn").addEventListener("click", async () => {
     try {
-      await fetch("/api/setup", {
+      await fetch(apiUrl("/api/setup"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ skipped: true }),

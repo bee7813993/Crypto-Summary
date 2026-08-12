@@ -30,9 +30,13 @@ services:
       - pbr-outputs:/data/pbr-outputs:ro
     environment:
       # --- 必須 ---
-      # 公開 URL。OAuth のリダイレクト URI の組み立てと、
-      # https のときセッション Cookie に Secure を付ける判定に使う。
-      - "BASE_URL=${BASE_URL:?公開URLを設定してください（例 https://cs.example.com）}"
+      # 公開 URL。OAuth のリダイレクト URI の組み立てと、全エントリが https の
+      # ときセッション Cookie に Secure を付ける判定に使う。カンマ区切りで
+      # 複数可（例 https://example.com/crypto,http://localhost:8000）。
+      - "BASE_URL=${BASE_URL:?公開URLを設定してください（例 https://cs.example.com — カンマ区切りで複数可）}"
+      # サブパス配信の接頭辞（例 /crypto）。未設定なら BASE_URL 先頭エントリの
+      # パス部分から決まるので、通常は書かなくてよい。
+      - CS_ROOT_PATH=${CS_ROOT_PATH:-}
 
       # ログインの有無を決める。
       #   DATA_DIR=/data  → マルチユーザー（Google ログイン必須）

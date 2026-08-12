@@ -8,6 +8,7 @@ from __future__ import annotations
 import os
 import re
 import secrets
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import RedirectResponse
@@ -15,9 +16,80 @@ from fastapi.responses import RedirectResponse
 router = APIRouter()
 
 
-def _base_url() -> str:
-    # 空文字（Docker で未設定時に渡る）も既定値にフォールバックする。
-    return (os.environ.get("BASE_URL") or "http://localhost:8000").rstrip("/")
+DEFAULT_BASE_URL = "http://localhost:8000"
+
+
+def allowed_base_urls() -> list[str]:
+    """BASE_URL に列挙された公開 URL（カンマ区切り・空なら制限なし）。
+
+    同じアプリを複数の入口（手元の localhost とリバースプロキシの公開 URL 等）で
+    開けるようにするための一覧。OAuth のリダイレクト URI はリクエストごとに
+    「今開いている入口」から組み立てるが、Host ヘッダは送信側が自由に名乗れる
+    ため、ここに挙げた URL 以外は採用しない。
+    初回セットアップで保存した _server_config.json の base_url は
+    _apply_server_config() が env に反映してからここへ届く（env 優先のまま）。
+    """
+    raw = os.environ.get("BASE_URL") or ""
+    return [u.strip().rstrip("/") for u in raw.split(",") if u.strip()]
+
+
+def _normalize_root_path(raw: str) -> str:
+    p = "/" + raw.strip().strip("/")
+    return "" if p == "/" else p
+
+
+def root_path() -> str:
+    """サブパス配信の接頭辞（"/crypto" 形式。ルート直下なら空文字）。
+
+    CS_ROOT_PATH が優先。空文字は「未設定」扱い — docker-compose は
+    ${CS_ROOT_PATH:-} で常に空文字を渡すため（"/" を書くとルート配信を
+    明示的に強制できる）。未設定なら BASE_URL 先頭エントリのパス部分を使う
+    （https://例.com/crypto と書けば接頭辞も決まる、という一本化）。
+    """
+    raw = (os.environ.get("CS_ROOT_PATH") or "").strip()
+    if raw:
+        return _normalize_root_path(raw)
+    urls = allowed_base_urls()
+    return _normalize_root_path(urlsplit(urls[0]).path) if urls else ""
+
+
+def https_only() -> bool:
+    """セッション Cookie に Secure を付けるか。
+
+    Cookie の設定はミドルウェア登録時に1度だけ決まるためリクエストごとに
+    切り替えられない。入口が1つでも http なら、Secure を付けると
+    そちらでログインできなくなるので付けない。
+    """
+    urls = allowed_base_urls()
+    return bool(urls) and all(u.startswith("https://") for u in urls)
+
+
+def resolve_base_url(request: Request | None = None) -> str:
+    """このリクエストが名乗っている入口の URL を返す。
+
+    ブラウザが実際に開いた URL でリダイレクト URI を組み立てるので、
+    localhost でも公開 URL でも、設定を変えずに同じようにログインできる
+    （使う入口すべての /auth/callback を Google に登録してあることが前提）。
+
+    Host ヘッダは詐称できるため、BASE_URL を設定してあるときはその一覧に
+    無いものを採用しない（一致しなければ先頭エントリへ倒す）。TLS 終端
+    プロキシの内側ではスキームが http に見えるので、ホスト:ポートが一致する
+    登録済み URL があればそちらを優先する（スキームとパスは登録値に揃う）。
+    """
+    allowed = allowed_base_urls()
+    if request is None:
+        return allowed[0] if allowed else DEFAULT_BASE_URL
+
+    derived = str(request.base_url).rstrip("/")
+    if not allowed:
+        return derived
+    if derived in allowed:
+        return derived
+    netloc = urlsplit(derived).netloc
+    for url in allowed:
+        if urlsplit(url).netloc == netloc:
+            return url
+    return allowed[0]
 
 
 def _get_oauth():
@@ -57,7 +129,9 @@ def reset_oauth_client() -> None:
 
 @router.get("/auth/login")
 async def login(request: Request):
-    redirect_uri = _base_url() + "/auth/callback"
+    # 開いている入口に応じたリダイレクト URI（authlib が state と一緒に
+    # セッションへ保存し、コールバックのトークン交換でも同じ値を使う）。
+    redirect_uri = resolve_base_url(request) + "/auth/callback"
     return await _oauth_client().authorize_redirect(request, redirect_uri)
 
 
@@ -78,13 +152,13 @@ async def auth_callback(request: Request):
         "name": user.get("name", ""),
         "picture": user.get("picture", ""),
     }
-    return RedirectResponse(url="/")
+    return RedirectResponse(url=(request.scope.get("root_path") or "") + "/")
 
 
 @router.get("/auth/logout")
 async def logout(request: Request):
     request.session.clear()
-    return RedirectResponse(url="/")
+    return RedirectResponse(url=(request.scope.get("root_path") or "") + "/")
 
 
 @router.get("/auth/me")

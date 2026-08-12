@@ -169,6 +169,27 @@ def test_sync_when_not_configured_is_422(client):
     assert r.status_code == 422
 
 
+def test_sync_reports_unwritable_data_dir(client, crawl_dir, db_path, monkeypatch):
+    """記録を保存できないときは、素の 500 ではなく理由を返す。
+
+    データディレクトリが書けない状態（旧 root 実行時代のファイルが残った
+    コンテナなど）だと、台帳へ取り込んだ直後の記録保存だけが落ちる。
+    画面には detail がそのまま出るので、原因が分かる文面である必要がある。
+    """
+    _configure(monkeypatch, crawl_dir, client)
+    # 記録ファイルと同名のディレクトリを作って書き込みを失敗させる
+    sync_state_path(db_path).mkdir()
+
+    r = client.post("/api/sync/pbr", json={})
+
+    assert r.status_code == 500
+    detail = r.json()["detail"]
+    assert str(sync_state_path(db_path)) in detail
+    assert "書き込み権限" in detail
+    # 台帳への取り込み自体は終わっていることが分かる文面にする
+    assert "台帳の更新は完了" in detail
+
+
 # ---- 利用者ごとの有効／無効 ----
 #
 # 全員が PBR Lending の口座を持つわけではないので、既定では連携の UI を出さない。

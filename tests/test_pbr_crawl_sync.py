@@ -704,3 +704,45 @@ def test_resync_after_purge_restores_rows(crawl_dir, db_path):
     purge_pbr_crawl_year(db_path, 2026)
     sync_pbr_crawl(db_path, crawl_dir)
     assert _sources(db_path)["pbr_crawl"] == 3
+
+
+# ---- 記録を保存できないとき ----
+#
+# データディレクトリに書けないと、台帳へ取り込んだ直後の記録保存だけが失敗する。
+# 記録が残らないと毎回「未取り込み」と判定されて同じ取り込みを繰り返すため、
+# 素の OSError（500）ではなく理由の分かるエラーにする。
+
+def _make_state_path_unwritable(db_path: Path) -> Path:
+    """記録ファイルと同名のディレクトリを作って書き込みを失敗させる。
+
+    権限ビットは OS によって効き方が違うが、ディレクトリへの write_text は
+    どこでも OSError になる。
+    """
+    path = sync_state_path(db_path)
+    path.mkdir()
+    return path
+
+
+def test_sync_reports_unwritable_state_file(crawl_dir, db_path):
+    path = _make_state_path_unwritable(db_path)
+
+    with pytest.raises(PbrSyncError) as e:
+        sync_pbr_crawl(db_path, crawl_dir)
+
+    assert e.value.code == "state_unwritable"
+    assert str(path) in e.value.message
+    # 台帳への取り込みは完了している（記録だけが残らない）
+    assert _sources(db_path)["pbr_crawl"] == 3
+
+
+def test_purge_reports_unwritable_state_file(crawl_dir, db_path):
+    sync_pbr_crawl(db_path, crawl_dir)
+    sync_state_path(db_path).unlink()
+    _make_state_path_unwritable(db_path)
+
+    with pytest.raises(PbrSyncError) as e:
+        purge_pbr_crawl_year(db_path, 2026)
+
+    assert e.value.code == "state_unwritable"
+    # 削除は実行済み
+    assert _sources(db_path).get("pbr_crawl", 0) == 0

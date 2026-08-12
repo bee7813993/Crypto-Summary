@@ -593,7 +593,7 @@ class PbrSyncError(Exception):
     """同期を中断した理由を機械可読なコード付きで表す。
 
     code: not_configured | artifact_missing | artifact_invalid |
-          marker_missing | unhealthy | no_rows
+          marker_missing | unhealthy | no_rows | state_unwritable
     """
 
     def __init__(self, code: str, message: str):
@@ -763,9 +763,22 @@ def _save_sync_state(db_path: str | Path, **updates) -> dict:
     state = load_sync_state(db_path)
     state["version"] = 1
     state.update(updates)
-    sync_state_path(db_path).write_text(
-        json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    path = sync_state_path(db_path)
+    try:
+        path.write_text(
+            json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+    except OSError as e:
+        # 台帳の更新はこの時点で完了している。記録だけが残らないと毎回
+        # 「未取り込み」と判定されて同じ処理を繰り返すため、原因（多くは
+        # データディレクトリの書き込み権限）が分かる形で伝える。
+        raise PbrSyncError(
+            "state_unwritable",
+            f"取り込み状況の記録を保存できませんでした: {path}"
+            f"（{e.strerror or e}）。台帳の更新は完了していますが、"
+            "この記録が残らないため次回も同じ処理を繰り返します。"
+            "データディレクトリの書き込み権限を確認してください。",
+        ) from e
     return state
 
 
