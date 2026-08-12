@@ -258,7 +258,7 @@ cp .env.example .env
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | Google OAuth 認証 |
 | `SECRET_KEY` | セッション署名キー。未設定なら `DATA_DIR/_session_key` に自動生成される（明示する場合は `python -c "import secrets; print(secrets.token_hex(32))"`） |
 | `CS_SECRET_KEY` | API キー暗号化マスター鍵（`crypto-summary account gen-key` で生成）。Web 画面からのキー登録に必要 |
-| `BASE_URL` | アプリの公開 URL |
+| `BASE_URL` | アプリの公開 URL（カンマ区切りで複数可） |
 | `COINGECKO_API_KEY` | CoinGecko Demo キー（任意・レート制限緩和） |
 
 > 取引所・ウォレットの API キーは Web の「インポート」画面から登録でき（暗号化保存）、テキスト編集は不要です。詳細は [`docs/api-keys.md`](./docs/api-keys.md) を参照。
@@ -270,6 +270,19 @@ docker compose up -d --build
 ```
 
 > ⚠️ `.env` の変更を反映するには `docker compose down && docker compose up -d` が必要です（`restart` では再読み込みされません）。
+
+### リバースプロキシの配下に置く（Nginx Proxy Manager 等）
+
+サブドメインでもサブパス（`https://example.com/crypto/`）でも公開できます。
+`BASE_URL` はカンマ区切りで複数書け、ログイン時のリダイレクト URI は開いた
+入口から自動で選ばれます（挙げた各入口の `/auth/callback` を Google に登録）。
+**サブパスの場合はプロキシで接頭辞を落とさない**こと
+（nginx なら `proxy_pass http://crypto-summary:8000;` — 末尾スラッシュなし）。
+詳細は [`docs/deploy.md`](./docs/deploy.md) の同名の節を参照。
+
+```bash
+BASE_URL=https://example.com/crypto,http://localhost:8000
+```
 
 ---
 

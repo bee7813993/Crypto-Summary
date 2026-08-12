@@ -102,7 +102,8 @@ docker compose -f docker-compose.cloud.yml restart app
 ## 環境変数
 
 ```bash
-BASE_URL=https://cs.example.com        # 必須。OAuth と Cookie の Secure 判定に使う
+BASE_URL=https://cs.example.com        # 必須。カンマ区切りで複数可（下記「リバースプロキシ」参照）
+CS_ROOT_PATH=                          # 任意。サブパス配信の接頭辞。通常は BASE_URL のパスから自動決定
 DATA_DIR=/data                         # 必須。ボリュームのマウント先
 GOOGLE_CLIENT_ID=...                   # ログインに必要
 GOOGLE_CLIENT_SECRET=...
@@ -113,8 +114,8 @@ COINGECKO_API_KEY=                     # 任意
 SECRET_KEY=                            # 任意（未設定なら自動生成して永続化）
 ```
 
-Google Cloud Console 側で、リダイレクト URI に `${BASE_URL}/auth/callback` を
-登録しておくこと。
+Google Cloud Console 側で、`BASE_URL` に挙げた**各入口**の `/auth/callback` を
+リダイレクト URI として登録しておくこと。
 
 秘密情報 (`GOOGLE_CLIENT_SECRET` / `CS_SECRET_KEY`) は配備先のシークレット管理へ。
 `.env` をイメージやリポジトリに含めないこと。
@@ -126,6 +127,41 @@ docker compose -f docker-compose.cloud.yml up -d --build
 ```
 
 ヘルスチェックは `GET /api/health`（認証不要、`{"status":"ok"}` を返す）。
+
+## リバースプロキシの配下に置く（Nginx Proxy Manager 等）
+
+サブドメイン（`https://cs.example.com`）でもサブパス
+（`https://example.com/crypto/`）でも動く。TLS はプロキシ側で終端して構わない。
+
+- 公開 URL を `BASE_URL` に書く。**カンマ区切りで複数書ける**ので、ループバックと
+  公開 URL を並べておけば、設定を変えずにどちらの入口からもログインできる:
+
+  ```bash
+  BASE_URL=https://example.com/crypto,http://localhost:8000
+  ```
+
+- リダイレクト URI は「今開いている入口」から組み立てられる。`BASE_URL` に
+  挙げた各入口の `/auth/callback` を Google に登録しておけばそれだけで足りる。
+  一覧に無い Host で来たリクエストは先頭エントリへ倒す（Host ヘッダ詐称対策）。
+- TLS 終端の内側ではリクエストが平文 http に見えるが、ホスト:ポートが一致する
+  エントリが https で登録してあればそちらのスキームが使われる。
+  登録 URL に既定ポート（`:443` / `:80`）は書かないこと（文字列で照合するため）。
+- **サブパスで公開する場合は、プロキシで接頭辞を落とさずそのまま転送すること。**
+  nginx なら `proxy_pass http://crypto-summary:8000;`（末尾スラッシュなし）。
+  Nginx Proxy Manager なら Custom Location に `/crypto` を作り、Forward
+  Hostname/IP とポートだけを書く（Forward 先にパスを書かない）。接頭辞を
+  落とすと StaticFiles のマウントが一致せず、静的ファイルが 404 になる
+  （Starlette 1.3 で実測）。Host ヘッダもそのまま転送すること（NPM は既定で転送）。
+- 接頭辞は `BASE_URL` 先頭エントリのパス部分から自動で決まる。`CS_ROOT_PATH` で
+  明示もできる（空は「自動」、`/` は「ルート配信を強制」）。
+- 反映タイミング: `BASE_URL` の変更はリダイレクト URI には即時反映されるが、
+  接頭辞（root_path）と Cookie の Secure は起動時に固定されるため**要再起動**。
+- `BASE_URL` は 1 か所で管理する（env か初回セットアップ画面のどちらか）。
+  env で渡していると、管理画面から変更しても再起動時に env の値へ戻る。
+- http のエントリが 1 つでもあるとセッション Cookie の Secure は付かない
+  （そのエントリでログインできなくなるため）。全入口を https にすれば付く。
+- セッション Cookie 名は `cs_session`。同一ドメインのサブパスに
+  Asset Summary（`session`…既定名）と並べても取り合いにならない。
 
 ## PBR データのファイル同期
 

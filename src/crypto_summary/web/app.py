@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from ..core.ledger import Ledger
@@ -46,6 +46,7 @@ from ..sources.jp.pbr_crawl import (
     resolve_crawl_dir,
     sync_pbr_crawl,
 )
+from . import auth as cs_auth
 
 _STATIC_DIR = Path(__file__).parent / "static"
 _DUST = Decimal("0.00000001")
@@ -1706,6 +1707,20 @@ def _get_account_groups(db_path: str) -> dict:
     }
 
 
+def _app_path(request: Request) -> str:
+    """公開パスから接頭辞（root_path）を除いた、アプリ内部から見たパス。
+
+    サブパス配信（https://例.com/crypto/）ではリクエストのパスに接頭辞が
+    付いたまま届く。ルーティングは Starlette が root_path を見て解決するが、
+    ミドルウェアが自前でパスを判定する箇所は自分で外す必要がある。
+    """
+    rp = request.scope.get("root_path") or ""
+    path = request.url.path
+    if rp and (path == rp or path.startswith(rp + "/")):
+        return path[len(rp):] or "/"
+    return path
+
+
 def create_app(
     db_path: str = "ledger.db",
     data_dir: str | None = None,
@@ -1716,8 +1731,6 @@ def create_app(
     マルチユーザーモード: data_dir を指定すると Google OAuth が有効になり、
       ユーザーごとに {data_dir}/{google_sub}.db が使われる。
     """
-    app = FastAPI(title="Crypto-Summary", docs_url="/api/docs")
-
     multi_user = data_dir is not None
 
     # base_dir: サーバー設定ファイルの置き場所
@@ -1728,8 +1741,17 @@ def create_app(
     else:
         _base_dir = str(Path(db_path).resolve().parent)
 
-    # 設定ファイルの値を env に反映（env 優先）
+    # 設定ファイルの値を env に反映（env 優先）。FastAPI の生成より先に呼ぶ —
+    # サブパス配信の接頭辞（root_path）は BASE_URL（設定ファイル由来を含む）
+    # から導くため。
     _apply_server_config(_base_dir)
+
+    app = FastAPI(
+        title="Crypto-Summary",
+        docs_url="/api/docs",
+        # サブパス配信の接頭辞（例: /crypto）。空ならルート直下。
+        root_path=cs_auth.root_path(),
+    )
 
     def _admin_emails() -> set[str]:
         raw = os.environ.get("ADMIN_EMAILS", "")
@@ -1740,12 +1762,16 @@ def create_app(
         from starlette.middleware.sessions import SessionMiddleware
 
         secret_key = _session_secret(_base_dir)
-        # 公開 URL が https なら Cookie に Secure を付ける。付けないと、
-        # 何らかの理由で http に落ちたときにセッションが平文で流れる。
-        https_only = os.environ.get("BASE_URL", "").strip().startswith("https://")
+        # 公開 URL の全入口が https のときだけ Cookie に Secure を付ける。
+        # http の入口が1つでも残っていると、Secure 付きではそちらで
+        # ログインできなくなる（Cookie 属性は登録時の1度きりで決まる）。
+        https_only = cs_auth.https_only()
         app.add_middleware(
             SessionMiddleware, secret_key=secret_key, https_only=https_only,
             same_site="lax",
+            # 既定名 "session" のままだと、同一ドメインのサブパスに並べた
+            # Asset Summary と Cookie を取り合い、互いのセッションを消し合う。
+            session_cookie="cs_session",
         )
 
         from .auth import require_user, require_user_or_service, router as auth_router
@@ -2235,17 +2261,26 @@ def create_app(
         }
 
     @app.get("/")
-    def index() -> FileResponse:
-        return FileResponse(
-            _STATIC_DIR / "index.html",
-            headers={"Cache-Control": "no-cache"},
+    def index(request: Request) -> HTMLResponse:
+        # 静的ファイル・API・認証リンクはすべて相対 URL で書いてあるので、
+        # ここで基準を与える。パスだけの base（スキームとホストを書かない）に
+        # するのが要点 — TLS 終端プロキシの内側ではリクエストが http に
+        # 見えるため、絶対 URL を入れると https のページから http を読みに
+        # いって mixed content で止まる。
+        base = (request.scope.get("root_path") or "") + "/"
+        html = (_STATIC_DIR / "index.html").read_text(encoding="utf-8").replace(
+            "<head>", f'<head>\n  <base href="{base}">', 1
         )
+        return HTMLResponse(html, headers={"Cache-Control": "no-cache"})
 
     @app.middleware("http")
     async def _no_cache_static(request, call_next):
         """静的アセット（index.html / /static/*）は常に再検証させる。"""
+        # パスは call_next の前に読む — StaticFiles の Mount はマッチ時に
+        # scope の root_path を "/static" ぶん伸ばして書き換えるため、
+        # 後から読むと _app_path が接頭辞を正しく外せない。
+        path = _app_path(request)
         response = await call_next(request)
-        path = request.url.path
         if path == "/" or path.startswith("/static"):
             response.headers["Cache-Control"] = "no-cache"
         return response
