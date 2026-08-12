@@ -1464,6 +1464,7 @@ def _pbr_sync_status(db_path: str) -> dict:
 
 #: 同期エラーコード → HTTP ステータス。
 #: 409 は「force で上書きできる」ことを意味する。
+#: 500 はサーバー側の環境の問題（利用者の操作では直せない）。
 _PBR_ERROR_STATUS = {
     "not_configured": 422,
     "artifact_missing": 422,
@@ -1471,6 +1472,7 @@ _PBR_ERROR_STATUS = {
     "no_rows": 422,
     "marker_missing": 409,
     "unhealthy": 409,
+    "state_unwritable": 500,
 }
 
 
