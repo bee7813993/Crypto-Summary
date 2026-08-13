@@ -3,7 +3,7 @@
 価格取得をモンキーパッチして決定的に検証する。
 """
 import os
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 
@@ -28,6 +28,48 @@ def _deposit(source: str, asset: str, amount: str, day: int) -> CanonicalTx:
     )
 
 
+def _withdraw(source: str, asset: str, amount: str, day: int) -> CanonicalTx:
+    return CanonicalTx(
+        id=CanonicalTx.make_id(source, f"w{asset}{day}"),
+        source=source,
+        timestamp=datetime(2024, 1, day, tzinfo=timezone.utc),
+        type=TxType.WITHDRAW,
+        sent_asset=asset,
+        sent_amount=Decimal(amount),
+    )
+
+
+def _interest(source: str, asset: str, amount: str, day: int) -> CanonicalTx:
+    """日次利息ラベル付きの受取（表示設定で除外できる取引）。"""
+    return CanonicalTx(
+        id=CanonicalTx.make_id(source, f"i{asset}{day}"),
+        source=source,
+        timestamp=datetime(2024, 1, day, tzinfo=timezone.utc),
+        type=TxType.REWARD,
+        received_asset=asset,
+        received_amount=Decimal(amount),
+        label="daily_interest",
+    )
+
+
+def _days_ago(n: int) -> str:
+    return (date.today() - timedelta(days=n)).isoformat()
+
+
+def _fake_history(table: "dict | None" = None):
+    """web_app.fetch_price_history のスタブを作る。
+
+    table: {"BTC": {"YYYY-MM-DD": Decimal, ...}}。省略時は履歴なし（空 dict）。
+    本物と同じく、渡されなかった資産・未登録の資産はキーごと欠落させる。
+    """
+    table = {k.upper(): v for k, v in (table or {}).items()}
+
+    def _hist(assets, currency, start, end, warn=None):
+        return {a.upper(): dict(table[a.upper()]) for a in assets if a.upper() in table}
+
+    return _hist
+
+
 @pytest.fixture
 def db_path(tmp_path: Path, monkeypatch) -> str:
     db = Ledger(tmp_path / "web.db")
@@ -43,6 +85,7 @@ def db_path(tmp_path: Path, monkeypatch) -> str:
         return {a.upper(): table[a.upper()] for a in assets if a.upper() in table}
 
     monkeypatch.setattr(web_app, "fetch_prices", fake_prices)
+    monkeypatch.setattr(web_app, "fetch_price_history", _fake_history())
     return str(tmp_path / "web.db")
 
 
@@ -567,6 +610,7 @@ def spam_client(tmp_path: Path, monkeypatch) -> TestClient:
         return {"BTC": Decimal("60000")} if "BTC" in [a.upper() for a in assets] else {}
 
     monkeypatch.setattr(web_app, "fetch_prices", fake_prices)
+    monkeypatch.setattr(web_app, "fetch_price_history", _fake_history())
     return TestClient(web_app.create_app(str(tmp_path / "spam.db")))
 
 
@@ -987,3 +1031,220 @@ def test_daily_interest_toggle_changes_balance(client):
 
     client.put("/api/prefs", json={"prefs": {"include_daily_interest": True}})
     assert _btc_balance() == Decimal("0.111")
+
+
+# ---- 前日終値ベースの評価額（前日比） ----
+
+@pytest.fixture
+def prev_client(tmp_path: Path, monkeypatch) -> TestClient:
+    """前日終値つきのクライアント。
+
+    BTC は前日、ETH は3日前が最新（欠測日をまたぐ確認用）、
+    SOL は現在価格だけあって履歴が無い資産。
+    """
+    db = Ledger(tmp_path / "prev.db")
+    db.upsert(_deposit("acct_a", "BTC", "0.5", 1))
+    db.upsert(_deposit("acct_a", "ETH", "2", 2))
+    db.upsert(_deposit("acct_b", "SOL", "10", 3))
+    db.close()
+
+    def fake_prices(assets, currency, warn=None):
+        table = {"BTC": Decimal("60000"), "ETH": Decimal("3000"), "SOL": Decimal("150")}
+        return {a.upper(): table[a.upper()] for a in assets if a.upper() in table}
+
+    monkeypatch.setattr(web_app, "fetch_prices", fake_prices)
+    monkeypatch.setattr(web_app, "fetch_price_history", _fake_history({
+        "BTC": {_days_ago(2): Decimal("50000"), _days_ago(1): Decimal("55000")},
+        "ETH": {_days_ago(5): Decimal("2000"), _days_ago(3): Decimal("2500")},
+    }))
+    return TestClient(web_app.create_app(str(tmp_path / "prev.db")))
+
+
+def test_summary_prev_fields_present(prev_client):
+    """全資産に前日値の3フィールドが存在する。"""
+    d = prev_client.get("/api/summary?currency=USD").json()
+    for a in d["assets"]:
+        assert "prev_price" in a and "prev_value" in a and "prev_date" in a
+
+
+def test_summary_prev_value_uses_current_balance(prev_client):
+    """prev_value = いまの残高 × 前営業日の終値（前日の残高ではない）。"""
+    d = prev_client.get("/api/summary?currency=USD").json()
+    btc = next(a for a in d["assets"] if a["asset"] == "BTC")
+    assert btc["prev_date"] == _days_ago(1)
+    assert Decimal(btc["prev_price"]) == Decimal("55000")
+    assert Decimal(btc["prev_value"]) == Decimal("27500")   # 0.5 * 55000
+
+
+def test_summary_prev_date_is_latest_available(prev_client):
+    """直近が欠測でも、当日より前で価格が取れた最新日を採る。"""
+    d = prev_client.get("/api/summary?currency=USD").json()
+    eth = next(a for a in d["assets"] if a["asset"] == "ETH")
+    assert eth["prev_date"] == _days_ago(3)
+    assert Decimal(eth["prev_value"]) == Decimal("5000")    # 2 * 2500
+
+
+def test_summary_prev_null_when_history_missing(prev_client):
+    """前日終値が引けない資産は3つとも null（0 ではない）。"""
+    d = prev_client.get("/api/summary?currency=USD").json()
+    sol = next(a for a in d["assets"] if a["asset"] == "SOL")
+    assert sol["prev_price"] is None
+    assert sol["prev_value"] is None
+    assert sol["prev_date"] is None
+    # 評価額はあるので「取りこぼし」として明示される
+    assert "SOL" in d["prev_missing"]
+
+
+def test_summary_total_prev_value_sums_available(prev_client):
+    """total_prev_value は前日値が取れた資産だけの合計。"""
+    d = prev_client.get("/api/summary?currency=USD").json()
+    # BTC 27500 + ETH 5000。SOL は前日終値が無いので含まない
+    assert Decimal(d["total_prev_value"]) == Decimal("32500")
+
+
+def test_summary_prev_date_is_not_today(prev_client):
+    """当日の値を掴んで前日比が常に 0 になる事故を防ぐ。"""
+    today = date.today().isoformat()
+    d = prev_client.get("/api/summary?currency=USD").json()
+    assert any(a["prev_date"] for a in d["assets"])   # そもそも入っていること
+    for a in d["assets"]:
+        assert a["prev_date"] != today
+
+
+def test_summary_prev_window_never_includes_today(client, monkeypatch):
+    """履歴の窓の終端はローカル日付・UTC日付のどちらから見ても過去。"""
+    seen = {}
+
+    def _capture(assets, currency, start, end, warn=None):
+        seen["start"], seen["end"] = start, end
+        return {}
+
+    monkeypatch.setattr(web_app, "fetch_price_history", _capture)
+    assert client.get("/api/summary?currency=USD").status_code == 200
+    assert seen["end"] < date.today()
+    assert seen["end"] < datetime.now(timezone.utc).date()
+    assert seen["start"] == seen["end"] - timedelta(days=web_app._PREV_LOOKBACK_DAYS)
+
+
+def test_summary_prev_currency_forwarded(client, monkeypatch):
+    """表示通貨が履歴取得にもそのまま渡る（price と prev_price の通貨を揃える）。"""
+    seen = {}
+
+    def _capture(assets, currency, start, end, warn=None):
+        seen["currency"] = currency
+        return {}
+
+    monkeypatch.setattr(web_app, "fetch_price_history", _capture)
+    client.get("/api/summary?currency=JPY")
+    assert seen["currency"] == "JPY"
+
+
+def test_summary_total_prev_value_null_when_no_history(client):
+    """履歴が1件も取れなければ total_prev_value は null（0 ではない）。"""
+    d = client.get("/api/summary?currency=USD").json()
+    assert d["total_prev_value"] is None
+    assert Decimal(d["total_value"]) == Decimal("37500")   # 既存の値は変わらない
+
+
+def test_summary_survives_price_history_failure(tmp_path, monkeypatch):
+    """履歴取得が失敗しても 500 にせず、理由を warnings に載せる。"""
+    db = Ledger(tmp_path / "hf.db")
+    db.upsert(_deposit("acct_a", "BTC", "0.5", 1))
+    db.close()
+
+    monkeypatch.setattr(web_app, "fetch_prices",
+                        lambda a, c, warn=None: {"BTC": Decimal("60000")})
+
+    def _boom(assets, currency, start, end, warn=None):
+        if warn:
+            warn("CoinGecko履歴価格の取得に失敗しました (bitcoin): boom")
+        return {}
+
+    monkeypatch.setattr(web_app, "fetch_price_history", _boom)
+    r = TestClient(web_app.create_app(str(tmp_path / "hf.db"))).get("/api/summary?currency=USD")
+    assert r.status_code == 200
+    d = r.json()
+    assert d["total_prev_value"] is None
+    assert any("失敗" in w for w in d["warnings"])
+
+
+def test_summary_no_prev_total_when_all_prices_fail(tmp_path, monkeypatch):
+    """現在価格が全滅したら前日値も出さない（前日比 -100% 事故の回帰テスト）。"""
+    db = Ledger(tmp_path / "pf.db")
+    db.upsert(_deposit("acct_a", "BTC", "0.5", 1))
+    db.close()
+
+    monkeypatch.setattr(web_app, "fetch_prices", lambda a, c, warn=None: {})
+
+    called = {"n": 0}
+
+    def _hist(assets, currency, start, end, warn=None):
+        called["n"] += 1
+        return {"BTC": {_days_ago(1): Decimal("55000")}}
+
+    monkeypatch.setattr(web_app, "fetch_price_history", _hist)
+    d = TestClient(web_app.create_app(str(tmp_path / "pf.db"))).get(
+        "/api/summary?currency=USD").json()
+    assert Decimal(d["total_value"]) == Decimal("0")
+    assert d["total_prev_value"] is None   # total_value との差で -100% にならない
+    assert called["n"] == 0                # 価格が無いので履歴も引きに行かない
+
+
+def test_summary_prev_negative_balance_is_negative(tmp_path, monkeypatch):
+    """負残高（ショート相当）では前日評価額も負になる。"""
+    db = Ledger(tmp_path / "neg.db")
+    db.upsert(_withdraw("acct_a", "BTC", "0.5", 1))
+    db.close()
+
+    monkeypatch.setattr(web_app, "fetch_prices",
+                        lambda a, c, warn=None: {"BTC": Decimal("60000")})
+    monkeypatch.setattr(web_app, "fetch_price_history", _fake_history({
+        "BTC": {_days_ago(1): Decimal("50000")},
+    }))
+    d = TestClient(web_app.create_app(str(tmp_path / "neg.db"))).get(
+        "/api/summary?currency=USD").json()
+    btc = next(a for a in d["assets"] if a["asset"] == "BTC")
+    assert Decimal(btc["prev_value"]) == Decimal("-25000")
+    assert Decimal(d["total_prev_value"]) == Decimal("-25000")
+
+
+def test_spam_token_excluded_from_total_prev_value(tmp_path, monkeypatch):
+    """スパムトークンは前日評価額の合計にも混ざらない。"""
+    db = Ledger(tmp_path / "sp.db")
+    db.upsert(_deposit("wallet", "BTC", "0.5", 1))
+    db.upsert(_deposit("wallet", "SPAM10", "10", 2))   # 価格なし整数10 → スパム
+    db.close()
+
+    monkeypatch.setattr(web_app, "fetch_prices",
+                        lambda a, c, warn=None: {"BTC": Decimal("60000")})
+    # 履歴側がスパムトークンぶんも返してくる意地悪なケース
+    monkeypatch.setattr(web_app, "fetch_price_history", _fake_history({
+        "BTC": {_days_ago(1): Decimal("50000")},
+        "SPAM10": {_days_ago(1): Decimal("999")},
+    }))
+    d = TestClient(web_app.create_app(str(tmp_path / "sp.db"))).get(
+        "/api/summary?currency=USD").json()
+    assert "SPAM10" not in [a["asset"] for a in d["assets"]]
+    assert Decimal(d["total_prev_value"]) == Decimal("25000")   # BTC 0.5 * 50000 のみ
+
+
+def test_summary_excluded_label_not_in_total_prev_value(tmp_path, monkeypatch):
+    """日次利息を除外すると total_prev_value も連動して減る（value と同じ集合）。"""
+    db = Ledger(tmp_path / "lbl.db")
+    db.upsert(_deposit("pbr", "BTC", "1", 1))
+    db.upsert(_interest("pbr", "BTC", "0.1", 2))
+    db.close()
+
+    monkeypatch.setattr(web_app, "fetch_prices",
+                        lambda a, c, warn=None: {"BTC": Decimal("60000")})
+    monkeypatch.setattr(web_app, "fetch_price_history", _fake_history({
+        "BTC": {_days_ago(1): Decimal("50000")},
+    }))
+    c = TestClient(web_app.create_app(str(tmp_path / "lbl.db")))
+
+    d = c.get("/api/summary?currency=USD").json()
+    assert Decimal(d["total_prev_value"]) == Decimal("55000")   # 1.1 * 50000
+
+    c.put("/api/prefs", json={"prefs": {"include_daily_interest": False}})
+    d = c.get("/api/summary?currency=USD").json()
+    assert Decimal(d["total_prev_value"]) == Decimal("50000")   # 1.0 * 50000

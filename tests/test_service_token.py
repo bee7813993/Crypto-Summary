@@ -7,7 +7,7 @@
 - 未知 sub で DB ファイルを暗黙作成しない
 """
 import os
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 
@@ -22,6 +22,10 @@ from crypto_summary.web import app as web_app  # noqa: E402
 
 TOKEN = "test-service-token"
 SUB = "102071876055427770412"
+
+
+def _days_ago(n: int) -> str:
+    return (date.today() - timedelta(days=n)).isoformat()
 
 
 def _deposit(source: str, asset: str, amount: str, day: int) -> CanonicalTx:
@@ -47,6 +51,11 @@ def data_dir(tmp_path: Path, monkeypatch) -> Path:
         return {"BTC": Decimal("60000")}
 
     monkeypatch.setattr(web_app, "fetch_prices", fake_prices)
+    monkeypatch.setattr(
+        web_app,
+        "fetch_price_history",
+        lambda a, c, s, e, warn=None: {"BTC": {_days_ago(1): Decimal("55000")}},
+    )
     return d
 
 
@@ -192,3 +201,13 @@ def test_single_user_ignores_headers(tmp_path: Path, monkeypatch):
         headers={"Authorization": f"Bearer {TOKEN}", "X-CS-User": "../evil"},
     )
     assert r.status_code == 200
+
+
+def test_service_token_summary_exposes_prev_fields(mu_client):
+    """AS が実際に触る経路で前日値のフィールドが返る。"""
+    d = mu_client.get("/api/summary?currency=USD", headers=_headers()).json()
+    assert Decimal(d["total_prev_value"]) == Decimal("27500")   # 0.5 * 55000
+    btc = next(a for a in d["assets"] if a["asset"] == "BTC")
+    assert btc["prev_date"] == _days_ago(1)
+    assert Decimal(btc["prev_price"]) == Decimal("55000")
+    assert Decimal(btc["prev_value"]) == Decimal("27500")
