@@ -340,6 +340,7 @@ pytest --cov=crypto_summary
 ```
 
 - プロジェクト設計: [`DESIGN.md`](./DESIGN.md)
+- 読み取り専用 API（Asset Summary 連携）: [`docs/api.md`](./docs/api.md)
 - コマンドリファレンス: [`docs/commands.md`](./docs/commands.md)
 - API キーのセットアップ: [`docs/api-keys.md`](./docs/api-keys.md)
 - PBR Lending 連携のセットアップ: [`docs/pbr-setup.md`](./docs/pbr-setup.md)
