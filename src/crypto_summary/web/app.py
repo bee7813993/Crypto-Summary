@@ -53,6 +53,29 @@ _DUST = Decimal("0.00000001")
 # スパムエアドロップ判定：価格不明 ＋ 正の整数単位 ＋ 少量（≤10）
 _SPAM_MAX_UNITS = Decimal("10")
 
+# 前営業日の終値を探す遡り日数。取得漏れの日に耐えるため数日ぶんの窓を取る。
+# 広げてもリクエスト本数は変わらない（不足分は min(missing)..end を1回で取る）。
+_PREV_LOOKBACK_DAYS = 7
+
+
+def _prev_close_end() -> date:
+    """前日終値を探す窓の終端（この日以前で最新の終値を採る）を返す。
+
+    次の両方を満たす最新の日を返す。UTC 運用のコンテナでは単純に「昨日」。
+      - UTC で完全に閉じた日であること（price_history は UTC 日次で畳み込む）
+      - サーバのローカル日付より必ず過去であること（fetch_price_history に
+        「当日」とみなされると現物価格で埋まり、前日比が常に 0 になる）
+    """
+    return min(datetime.now(timezone.utc).date(), date.today()) - timedelta(days=1)
+
+
+def _latest_close(series: "dict[str, Decimal] | None") -> "tuple[str, Decimal] | None":
+    """日次終値の系列から最も新しい (日付, 価格) を返す。空・欠落なら None。"""
+    if not series:
+        return None
+    day = max(series)
+    return day, series[day]
+
 
 def _is_spam_token(balance: Decimal, price: "Decimal | None") -> bool:
     """価格不明かつ少量整数残高のトークンをスパムエアドロップと見なす。"""
@@ -204,6 +227,23 @@ def _summary(db_path: str, currency: str) -> dict:
     warnings: list[str] = []
     prices = fetch_prices(list(bals.keys()), currency, warn=warnings.append)
 
+    # 前日終値は「現在価格がある資産」だけを対象にする。こうすると total_value と
+    # total_prev_value の対象集合が構造的に一致し、価格取得が全滅したときに
+    # 「total_value だけ 0 に落ちて前日比 -100%」という事故が起きない。
+    priced_assets = [a for a in bals if prices.get(a.upper()) is not None]
+    prev_end = _prev_close_end()
+    hist = (
+        fetch_price_history(
+            priced_assets,
+            currency,
+            prev_end - timedelta(days=_PREV_LOOKBACK_DAYS),
+            prev_end,
+            warn=warnings.append,
+        )
+        if priced_assets
+        else {}
+    )
+
     assets = []
     total = Decimal("0")
     for asset in sorted(bals):
@@ -212,12 +252,22 @@ def _summary(db_path: str, currency: str) -> dict:
         value = (balance * price) if price is not None else None
         if value is not None:
             total += value
+
+        # 前日比は「いまの残高 × 前日終値」＝ 価格が動いたぶんだけを表す。
+        # 前日の残高ではないので、前日の入出金は前日比に混ざらない。
+        prev = _latest_close(hist.get(asset.upper()))
+        prev_date, prev_price = prev if prev else (None, None)
+        prev_value = (balance * prev_price) if prev_price is not None else None
+
         assets.append({
             "asset": asset,
             "balance": str(balance),
             "price": (str(price) if price is not None else None),
             "value": (str(value) if value is not None else None),
             "has_price": price is not None,
+            "prev_price": (str(prev_price) if prev_price is not None else None),
+            "prev_value": (str(prev_value) if prev_value is not None else None),
+            "prev_date": prev_date,
         })
 
     # スパムエアドロップを除外
@@ -232,13 +282,23 @@ def _summary(db_path: str, currency: str) -> dict:
 
     priced = [a for a in assets if a["has_price"]]
     unpriced = [a["asset"] for a in assets if not a["has_price"]]
+    # 評価額はあるが前日終値が取れなかった資産（表示通貨と異なる法定通貨など）。
+    # total_prev_value に入らないぶん、利用側で「前日比は部分的」と扱える。
+    prev_missing = [a["asset"] for a in assets if a["has_price"] and a["prev_value"] is None]
+
+    # スパム除外後の資産から集計する（対象集合のズレを構造的に排除する）。
+    # 1件も取れなければ null。0 と「判らない」は別物なので 0 は入れない。
+    prev_values = [Decimal(a["prev_value"]) for a in assets if a["prev_value"] is not None]
+    total_prev = str(sum(prev_values, Decimal("0"))) if prev_values else None
 
     return {
         "currency": currency,
         "total_value": str(total),
+        "total_prev_value": total_prev,
         "asset_count": len(assets),
         "priced_count": len(priced),
         "unpriced": unpriced,
+        "prev_missing": prev_missing,
         "assets": assets,
         "warnings": warnings,
         "generated_at": datetime.now(timezone.utc).isoformat(),
