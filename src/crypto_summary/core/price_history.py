@@ -30,6 +30,10 @@ WarnFn = Callable[[str], None]
 _BASE = "https://api.coingecko.com/api/v3"
 _TODAY_TTL = 300  # 当日価格を再取得する間隔（秒）。本モジュールでは当日は常に取り直す。
 
+# キャッシュ形式のバージョン。2 から「当日の場中価格を永続化しない」。
+# それ以前のキャッシュは当日値が確定値として混ざっているため読み込み時に破棄する。
+_HIST_CACHE_VERSION = 2
+
 
 def _hist_cache_path() -> Path:
     return Path.home() / ".crypto_summary_pricehist.json"
@@ -37,14 +41,18 @@ def _hist_cache_path() -> Path:
 
 def _load_hist_cache() -> dict:
     try:
-        return json.loads(_hist_cache_path().read_text())
+        data = json.loads(_hist_cache_path().read_text())
     except (OSError, json.JSONDecodeError):
         return {}
+    # 旧形式（v なし）は当日の場中価格が確定値として焼かれている可能性があるため破棄する。
+    if not isinstance(data, dict) or data.get("v") != _HIST_CACHE_VERSION:
+        return {}
+    return data
 
 
 def _save_hist_cache(data: dict) -> None:
     try:
-        _hist_cache_path().write_text(json.dumps(data))
+        _hist_cache_path().write_text(json.dumps({**data, "v": _HIST_CACHE_VERSION}))
     except OSError:
         pass
 
@@ -224,7 +232,11 @@ def fetch_price_history(
             if fetched:
                 series = asset_series[coin_id]
                 series.update(fetched)
-                cur_cache[coin_id] = {k: str(v) for k, v in series.items()}
+                # 当日の値は場中の途中経過なので永続化しない。焼いてしまうと翌日
+                # 「その日の終値」として信用され、前日比が閲覧時刻に依存してしまう。
+                cur_cache[coin_id] = {
+                    k: str(v) for k, v in series.items() if k != today_iso
+                }
                 changed = True
 
     # 結果に追加（個別取得が必要だった・不要だった全資産）

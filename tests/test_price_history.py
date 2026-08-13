@@ -2,6 +2,7 @@
 
 日次バケット化・差分キャッシュ・法定通貨/未登録資産の扱いを検証する。
 """
+import json
 from datetime import date, datetime, timezone
 from decimal import Decimal
 
@@ -165,6 +166,44 @@ def test_today_only_uses_batched_fetch_prices(monkeypatch):
     assert out["ETH"][today_iso] == Decimal("99999")
     # 過去日はキャッシュから保持される
     assert out["BTC"][yesterday.isoformat()] == Decimal("40000")
+
+
+def test_today_price_not_persisted_to_cache(monkeypatch):
+    """当日の場中価格はキャッシュに焼かない。
+
+    焼くと翌日「その日の終値」として取り直されずに信用され、前日比が
+    ユーザーの閲覧時刻に依存してしまう。返り値には従来どおり当日を含める。
+    """
+    today = date.today()
+    yesterday = date.fromordinal(today.toordinal() - 1)
+    _install_http(monkeypatch, {
+        "bitcoin": [
+            [_ms(yesterday.year, yesterday.month, yesterday.day), 40000],
+            [_ms(today.year, today.month, today.day), 41000],
+        ],
+    })
+
+    out = ph.fetch_price_history(["BTC"], "USD", yesterday, today)
+    # 返り値は当日を含む（グラフの当日プロット用）
+    assert out["BTC"][today.isoformat()] == Decimal("41000")
+
+    saved = json.loads(ph._hist_cache_path().read_text())
+    days = saved["USD"]["bitcoin"]
+    assert yesterday.isoformat() in days      # 確定した過去日は焼く
+    assert today.isoformat() not in days      # 当日は焼かない
+
+
+def test_old_cache_format_is_discarded(monkeypatch):
+    """バージョンの無い旧キャッシュは当日値が混ざりうるので読み捨てる。"""
+    ph._hist_cache_path().write_text(json.dumps({
+        "USD": {"bitcoin": {"2024-01-01": "1"}},
+    }))
+    calls = _install_http(monkeypatch, {
+        "bitcoin": [[_ms(2024, 1, 1), 40000]],
+    })
+    out = ph.fetch_price_history(["BTC"], "USD", date(2024, 1, 1), date(2024, 1, 1))
+    assert calls["n"] == 1                                  # キャッシュを信用せず取り直す
+    assert out["BTC"]["2024-01-01"] == Decimal("40000")     # 旧値 1 ではない
 
 
 def test_future_end_clamped_to_today(monkeypatch):
