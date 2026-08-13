@@ -68,6 +68,54 @@ function fmtJpy(value) {
   return str;
 }
 
+// 前日比。value / prevValue はどちらも文字列（Decimal 由来）または null。
+// 基準が無い・0 のときは null を返し、呼び出し側で「-」を出す。
+// prev が 0 になるのは売買が相殺した場合などで、null（判らない）とは別の状態。
+function dayChange(value, prevValue) {
+  if (value == null || prevValue == null) return null;
+  const v = Number(value), p = Number(prevValue);
+  if (!isFinite(v) || !isFinite(p) || p === 0) return null;
+  return { diff: v - p, pct: ((v - p) / Math.abs(p)) * 100 };
+}
+
+function changeClass(diff) {
+  return diff > 0 ? "chg-up" : diff < 0 ? "chg-down" : "chg-flat";
+}
+
+// 前日比の % 表記。金額と違い構成比と同じ扱いでマスクしない。
+function fmtChangePct(pct) {
+  return (pct >= 0 ? "+" : "-") + Math.abs(pct).toFixed(2) + "%";
+}
+
+// 前日比の金額表記。fmtMoney 経由なので金額マスクに追従する。
+function fmtChangeMoney(diff, currency) {
+  return (diff >= 0 ? "+" : "-") + fmtMoney(Math.abs(diff), currency);
+}
+
+// テーブルセル用: % のみ（金額は詳細トグルに出す）。基準日を tooltip に入れる。
+function changeCellHtml(asset) {
+  const chg = dayChange(asset.value, asset.prev_value);
+  if (!chg) return '<span class="muted">-</span>';
+  const title = asset.prev_date ? ` title="${escapeHtml(asset.prev_date)}"` : "";
+  return `<span class="${changeClass(chg.diff)}"${title}>${fmtChangePct(chg.pct)}</span>`;
+}
+
+// 詳細トグル用: 金額 + %。
+function changeDetailText(asset, currency) {
+  const chg = dayChange(asset.value, asset.prev_value);
+  if (!chg) return "-";
+  return fmtChangeMoney(chg.diff, currency) + " (" + fmtChangePct(chg.pct) + ")";
+}
+
+// 前日比の基準日。資産ごとに欠測日が違いうるので、最も新しい基準日を代表に使う。
+function prevBasisDate(assets) {
+  let best = null;
+  (assets || []).forEach((a) => {
+    if (a.prev_date && (best === null || a.prev_date > best)) best = a.prev_date;
+  });
+  return best;
+}
+
 // 通貨セレクトのオプションに完全名を付与する
 const _CURRENCY_LABELS = {
   ja: { USD: "USD　米ドル", JPY: "JPY　日本円", EUR: "EUR　ユーロ", GBP: "GBP　英ポンド" },
@@ -441,6 +489,20 @@ function renderSummary(data) {
   }
   document.getElementById("total-sub").textContent =
     t("dash.assetsSummary", { count: data.asset_count, priced: data.priced_count });
+
+  const chgEl = document.getElementById("total-day-change");
+  if (chgEl) {
+    const chg = dayChange(data.total_value, data.total_prev_value);
+    if (chg) {
+      chgEl.textContent = fmtChangeMoney(chg.diff, cur) + " (" + fmtChangePct(chg.pct) + ")";
+      chgEl.className = "hero-change " + changeClass(chg.diff);
+      const basis = prevBasisDate(data.assets);
+      chgEl.title = basis ? t("label.dayChangeBasis", { date: basis }) : "";
+    } else {
+      chgEl.className = "hero-change hidden";
+      chgEl.textContent = "";
+    }
+  }
   document.getElementById("generated").textContent =
     t("status.updatedAt", { time: new Date(data.generated_at).toLocaleString() });
 
@@ -461,6 +523,7 @@ function renderSummary(data) {
       <td class="num">${fmtAmountSig(a.balance)}</td>
       <td class="num">${a.price ? fmtMoney(a.price, cur) : '<span class="muted">-</span>'}</td>
       <td class="num">${a.value ? fmtMoney(a.value, cur) : '<span class="muted">-</span>'}</td>
+      <td class="num">${changeCellHtml(a)}</td>
       <td class="num">${pct !== null ? pct.toFixed(1) + "%" : '<span class="muted">-</span>'}</td>
       <td><button class="tx-link-btn" data-asset="${escapeHtml(a.asset)}">${t("btn.txHistoryShort")}</button></td>
     `;
@@ -473,6 +536,7 @@ function renderSummary(data) {
     _appendDetailToggle(tr, [
       { label: t("th.price"), value: a.price ? fmtMoney(a.price, cur) : "-" },
       { label: t("th.value"), value: a.value ? fmtMoney(a.value, cur) : "-" },
+      { label: t("th.dayChange"), value: changeDetailText(a, cur) },
       { label: t("th.alloc"), value: pct !== null ? pct.toFixed(1) + "%" : "-" },
     ]);
     tbody.appendChild(tr);
@@ -1115,13 +1179,13 @@ function showAssetDetail(symbol) {
 async function loadAssetsPage() {
   const currency = document.getElementById("currency").value;
   const tbody = document.querySelector("#all-assets-table tbody");
-  tbody.innerHTML = `<tr><td colspan="6" class="loading">${t("label.loading")}</td></tr>`;
+  tbody.innerHTML = `<tr><td colspan="8" class="loading">${t("label.loading")}</td></tr>`;
   try {
     const data = await fetchJSON(`/api/summary?currency=${currency}`);
     lastAssetsData = data;
     renderAllAssets(data, currency);
   } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="6" class="muted">${t("status.error")}${escapeHtml(e.message)}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="8" class="muted">${t("status.error")}${escapeHtml(e.message)}</td></tr>`;
   }
 }
 
@@ -1145,6 +1209,7 @@ function renderAllAssets(data, currency) {
       <td class="num">${fmtAmount(a.balance)}</td>
       <td class="num">${a.price ? fmtMoney(a.price, currency) : '<span class="muted">-</span>'}</td>
       <td class="num">${a.value ? fmtMoney(a.value, currency) : '<span class="muted">-</span>'}</td>
+      <td class="num">${changeCellHtml(a)}</td>
       <td class="num">${pct !== null ? pct.toFixed(1) + "%" : '<span class="muted">-</span>'}</td>
       <td><button class="tx-link-btn">${t("btn.txHistoryShort")}</button></td>
     `;
@@ -1157,12 +1222,13 @@ function renderAllAssets(data, currency) {
     _appendDetailToggle(tr, [
       { label: t("th.price"), value: a.price ? fmtMoney(a.price, currency) : "-" },
       { label: t("th.value"), value: a.value ? fmtMoney(a.value, currency) : "-" },
+      { label: t("th.dayChange"), value: changeDetailText(a, currency) },
       { label: t("th.alloc"), value: pct !== null ? pct.toFixed(1) + "%" : "-" },
     ]);
     tbody.appendChild(tr);
   });
   if (data.assets.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="6" class="muted">${t("label.noData")}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="8" class="muted">${t("label.noData")}</td></tr>`;
   }
 
   const toggleBtn = document.getElementById("toggle-small");

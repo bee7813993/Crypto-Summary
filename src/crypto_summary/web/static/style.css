@@ -562,6 +562,12 @@ html.light .tx-type-transfer { background: #d1fae5; color: #065f46; }
 .status-ok { color: var(--green); }
 .status-warn { color: var(--red); }
 
+/* 前日比（増減）。色は --green / --red 経由でライト/ダーク両テーマに追従する。 */
+.chg-up   { color: var(--green); }
+.chg-down { color: var(--red); }
+.chg-flat { color: var(--text-dim); }
+.hero-change { font-size: 13px; white-space: nowrap; }
+
 /* ---- 取引履歴フィルター行 ---- */
 .tx-filters {
   display: flex;
@@ -767,9 +773,10 @@ html.light .tx-type-transfer { background: #d1fae5; color: #065f46; }
 }
 
 /* ---- Tablet: 800px以下で 資産テーブルの列を折りたたむ（単価・構成比を非表示）---- */
+/* 列順: 1資産 2残高 3単価 4評価額 5前日比 6構成比 7取引履歴 8詳細トグル */
 @media (max-width: 800px) {
   #assets-table th:nth-child(3), #assets-table td:nth-child(3),
-  #assets-table th:nth-child(5), #assets-table td:nth-child(5) { display: none; }
+  #assets-table th:nth-child(6), #assets-table td:nth-child(6) { display: none; }
 }
 
 /* ---- Tablet: ダッシュボードをコンパクトに ---- */
@@ -853,15 +860,18 @@ html.light .tx-type-transfer { background: #d1fae5; color: #065f46; }
   /* toggle ボタン列を表示 */
   .detail-toggle-cell { display: table-cell; padding: 6px 4px 6px 0; white-space: nowrap; }
 
-  /* ---- #assets-table: 単価(3)・評価額(4)・構成比(5) を折りたたむ（残高を優先表示）---- */
+  /* ---- #assets-table: 単価(3)・評価額(4)・前日比(5)・構成比(6) を折りたたむ
+         （残高を優先表示。畳んだ列は detail-toggle から見える）---- */
   #assets-table th:nth-child(3), #assets-table td:nth-child(3),
   #assets-table th:nth-child(4), #assets-table td:nth-child(4),
-  #assets-table th:nth-child(5), #assets-table td:nth-child(5) { display: none; }
+  #assets-table th:nth-child(5), #assets-table td:nth-child(5),
+  #assets-table th:nth-child(6), #assets-table td:nth-child(6) { display: none; }
 
-  /* ---- #all-assets-table: 単価(3)・評価額(4)・構成比(5) を折りたたむ（残高を優先表示）---- */
+  /* ---- #all-assets-table: 単価(3)・評価額(4)・前日比(5)・構成比(6) を折りたたむ ---- */
   #all-assets-table th:nth-child(3), #all-assets-table td:nth-child(3),
   #all-assets-table th:nth-child(4), #all-assets-table td:nth-child(4),
-  #all-assets-table th:nth-child(5), #all-assets-table td:nth-child(5) { display: none; }
+  #all-assets-table th:nth-child(5), #all-assets-table td:nth-child(5),
+  #all-assets-table th:nth-child(6), #all-assets-table td:nth-child(6) { display: none; }
 
   /* ---- #tx-table: 口座(2)・送付(5)・手数料(6)・取引後残高(7) を折りたたむ ---- */
   #tx-table th:nth-child(2), #tx-table td:nth-child(2),
