@@ -217,12 +217,12 @@ def import_wallet_cmd(
 @click.option(
     "--chain", required=True,
     type=click.Choice([
-        "ethereum", "arbitrum", "polygon", "base", "optimism", "solana",
+        "ethereum", "arbitrum", "polygon", "base", "optimism", "solana", "aptos",
     ]),
-    help="取得するチェーン（EVM 5種 + solana）",
+    help="取得するチェーン（EVM 5種 + solana / aptos）",
 )
 @click.option("--wallet", "wallet_address", required=True,
-              help="ウォレットアドレス（EVM: 0x... / Solana: base58）")
+              help="ウォレットアドレス（EVM: 0x...40桁 / Solana: base58 / Aptos: 0x...64桁）")
 @click.option("--source-id", default=None, help="ソース識別子（デフォルト: chain名）")
 @click.option(
     "--api-key", default=None, envvar="ETHERSCAN_API_KEY",
@@ -231,6 +231,10 @@ def import_wallet_cmd(
 @click.option(
     "--helius-api-key", default=None, envvar="HELIUS_API_KEY",
     help="Helius APIキー（Solana用、環境変数 HELIUS_API_KEY でも可）",
+)
+@click.option(
+    "--aptos-api-key", default=None, envvar="APTOS_API_KEY",
+    help="Aptos Indexer APIキー（Aptos用・任意、環境変数 APTOS_API_KEY でも可）",
 )
 @click.option("--gas/--no-gas", "record_gas", default=True, show_default=True,
               help="ガス代を FEE として記録する（実残高と一致させるため既定で有効）")
@@ -242,12 +246,15 @@ def fetch_wallet_cmd(
     source_id: str | None,
     api_key: str | None,
     helius_api_key: str | None,
+    aptos_api_key: str | None,
     record_gas: bool,
 ) -> None:
     """取引履歴を API で取得して ledger に保存する。
 
-    EVM チェーン（Etherscan V2 API）と Solana（Helius API）に対応。
+    EVM チェーン（Etherscan V2 API）/ Solana（Helius API）/
+    Aptos（Aptos Indexer GraphQL）に対応。
     APIキーはいずれも読み取り専用で出金権限は不要。
+    Aptos のみキーは任意（未設定だと匿名レート制限がかかる）。
 
     \b
     EVM 例:
@@ -256,6 +263,9 @@ def fetch_wallet_cmd(
     Solana 例:
       crypto-summary fetch-wallet --chain solana \\
           --wallet YOURWALLET... --source-id my_solana
+    Aptos 例:
+      crypto-summary fetch-wallet --chain aptos \\
+          --wallet 0xABC...（64桁） --source-id my_aptos
     """
     sid = source_id or chain
 
@@ -272,6 +282,20 @@ def fetch_wallet_cmd(
             raise click.Abort()
 
         adapter = HeliusApiSource(sid, wallet_address, key)
+    elif chain == "aptos":
+        from .sources.aptos.indexer import AptosIndexerSource
+
+        if not aptos_api_key:
+            console.print(
+                "[yellow]注意:[/yellow] Aptos APIキーが未設定です。"
+                "匿名アクセスはレート制限が厳しく、履歴が多いと失敗します。\n"
+                "  .env に APTOS_API_KEY を設定すると安定します（無料）: https://geomi.dev"
+            )
+        try:
+            adapter = AptosIndexerSource(sid, wallet_address, aptos_api_key)
+        except ValueError as e:
+            console.print(f"[red]エラー:[/red] {e}")
+            raise click.Abort()
     else:
         from .sources.api.etherscan import EtherscanApiSource, CHAIN_IDS
 

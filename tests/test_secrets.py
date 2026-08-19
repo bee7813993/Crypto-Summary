@@ -120,13 +120,16 @@ def test_wallet_address_stored_plaintext(tmp_path: Path):
 def test_wallet_api_key_encrypted(tmp_path: Path, key: str):
     """APIキー指定時は暗号化され、平文では残らない。"""
     store = SecretStore(tmp_path / "x.db", master_key=key)
-    store.set_wallet("w", "0xABC", "evm", api_key="SECRETKEY", helius_key="HELIUSK")
+    store.set_wallet("w", "0xABC", "evm", api_key="SECRETKEY", helius_key="HELIUSK",
+                     aptos_key="APTOSK")
     raw = (tmp_path / "x.secrets.json").read_text(encoding="utf-8")
     assert "SECRETKEY" not in raw
     assert "HELIUSK" not in raw
+    assert "APTOSK" not in raw
     w = store.get_wallet("w")
     assert w["api_key"] == "SECRETKEY"
     assert w["helius_key"] == "HELIUSK"
+    assert w["aptos_key"] == "APTOSK"
 
 
 def test_wallet_api_key_requires_master_key(tmp_path: Path):

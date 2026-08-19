@@ -443,6 +443,11 @@ def test_index_served(client):
 
 # ---- ウォレットアドレス連携 ----
 
+# 実在の Solana アドレス（WSOL ミント）。登録時に base58 32 バイトとして検証されるため、
+# それらしい文字列では通らない。
+SOLANA_ADDR = "So11111111111111111111111111111111111111112"
+SOLANA_ADDR2 = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+
 def test_wallet_register_evm_autodetect(client):
     """0x...42文字 は EVM と自動判定される（APIキー不要で登録可）。"""
     addr = "0x" + "a" * 40
@@ -454,12 +459,82 @@ def test_wallet_register_evm_autodetect(client):
 
 
 def test_wallet_register_solana_autodetect(client):
-    """0x で始まらないアドレスは Solana と判定される。"""
-    r = client.post("/api/wallets", json={"address": "So11111111111111111111111111111111111111112"})
+    """base58 で 32 バイトになるアドレスは Solana と判定される。"""
+    r = client.post("/api/wallets", json={"address": SOLANA_ADDR})
     assert r.status_code == 200
     assert r.json()["chain"] == "solana"
     # source_id 未指定なら自動生成される
     assert r.json()["source_id"].startswith("solana_")
+
+
+def test_wallet_register_aptos_autodetect(client):
+    """0x...66文字 は Aptos と自動判定される（EVM は 42 文字なので衝突しない）。"""
+    addr = "0x" + "a" * 64
+    r = client.post("/api/wallets", json={"address": addr})
+    assert r.status_code == 200
+    d = r.json()
+    assert d["chain"] == "aptos"
+    assert d["chain_label"] == "Aptos"
+    assert d["source_id"].startswith("aptos_")
+
+
+def test_wallet_register_short_aptos_address_autodetect(client):
+    """先頭ゼロを省いた短縮表記の Aptos アドレスも Aptos と判定される。"""
+    r = client.post("/api/wallets", json={"address": "0x" + "b" * 63})
+    assert r.status_code == 200
+    assert r.json()["chain"] == "aptos"
+
+
+def test_wallet_register_explicit_chain_overrides_autodetect(client):
+    """chain を明示すると自動判定より優先される（40桁の Aptos アドレス救済）。"""
+    addr = "0x" + "c" * 40
+    r = client.post("/api/wallets", json={"address": addr, "chain": "aptos"})
+    assert r.status_code == 200
+    assert r.json()["chain"] == "aptos"
+
+
+def test_wallet_register_rejects_unknown_chain(client):
+    r = client.post("/api/wallets",
+                    json={"address": "0x" + "d" * 40, "chain": "bitcoin"})
+    assert r.status_code == 422
+
+
+@pytest.mark.parametrize("address, why", [
+    ("SoLaNaAddr", "base58 だが 32 バイトに満たない"),
+    ("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt10", "base58 に無い文字 0 を含む"),
+    ("0x" + "a" * 39, "EVM アドレスの 1 文字欠け"),
+    ("0x" + "a" * 41, "EVM アドレスに 1 文字余分"),
+    ("0x" + "a" * 65, "16進として長すぎる"),
+    ("0xZZZZ", "16進でない"),
+    ("bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4", "対応外チェーンのアドレス"),
+    ("1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa", "base58 だが 25 バイト（Bitcoin）"),
+])
+def test_wallet_register_rejects_undetectable_address(client, address, why):
+    """判定できないアドレスは Solana に落とさず 422 で弾く。
+
+    以前は 0x 以外をすべて Solana 扱いにしていたため、打ち間違いが
+    そのまま登録され、同期して「取引 0 件」で初めて気づく状態だった。
+    """
+    r = client.post("/api/wallets", json={"address": address})
+    assert r.status_code == 422, why
+    assert "形式" in r.json()["detail"]
+
+
+def test_wallet_register_explicit_chain_still_validates_format(client):
+    """chain を明示しても、そのチェーンの形式に合わないアドレスは弾く。"""
+    r = client.post("/api/wallets",
+                    json={"address": SOLANA_ADDR2, "chain": "evm"})
+    assert r.status_code == 422
+    assert "EVM" in r.json()["detail"]
+
+
+def test_wallet_register_explicit_chain_allows_short_aptos_address(client):
+    """自動判定では通さない極端な短縮 Aptos アドレスも、明示指定なら登録できる。"""
+    assert client.post("/api/wallets", json={"address": "0x1"}).status_code == 422
+    r = client.post("/api/wallets",
+                    json={"address": "0x1", "chain": "aptos", "source_id": "apt_short"})
+    assert r.status_code == 200
+    assert r.json()["chain"] == "aptos"
 
 
 def test_wallet_register_requires_address(client):
@@ -493,7 +568,7 @@ def test_wallet_sync_missing_returns_404(client):
 def test_wallet_sync_solana_without_key_errors(client, monkeypatch):
     """Helius キーが環境にもなければ 422 を返す。"""
     monkeypatch.delenv("HELIUS_API_KEY", raising=False)
-    client.post("/api/wallets", json={"address": "SoLaNaWalletAddr", "source_id": "sol1"})
+    client.post("/api/wallets", json={"address": SOLANA_ADDR, "source_id": "sol1"})
     r = client.post("/api/wallets/sol1/sync")
     assert r.status_code == 422
     assert "Helius" in r.json()["detail"]
@@ -521,6 +596,50 @@ def test_wallet_sync_evm_calls_all_chains(client, monkeypatch):
     assert r.status_code == 200
     # 5 つの EVM チェーンすべてがスキャンされる
     assert len(scanned_chains) == len(es.CHAIN_IDS)
+
+
+def test_wallet_sync_aptos_without_key_works(client, monkeypatch):
+    """Aptos はキーなしでも同期できる（匿名アクセス）。"""
+    monkeypatch.delenv("APTOS_API_KEY", raising=False)
+    addr = "0x" + "a" * 64
+    client.post("/api/wallets", json={"address": addr, "source_id": "apt1"})
+
+    used_keys = []
+
+    class FakeAptos:
+        def __init__(self, source_id, address, key=None):
+            used_keys.append(key)
+
+        def fetch_all(self, record_gas=True):
+            return []
+
+    import crypto_summary.sources.aptos.indexer as ap
+    monkeypatch.setattr(ap, "AptosIndexerSource", FakeAptos)
+
+    r = client.post("/api/wallets/apt1/sync")
+    assert r.status_code == 200
+    assert used_keys == [None]
+
+
+def test_wallet_sync_aptos_uses_env_key(client, monkeypatch):
+    """APTOS_API_KEY があればそれを使う。"""
+    monkeypatch.setenv("APTOS_API_KEY", "APTKEY")
+    client.post("/api/wallets", json={"address": "0x" + "e" * 64, "source_id": "apt2"})
+
+    used_keys = []
+
+    class FakeAptos:
+        def __init__(self, source_id, address, key=None):
+            used_keys.append(key)
+
+        def fetch_all(self, record_gas=True):
+            return []
+
+    import crypto_summary.sources.aptos.indexer as ap
+    monkeypatch.setattr(ap, "AptosIndexerSource", FakeAptos)
+
+    assert client.post("/api/wallets/apt2/sync").status_code == 200
+    assert used_keys == ["APTKEY"]
 
 
 def test_sync_all_empty(client):
@@ -561,7 +680,7 @@ def test_sync_all_syncs_wallets(client, monkeypatch):
 def test_sync_all_continues_on_failure(client, monkeypatch):
     """1件の同期失敗で全体を止めず、失敗を集計に含める。"""
     # Solana ウォレットを鍵なしで登録 → 同期は 422 で失敗するはず
-    client.post("/api/wallets", json={"address": "SoLaNaAddrXXXXXXXXXXXX", "source_id": "sol1"})
+    client.post("/api/wallets", json={"address": SOLANA_ADDR, "source_id": "sol1"})
     monkeypatch.setenv("ETHERSCAN_API_KEY", "DUMMYKEY")
     client.post("/api/wallets", json={"address": "0x" + "e" * 40, "source_id": "evm1"})
     monkeypatch.delenv("HELIUS_API_KEY", raising=False)

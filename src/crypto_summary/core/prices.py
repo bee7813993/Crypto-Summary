@@ -17,6 +17,7 @@ from typing import Callable
 
 COINGECKO_IDS: dict[str, str] = {
     "BTC": "bitcoin", "ETH": "ethereum", "WETH": "weth", "SOL": "solana",
+    "APT": "aptos",
     "MATIC": "polygon-ecosystem-token", "POL": "polygon-ecosystem-token",
     "USDC": "usd-coin", "USDT": "tether", "DAI": "dai", "BNB": "binancecoin",
     "ARB": "arbitrum", "OP": "optimism", "AVAX": "avalanche-2",

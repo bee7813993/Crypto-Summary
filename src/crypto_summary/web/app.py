@@ -1159,13 +1159,18 @@ def _apply_server_config(base_dir: str) -> None:
 _WALLET_CHAIN_LABELS: dict[str, str] = {
     "evm": "EVM（Ethereum / Arbitrum / Polygon / Base / Optimism）",
     "solana": "Solana",
+    "aptos": "Aptos",
 }
+
+# 登録時に明示指定できるチェーン（未指定ならアドレスから自動判定）
+_WALLET_CHAINS = frozenset(_WALLET_CHAIN_LABELS)
 
 
 # システム共通のスキャン用キー（管理者がWebまたはenvで設定するインフラキー）
 _SYSTEM_PROVIDER_KEYS: dict[str, str] = {
     "etherscan": "ETHERSCAN_API_KEY",
     "helius": "HELIUS_API_KEY",
+    "aptos": "APTOS_API_KEY",
 }
 
 # .env.example のプレースホルダ値（コピーしたままの場合に誤認識しないよう除外）
@@ -1174,8 +1179,10 @@ _ENV_KEY_PLACEHOLDERS = frozenset({
     "your_api_secret_here",
     "your_etherscan_api_key_here",
     "your_helius_api_key_here",
+    "your_aptos_api_key_here",
     "your-etherscan-api-key",
     "your-helius-api-key",
+    "your-aptos-api-key",
     "changeme",
 })
 
@@ -1235,20 +1242,114 @@ def _set_system_keys(system_db: str, body: dict[str, Any]) -> dict:
     return {"ok": True, "updated": updated}
 
 
-def _detect_wallet_chain(address: str) -> str:
-    """アドレス形式からチェーン種別を判定する（"evm" / "solana"）。
+# Solana アドレスの base58 アルファベット（0 O I l を除く 58 文字）
+_B58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 
-    0x で始まる 42 文字の 16 進数は EVM、それ以外（base58）は Solana とみなす。
+# 各チェーンのアドレス許容長（0x を除いた 16 進の桁数）
+_EVM_HEX_LEN = 40    # 20 バイト
+_APTOS_HEX_LEN = 64  # 32 バイト（先頭ゼロを省いた短縮表記もある）
+# 自動判定で Aptos とみなす下限。短縮表記に備えて上位 4 バイト分の余裕を持たせる。
+# ここを 1 桁まで緩めると、1 文字コピーし損ねた EVM アドレス（39桁）まで
+# 「短縮形の Aptos アドレス」として通ってしまい、同期して 0 件で初めて気づく。
+# 上位ゼロが 4 バイト以上続く実アドレスはまず無いが、その場合は
+# 登録時に chain=aptos を明示すれば通る（_is_aptos_address は 1〜64 桁を許容）。
+_APTOS_HEX_MIN_AUTO = 56
+
+
+def _hex_body(address: str) -> str | None:
+    """0x 始まりの 16 進アドレスなら 0x を除いた本体を小文字で返す。違えば None。"""
+    a = address.strip().lower()
+    if not a.startswith("0x"):
+        return None
+    body = a[2:]
+    # int(x, 16) はアンダースコアや符号も通してしまうので桁を直接見る
+    if not body or not all(c in "0123456789abcdef" for c in body):
+        return None
+    return body
+
+
+def _is_evm_address(address: str) -> bool:
+    body = _hex_body(address)
+    return body is not None and len(body) == _EVM_HEX_LEN
+
+
+def _is_aptos_address(address: str) -> bool:
+    """Aptos アドレスとして妥当か（明示指定時の検証用に短縮表記も広く許容）。"""
+    body = _hex_body(address)
+    return body is not None and len(body) <= _APTOS_HEX_LEN
+
+
+def _is_solana_address(address: str) -> bool:
+    """base58 として 32 バイトちょうどにデコードできるか。
+
+    Solana のアカウントアドレスは ed25519 公開鍵（PDA 含む）で必ず 32 バイト。
+    文字種と長さだけ見ると打ち間違いを拾えないので、実際にデコードして
+    バイト長まで確認する（先頭のゼロバイトは base58 では '1' として現れる）。
+
+    注意: Solana のアドレスは base58check ではなくチェックサムを持たないため、
+    1 文字落としても 32 バイトにデコードできてしまう場合がある。
+    文字種の誤り（0 O I l の混入）と桁数の誤りは弾けるが、完全な検証はできない。
     """
     a = address.strip()
-    if a.lower().startswith("0x") and len(a) == 42:
-        try:
-            int(a[2:], 16)
-            return "evm"
-        except ValueError:
-            pass
-    # Solana は base58（32〜44 文字程度）。EVM 以外はすべて Solana 扱いにする。
-    return "solana"
+    if not (32 <= len(a) <= 44):
+        return False
+    value = 0
+    for ch in a:
+        idx = _B58_ALPHABET.find(ch)
+        if idx < 0:
+            return False
+        value = value * 58 + idx
+    leading_zeros = len(a) - len(a.lstrip("1"))
+    body_len = (value.bit_length() + 7) // 8 if value else 0
+    return leading_zeros + body_len == 32
+
+
+# チェーン名 → そのチェーンのアドレスとして妥当かを判定する関数
+_WALLET_CHAIN_VALIDATORS = {
+    "evm": _is_evm_address,
+    "aptos": _is_aptos_address,
+    "solana": _is_solana_address,
+}
+
+# エラーメッセージ用の短いチェーン名（_WALLET_CHAIN_LABELS は EVM が長すぎて読みにくい）
+_WALLET_CHAIN_SHORT_NAMES: dict[str, str] = {
+    "evm": "EVM",
+    "aptos": "Aptos",
+    "solana": "Solana",
+}
+
+# 登録を弾いたときに返す形式の説明（コピペ時の欠落・打ち間違いに気づけるように）
+_WALLET_ADDRESS_FORMAT_HINT = (
+    "対応形式は EVM が 0x + 16進40桁、Aptos が 0x + 16進64桁、"
+    "Solana が base58 32〜44文字です。"
+    "コピー漏れや余分な文字が混じっていないか確認してください。"
+)
+
+
+def _detect_wallet_chain(address: str) -> str | None:
+    """アドレス形式からチェーン種別を判定する。判定できなければ None。
+
+      - 0x + 16進40桁 → EVM（20バイト）
+      - 0x + 16進56〜64桁 → Aptos（32バイト、上位ゼロ省略込み）
+      - base58 で 32 バイトにデコードできる → Solana
+
+    どれにも当てはまらない文字列（桁落ち・打ち間違い・別チェーンのアドレス）は
+    None を返して登録時に弾く。以前は「0x 以外はすべて Solana」としていたため、
+    打ち間違いがそのまま Solana ウォレットとして登録され、同期して初めて
+    「取引 0 件」や API エラーになって原因が分かりにくかった。
+
+    判定は保守的にし、迷う長さは通さない。取りこぼした場合は登録時に
+    chain を明示指定すれば、そのチェーンの形式チェックだけを通って登録できる
+    （Aptos アドレスがちょうど 40 桁になり EVM と衝突する場合もこれで救済する）。
+    """
+    if _is_evm_address(address):
+        return "evm"
+    body = _hex_body(address)
+    if body is not None:
+        return "aptos" if _APTOS_HEX_MIN_AUTO <= len(body) <= _APTOS_HEX_LEN else None
+    if _is_solana_address(address):
+        return "solana"
+    return None
 
 
 def _list_wallets(db_path: str) -> dict:
@@ -1264,11 +1365,40 @@ def _register_wallet(db_path: str, body: dict[str, Any]) -> dict:
     source_id = (body.get("source_id") or "").strip()
     api_key = (body.get("api_key") or "").strip() or None
     helius_key = (body.get("helius_key") or "").strip() or None
+    aptos_key = (body.get("aptos_key") or "").strip() or None
+    requested_chain = (body.get("chain") or "").strip().lower()
 
     if not address:
         raise HTTPException(status_code=422, detail="ウォレットアドレスを入力してください")
 
-    chain = _detect_wallet_chain(address)
+    # chain 明示指定は自動判定より優先する（0x 系で判別を外した場合の救済）。
+    # ただし指定チェーンのアドレス形式として妥当かは確認する。
+    if requested_chain:
+        if requested_chain not in _WALLET_CHAINS:
+            raise HTTPException(
+                status_code=422,
+                detail=f"未対応のチェーンです: {requested_chain}",
+            )
+        if not _WALLET_CHAIN_VALIDATORS[requested_chain](address):
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"{_WALLET_CHAIN_SHORT_NAMES[requested_chain]}のアドレス形式では"
+                    "ありません。" + _WALLET_ADDRESS_FORMAT_HINT
+                ),
+            )
+        chain = requested_chain
+    else:
+        chain = _detect_wallet_chain(address)
+        if chain is None:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "アドレスの形式からチェーンを判定できませんでした。"
+                    + _WALLET_ADDRESS_FORMAT_HINT
+                    + "形式が特殊なアドレスは「チェーン」で明示指定すると登録できます。"
+                ),
+            )
     if not source_id:
         # 表示名未指定ならアドレス先頭から自動生成
         source_id = f"{chain}_{address[:8].lower()}"
@@ -1276,7 +1406,8 @@ def _register_wallet(db_path: str, body: dict[str, Any]) -> dict:
     store = SecretStore(db_path)
     try:
         store.set_wallet(
-            source_id, address, chain, api_key=api_key, helius_key=helius_key,
+            source_id, address, chain,
+            api_key=api_key, helius_key=helius_key, aptos_key=aptos_key,
         )
     except SecretStoreError as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -1320,6 +1451,19 @@ def _sync_wallet(db_path: str, source_id: str, system_db: str | None = None) -> 
             txs = HeliusApiSource(source_id, address, key).fetch_all(record_gas=True)
         except Exception as e:  # noqa: BLE001
             raise HTTPException(status_code=502, detail=f"Helius API エラー: {e}")
+    elif chain == "aptos":
+        from ..sources.aptos.indexer import AptosIndexerSource
+
+        # Aptos Indexer はキーなしでも読める。未設定なら匿名アクセス（レート制限あり）。
+        key = wallet.get("aptos_key") or _system_key_or_env(sys_db, "aptos", "APTOS_API_KEY")
+        try:
+            adapter = AptosIndexerSource(source_id, address, key)
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e))
+        try:
+            txs = adapter.fetch_all(record_gas=True)
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(status_code=502, detail=f"Aptos Indexer エラー: {e}")
     else:  # evm — 全 EVM チェーンをスキャンしてマージ
         from ..sources.api.etherscan import CHAIN_IDS, EtherscanApiSource
 

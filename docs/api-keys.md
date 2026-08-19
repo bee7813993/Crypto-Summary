@@ -21,18 +21,23 @@ API キーの登録方法は2通りあります。
   1. 取引所・ソースID（口座の表示名）・API キー・シークレットを入力
   2. 「登録して暗号化保存」を押す
   3. 登録済み一覧の「同期」ボタンでいつでも取得できる
-- **「ウォレットアドレス」タブ** — EVM / Solana ウォレットを登録
-  1. （管理者のみ）「システム設定」で Etherscan / Helius のスキャン用キーを登録
+- **「ウォレットアドレス」タブ** — EVM / Solana / Aptos ウォレットを登録
+  1. （管理者のみ）「システム設定」で Etherscan / Helius / Aptos のスキャン用キーを登録
   2. ウォレットアドレスを入力（秘密鍵は不要・絶対に入力しないこと）して「登録」
   3. 一覧の「同期」ボタンで取得
 
-### スキャン用キー（Etherscan / Helius）はシステム共通設定
+  > チェーンはアドレスの形式（EVM は 0x + 16進40桁、Aptos は 0x + 16進64桁、
+  > Solana は base58 32〜44文字）から自動判定します。どれにも当てはまらない
+  > アドレスは登録時に弾くので、コピー漏れはその場で気づけます。
+  > 形式が特殊で判定できないアドレスは「チェーン」欄で明示指定してください。
 
-Etherscan / Helius のキーは「どのウォレットアドレスを調べるかに関係なく同じキーを使う」インフラキーなので、ユーザーごとではなく**システム全体で1つ**を共有します。設定方法は2通り：
+### スキャン用キー（Etherscan / Helius / Aptos）はシステム共通設定
+
+Etherscan / Helius / Aptos のキーは「どのウォレットアドレスを調べるかに関係なく同じキーを使う」インフラキーなので、ユーザーごとではなく**システム全体で1つ**を共有します。設定方法は2通り：
 
 | 方法 | 設定者 | 備考 |
 |---|---|---|
-| `.env` の `ETHERSCAN_API_KEY` / `HELIUS_API_KEY` | サーバー管理者 | デプロイ時に設定。`CS_SECRET_KEY` 不要。 |
+| `.env` の `ETHERSCAN_API_KEY` / `HELIUS_API_KEY` / `APTOS_API_KEY` | サーバー管理者 | デプロイ時に設定。`CS_SECRET_KEY` 不要。 |
 | Web の「システム設定」（ウォレットタブ内） | 管理者ユーザーのみ | 暗号化保存。`CS_SECRET_KEY` 必須。env より優先。 |
 
 - **シングルユーザー**（`crypto-summary web` / 認証なし）: 所有者がそのまま管理者。Web の「システム設定」から登録できます。
@@ -73,7 +78,7 @@ cp .env.example .env
 > ⚠️ `.env` は `.gitignore` 済みです。**API キーをリポジトリにコミットしないでください**。
 > Docker 運用時は `.env` 変更後に `docker compose down && docker compose up -d` で再読み込みが必要です。
 
-> 💡 `.env.example` に入っているサンプル値（`your_api_key_here` / `your_api_secret_here` / `your_etherscan_api_key_here` / `your_helius_api_key_here` など）は、**未設定として扱われます**。値を書き換えずに残しても「設定済み」とは判定されず、実際のキーで上書きするまでは未設定動作になります（CLI の取得・管理者設定画面のステータス表示ともに）。
+> 💡 `.env.example` に入っているサンプル値（`your_api_key_here` / `your_api_secret_here` / `your_etherscan_api_key_here` / `your_helius_api_key_here` / `your_aptos_api_key_here` など）は、**未設定として扱われます**。値を書き換えずに残しても「設定済み」とは判定されず、実際のキーで上書きするまでは未設定動作になります（CLI の取得・管理者設定画面のステータス表示ともに）。
 
 ---
 
@@ -84,6 +89,7 @@ cp .env.example .env
 | Web からのキー暗号化 | `CS_SECRET_KEY` | Web からキー登録するなら必須 | `account gen-key` で生成 |
 | EVM ウォレット取得 | `ETHERSCAN_API_KEY` | EVM ウォレットを使うなら（Web 登録なら不要） | Etherscan |
 | Solana ウォレット取得 | `HELIUS_API_KEY` | Solana ウォレットを使うなら（Web 登録なら不要） | Helius |
+| Aptos ウォレット取得 | `APTOS_API_KEY` | 任意（未設定でも同期できるがレート制限が厳しい） | Aptos Build |
 | bitFlyer API 取得 | `BITFLYER_API_KEY` / `BITFLYER_API_SECRET` | bitFlyer を使うなら（Web 登録なら不要） | bitFlyer |
 | Bybit API 取得 | `BYBIT_API_KEY` / `BYBIT_API_SECRET` | Bybit を使うなら（Web 登録なら不要） | Bybit |
 | 価格取得の高速化 | `COINGECKO_API_KEY` | 任意（推奨） | CoinGecko |
@@ -142,6 +148,29 @@ HELIUS_API_KEY=ここに発行されたキー
 ```
 
 > Solscan の無料プランは取引履歴 API が使えないため Helius を採用しています。
+
+---
+
+## Aptos API キー（Aptos ウォレット・任意）
+
+Aptos ウォレットの取引履歴取得に使います。**このキーだけは任意**で、未設定でも Aptos Indexer は読めます。
+ただし匿名アクセスは IP 単位のレート制限（40,000 CU / 300 秒）がかかり、履歴が多いウォレットは
+同期の途中で 429 になります。日常的に使うなら設定してください。
+
+### 取得手順
+
+1. [https://geomi.dev](https://geomi.dev)（Aptos Build）でアカウント登録（無料）
+2. アプリケーションを作成して API キーを発行
+3. `.env` に設定：
+
+```ini
+APTOS_API_KEY=ここに発行されたキー
+```
+
+> Aptos の残高変動は Indexer の `fungible_asset_activities` から取得します。
+> 旧 Coin (v1) と Fungible Asset (v2) が同じテーブルに統合されているため、
+> APT も Aptos ネイティブ USDC も同じ経路で取得できます。
+> フルノードの `/accounts/{addr}/transactions` は「送信した」取引しか返さず受取が漏れるため使いません。
 
 ---
 

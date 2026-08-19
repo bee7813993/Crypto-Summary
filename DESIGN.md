@@ -130,7 +130,12 @@ class CanonicalTx(BaseModel):
 ### 4.3 DEX / オンチェーン
 - EVM 系: Etherscan/各チェーンエクスプローラAPI または RPC でアドレスの
   `normal/internal/erc20/erc721` トランザクションを取得。
+- 非 EVM 系: Solana は Helius Enhanced Transactions API、
+  Aptos は Aptos Indexer GraphQL の `fungible_asset_activities` を使う。
+  Aptos は旧 Coin(v1) と Fungible Asset(v2) が同テーブルに統合されているため、
+  APT もネイティブ USDC も同じ経路で取得できる。
 - スワップは送出/受領 ERC20 transfer の差分から `TRADE` として解釈。
+  非 EVM 系も「1トランザクション内の資産別 正味フロー」に畳んでから同じ規則で分類する。
 - ガス代は `FEE`(ネイティブ通貨建て) として付与。
 - 注意: アドレスを指定する読み取り専用。秘密鍵は一切扱わない。
 
