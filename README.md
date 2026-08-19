@@ -9,7 +9,7 @@
 ## 主な機能
 
 - 📊 **Web ダッシュボード** — 総資産評価額、資産構成（円グラフ）、資産推移グラフ、口座別・資産別の内訳
-- 🔌 **多様なデータソース** — 取引所 API / CSV インポート / EVM・Solana ウォレット取得に対応
+- 🔌 **多様なデータソース** — 取引所 API / CSV インポート / EVM・Solana・Aptos ウォレット取得に対応
 - 💱 **マルチ通貨表示** — USD / JPY / EUR / GBP（日本円は「億万千円」表示にも対応）
 - 🧾 **確定申告用エクスポート** — 年・口座を指定して Cryptact / Koinly 形式の CSV を出力
 - 🔐 **マルチユーザー対応** — Google OAuth ログインでユーザーごとにデータを分離（Docker 運用時）
@@ -25,7 +25,7 @@
 ```
 [Source Adapters]          [Core]                [Sink Adapters]
  取引所API / CSV       →  正規化(Canonical)  →  Cryptact CSV
- EVM / Solana          →  重複排除・台帳保存  →  Koinly CSV
+ EVM/Solana/Aptos      →  重複排除・台帳保存  →  Koinly CSV
                        →  SQLite 永続化       →  SUMM CSV
                                               ↓
                                        [Web UI / CLI]
@@ -216,13 +216,15 @@ Crypto-Summary を HTTPS で公開している場合、`http://` のビューア
 
 - **EVM 5チェーン**（Ethereum / Arbitrum / Polygon / Base / Optimism）— Etherscan V2 API
 - **Solana** — Helius API
+- **Aptos** — Aptos Indexer GraphQL（APT / Aptos ネイティブ USDC など Coin・Fungible Asset 両対応）
 
 ```bash
 crypto-summary fetch-wallet --chain arbitrum --wallet 0xABC...123
 crypto-summary fetch-wallet --chain solana --wallet YOURWALLET...
+crypto-summary fetch-wallet --chain aptos --wallet 0xABC...（64桁）
 ```
 
-> API 直接取得には各サービスの API キーが必要です。取得・設定方法は [`docs/api-keys.md`](./docs/api-keys.md) を参照してください。
+> API 直接取得には各サービスの API キーが必要です（Aptos のみ任意）。取得・設定方法は [`docs/api-keys.md`](./docs/api-keys.md) を参照してください。
 
 ---
 

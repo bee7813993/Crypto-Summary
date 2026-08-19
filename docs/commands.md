@@ -71,7 +71,7 @@ crypto-summary [--db PATH] <command> [options]
 | `import` | 取引所CSVを取り込む |
 | `import-wallet` | Arbiscan CSVを取り込む（EVM ウォレット） |
 | `fetch` | 取引所APIから最新データを取得する（bitFlyer / Bybit） |
-| `fetch-wallet` | ブロックチェーンAPIから取引履歴を取得する（EVM / Solana） |
+| `fetch-wallet` | ブロックチェーンAPIから取引履歴を取得する（EVM / Solana / Aptos） |
 | `add` | 手動でトランザクションを1件追加する |
 | `remove` | トランザクションを削除する |
 | `export` | 外部形式（Koinly 等）にエクスポートする |
@@ -380,7 +380,7 @@ crypto-summary fetch --exchange bybit --api-key xxx --api-secret yyy
 
 ---
 
-## fetch-wallet — ブロックチェーンAPI取得（EVM / Solana）
+## fetch-wallet — ブロックチェーンAPI取得（EVM / Solana / Aptos）
 
 ```
 crypto-summary fetch-wallet --chain CHAIN --wallet ADDRESS [options]
@@ -388,11 +388,12 @@ crypto-summary fetch-wallet --chain CHAIN --wallet ADDRESS [options]
 
 | オプション | 説明 |
 |---|---|
-| `--chain` | `ethereum` / `arbitrum` / `polygon` / `base` / `optimism` / `solana` |
-| `--wallet` | ウォレットアドレス（EVM: `0x...` / Solana: base58） |
+| `--chain` | `ethereum` / `arbitrum` / `polygon` / `base` / `optimism` / `solana` / `aptos` |
+| `--wallet` | ウォレットアドレス（EVM: `0x` + 40桁 / Solana: base58 / Aptos: `0x` + 64桁） |
 | `--source-id ID` | カスタムのソースID |
 | `--api-key KEY` | Etherscan V2 APIキー（EVM用、または環境変数 `ETHERSCAN_API_KEY`） |
 | `--helius-api-key KEY` | Helius APIキー（Solana用、または環境変数 `HELIUS_API_KEY`） |
+| `--aptos-api-key KEY` | Aptos Indexer APIキー（Aptos用・任意、または環境変数 `APTOS_API_KEY`） |
 | `--no-gas` | ガス代を記録しない |
 
 ```bash
@@ -403,7 +404,16 @@ crypto-summary fetch-wallet --chain arbitrum \
 # Solana ウォレット
 crypto-summary fetch-wallet --chain solana \
     --wallet YOURWALLET... --source-id my_sol
+
+# Aptos ウォレット（APT・Aptos ネイティブ USDC などを取得）
+crypto-summary fetch-wallet --chain aptos \
+    --wallet 0xABC...（64桁） --source-id my_aptos
 ```
+
+> Aptos は APIキーなしでも取得できますが、匿名アクセスはレート制限が厳しく
+> 履歴が多いと途中で失敗します。`APTOS_API_KEY` の設定を推奨します。
+> Aptos は取引ハッシュの代わりに `transaction_version`（チェーン全体で一意の連番）を
+> `tx_hash` として記録します。Aptos Explorer はこの version で参照できます。
 
 ---
 
@@ -563,6 +573,7 @@ crypto-summary account remove-api --source-id ID
 | `BITFLYER_API_KEY` / `BITFLYER_API_SECRET` | bitFlyer API（読み取り専用） |
 | `ETHERSCAN_API_KEY` | Etherscan V2 APIキー（EVM ウォレット取得用） |
 | `HELIUS_API_KEY` | Helius APIキー（Solana ウォレット取得用） |
+| `APTOS_API_KEY` | Aptos Indexer APIキー（Aptos ウォレット取得用・任意） |
 | `CS_SECRET_KEY` | 口座APIキーの暗号化マスター鍵（`account gen-key` で生成） |
 
 ---

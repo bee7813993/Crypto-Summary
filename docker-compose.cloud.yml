@@ -63,6 +63,12 @@ services:
       # --- 任意 ---
       - COINGECKO_API_KEY=${COINGECKO_API_KEY:-}
 
+      # --- ウォレットのスキャン用キー（任意）---
+      # Web の「システム設定」に保存した値が優先され、未保存のときだけここが使われる。
+      - ETHERSCAN_API_KEY=${ETHERSCAN_API_KEY:-}
+      - HELIUS_API_KEY=${HELIUS_API_KEY:-}
+      - APTOS_API_KEY=${APTOS_API_KEY:-}
+
       # --- PBR Lending 連携 ---
       # ファイル同期でクローラーの outputs を運び込む先。
       # 手元のクローラー側 outputs ディレクトリと同期させる。

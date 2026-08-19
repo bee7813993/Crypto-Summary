@@ -2669,6 +2669,7 @@ async function loadSystemKeys() {
     const p = data.providers || {};
     _setKeyStatus("system-etherscan-status", p.etherscan);
     _setKeyStatus("system-helius-status", p.helius);
+    _setKeyStatus("system-aptos-status", p.aptos);
   } catch (e) {
     // 管理者でない場合は 403 — 無視
   }
@@ -3174,11 +3175,13 @@ if (_systemKeysSaveBtn) {
 
     const etherscan = document.getElementById("system-etherscan").value.trim();
     const helius = document.getElementById("system-helius").value.trim();
+    const aptos = document.getElementById("system-aptos").value.trim();
 
     // 空欄のフィールドは送らない（＝変更なし）
     const body = {};
     if (etherscan) body.etherscan = etherscan;
     if (helius) body.helius = helius;
+    if (aptos) body.aptos = aptos;
 
     if (Object.keys(body).length === 0) {
       result.className = "settings-result err";
@@ -3202,6 +3205,7 @@ if (_systemKeysSaveBtn) {
 
       document.getElementById("system-etherscan").value = "";
       document.getElementById("system-helius").value = "";
+      document.getElementById("system-aptos").value = "";
       loadSystemKeys();
     } catch (e) {
       result.className = "settings-result err";
@@ -3218,6 +3222,7 @@ document.getElementById("import-wallet-btn").addEventListener("click", async () 
 
   const address = document.getElementById("import-wallet-address").value.trim();
   const sourceId = document.getElementById("import-wallet-name").value.trim();
+  const chain = document.getElementById("import-wallet-chain").value;
 
   if (!address) {
     result.className = "settings-result err";
@@ -3233,6 +3238,7 @@ document.getElementById("import-wallet-btn").addEventListener("click", async () 
       body: JSON.stringify({
         address,
         source_id: sourceId || null,
+        chain: chain || null,
       }),
     });
     const d = await resp.json();
@@ -3245,6 +3251,7 @@ document.getElementById("import-wallet-btn").addEventListener("click", async () 
     // フォームをクリア
     document.getElementById("import-wallet-address").value = "";
     document.getElementById("import-wallet-name").value = "";
+    document.getElementById("import-wallet-chain").value = "";
 
     loadWalletsTable();
   } catch (e) {

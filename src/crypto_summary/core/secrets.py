@@ -171,7 +171,7 @@ class SecretStore:
     # -- ウォレット（公開アドレス）----------------------------------------
     #
     # ウォレットアドレスとチェーンは公開情報のため平文で保存する。
-    # スキャン用 API キー（Etherscan/Helius）は任意。指定された場合のみ
+    # スキャン用 API キー（Etherscan/Helius/Aptos）は任意。指定された場合のみ
     # 暗号化して保存し（マスター鍵が必要）、未指定なら同期時に環境変数を使う。
 
     def set_wallet(
@@ -182,6 +182,7 @@ class SecretStore:
         *,
         api_key: str | None = None,
         helius_key: str | None = None,
+        aptos_key: str | None = None,
         user_id: str = _DEFAULT_USER,
     ) -> None:
         """ウォレットを登録する（既存は上書き）。"""
@@ -198,6 +199,8 @@ class SecretStore:
             rec["api_key_enc"] = self._fernet_or_raise().encrypt(api_key.encode()).decode("ascii")
         if helius_key:
             rec["helius_key_enc"] = self._fernet_or_raise().encrypt(helius_key.encode()).decode("ascii")
+        if aptos_key:
+            rec["aptos_key_enc"] = self._fernet_or_raise().encrypt(aptos_key.encode()).decode("ascii")
         data["wallets"][_acct_key(user_id, source_id)] = rec
         self._save(data)
 
@@ -213,13 +216,15 @@ class SecretStore:
             "address": rec["address"],
             "chain": rec["chain"],
         }
-        if rec.get("api_key_enc") or rec.get("helius_key_enc"):
+        if rec.get("api_key_enc") or rec.get("helius_key_enc") or rec.get("aptos_key_enc"):
             f = self._fernet_or_raise()
             try:
                 if rec.get("api_key_enc"):
                     out["api_key"] = f.decrypt(rec["api_key_enc"].encode()).decode()
                 if rec.get("helius_key_enc"):
                     out["helius_key"] = f.decrypt(rec["helius_key_enc"].encode()).decode()
+                if rec.get("aptos_key_enc"):
+                    out["aptos_key"] = f.decrypt(rec["aptos_key_enc"].encode()).decode()
             except (InvalidToken, KeyError) as e:
                 raise SecretStoreError(
                     "ウォレットAPIキーの復号に失敗しました。マスター鍵が登録時と異なる可能性があります。"
@@ -255,7 +260,7 @@ class SecretStore:
 
     # -- プロバイダー API キー（ユーザー単位の共通スキャンキー）------------
     #
-    # Etherscan / Helius のキーはウォレット個別ではなくユーザー単位で1つ持つ。
+    # Etherscan / Helius / Aptos のキーはウォレット個別ではなくユーザー単位で1つ持つ。
     # 暗号化して保存し、ウォレット同期時の解決順は
     #   ウォレット個別キー → プロバイダーキー → 環境変数
     # とする。
@@ -263,7 +268,7 @@ class SecretStore:
     def set_provider_key(
         self, provider: str, key: str, *, user_id: str = _DEFAULT_USER
     ) -> None:
-        """プロバイダー（etherscan/helius 等）のキーを暗号化保存する。
+        """プロバイダー（etherscan/helius/aptos 等）のキーを暗号化保存する。
 
         空文字を渡すと削除する（鍵なしでも削除可能）。
         """
