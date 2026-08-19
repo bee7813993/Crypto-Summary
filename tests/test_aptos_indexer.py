@@ -2,15 +2,18 @@
 
 Aptos ウォレット取引の分類ロジックとアドレス正規化を検証する。
 """
+import json
 from decimal import Decimal
 
 import pytest
 
+import crypto_summary.sources.aptos.indexer as indexer_mod
 from crypto_summary.core.models import TxType
 from crypto_summary.sources.aptos.indexer import (
     AptosIndexerSource,
     _APT_FA_ADDRESS,
     _PAGE_SIZE,
+    _masked_key,
     normalize_address,
 )
 
@@ -306,6 +309,58 @@ def test_pagination_dedupes_boundary_records():
     second = [first[-1]] + _page(2000, 2)  # 境界の 1 件が再登場
     src = FakeAptos([first, second])
     assert len(src.fetch_all(record_gas=False)) == _PAGE_SIZE + 2
+
+
+# ── エラー応答 ──────────────────────────────────────────────────────
+
+class _FakeResponse:
+    def __init__(self, status_code: int, payload: dict):
+        self.status_code = status_code
+        self._payload = payload
+        self.text = json.dumps(payload)
+
+    def json(self):
+        return self._payload
+
+    def raise_for_status(self):
+        pass
+
+
+def _stub_http(monkeypatch, status_code: int, payload: dict):
+    monkeypatch.setattr(indexer_mod.time, "sleep", lambda *_: None)
+    monkeypatch.setattr(
+        indexer_mod.httpx, "post",
+        lambda *a, **kw: _FakeResponse(status_code, payload),
+    )
+
+
+def test_auth_error_reports_server_reason(monkeypatch):
+    """401 のときサーバーの説明をそのまま見せる（原因の切り分けに要る）。"""
+    _stub_http(monkeypatch, 401,
+               {"errors": [{"message": "Unauthorized: API key not found"}]})
+    src = AptosIndexerSource("aptos", WALLET, "aptoslabs_verySecretValue_abcdef")
+    with pytest.raises(RuntimeError) as e:
+        src.fetch_all()
+    msg = str(e.value)
+    assert "Unauthorized: API key not found" in msg
+    # キーの種別と桁数は分かるが、値そのものは出さない
+    assert "aptoslabs_" in msg
+    assert "verySecretValue" not in msg
+
+
+def test_rate_limit_error_reports_server_reason(monkeypatch):
+    _stub_http(monkeypatch, 429,
+               {"errors": [{"message": "Per anonymous IP rate limit exceeded."}]})
+    with pytest.raises(RuntimeError, match="rate limit exceeded"):
+        AptosIndexerSource("aptos", WALLET).fetch_all()
+
+
+def test_masked_key_shows_type_and_length_only():
+    masked = _masked_key("aptoslabs_verySecretValue_abcdef")
+    assert masked.startswith("aptoslabs_")
+    assert "verySecretValue" not in masked
+    assert "32" in masked  # 桁数が出るのでコピー欠けに気づける
+    assert _masked_key(None) == "なし（匿名アクセス）"
 
 
 def test_pagination_drains_stuck_version():

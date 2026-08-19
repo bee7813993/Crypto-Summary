@@ -164,6 +164,34 @@ def _parse_ts(s: str) -> datetime:
         return datetime.fromtimestamp(0, tz=timezone.utc)
 
 
+def _server_message(resp: httpx.Response) -> str:
+    """レスポンスからサーバーの説明を取り出す（GraphQL の errors[].message 優先）。"""
+    try:
+        data = resp.json()
+    except ValueError:
+        return resp.text.strip()[:200] or f"HTTP {resp.status_code}"
+    errors = data.get("errors") if isinstance(data, dict) else None
+    if isinstance(errors, list) and errors:
+        return "; ".join(
+            str(e.get("message", e)) if isinstance(e, dict) else str(e)
+            for e in errors
+        )
+    return str(data)[:200]
+
+
+def _masked_key(api_key: str | None) -> str:
+    """キーの取り違えを見分けられる範囲だけ見せる（全体はログに出さない）。
+
+    先頭は種別（aptoslabs_ = サーバー用 / AG- = ブラウザ用）の判別に要る。
+    末尾はコピー時の欠けに気づくために要る。
+    """
+    if not api_key:
+        return "なし（匿名アクセス）"
+    if len(api_key) <= 12:
+        return f"{api_key[:4]}…（{len(api_key)}文字）"
+    return f"{api_key[:10]}…{api_key[-4:]}（{len(api_key)}文字）"
+
+
 def _method_name(entry_function: str) -> str:
     """entry_function_id_str ("0x1::aptos_account::transfer") から関数名を取り出す。"""
     fn = (entry_function or "").strip()
@@ -227,14 +255,21 @@ class AptosIndexerSource:
             timeout=self.timeout,
         )
         if resp.status_code in (401, 403):
+            # サーバーの言い分（例: "Unauthorized: API key not found"）をそのまま見せる。
+            # 握りつぶすと「キーが違う」のか「キーが届いていない」のか切り分けられない。
             raise RuntimeError(
-                "Aptos Indexer 認証エラー。\n"
-                "  APTOS_API_KEY が正しいか確認してください（キーなしでも動作します）。\n"
-                "  発行: https://geomi.dev"
+                f"Aptos Indexer 認証エラー: {_server_message(resp)}\n"
+                f"  送ったキー: {_masked_key(self.api_key)}\n"
+                "  Aptos Build (https://geomi.dev) のキーを次の点で確認してください。\n"
+                "  - Mainnet 用に作ったキーか（Testnet/Devnet 用は mainnet では見つからない）\n"
+                "  - サーバー用キー（aptoslabs_ で始まる）か。ブラウザ用の Client key\n"
+                "    （AG- で始まる）は Origin 制限があり、サーバーからは使えない\n"
+                "  - コピー時に前後が欠けたり改行が混じったりしていないか\n"
+                "  キーを外せば匿名アクセスで取得はできます（レート制限は厳しくなります）。"
             )
         if resp.status_code == 429:
             raise RuntimeError(
-                "Aptos Indexer のレート制限に達しました。\n"
+                f"Aptos Indexer のレート制限に達しました: {_server_message(resp)}\n"
                 "  APIキーなしの匿名アクセスは IP 単位で厳しく制限されます。\n"
                 "  .env に APTOS_API_KEY を設定してください（無料）: https://geomi.dev"
             )
@@ -246,10 +281,7 @@ class AptosIndexerSource:
         resp.raise_for_status()
         data = resp.json()
         if data.get("errors"):
-            msgs = "; ".join(
-                str(e.get("message", e)) for e in data["errors"] if isinstance(e, dict)
-            )
-            raise RuntimeError(f"Aptos Indexer error: {msgs or data['errors']}")
+            raise RuntimeError(f"Aptos Indexer error: {_server_message(resp)}")
         return (data.get("data") or {}).get("fungible_asset_activities") or []
 
     def _request(self, from_version: int) -> list[dict[str, Any]]:
