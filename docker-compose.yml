@@ -59,6 +59,12 @@ services:
       # パス部分から決まるので、通常は書かなくてよい。
       - CS_ROOT_PATH=${CS_ROOT_PATH:-}
       - COINGECKO_API_KEY=${COINGECKO_API_KEY:-}
+      # ウォレットのスキャン用キー。Web の「システム設定」に保存した値が優先され、
+      # 未保存のときだけここ（.env）の値が使われる。渡さないと .env に書いても
+      # コンテナに届かないため、Web から登録する以外の手段がなくなる。
+      - ETHERSCAN_API_KEY=${ETHERSCAN_API_KEY:-}
+      - HELIUS_API_KEY=${HELIUS_API_KEY:-}
+      - APTOS_API_KEY=${APTOS_API_KEY:-}
       # PBR Lending クローラー連携（上の volume を有効にした場合）
       - PBR_CRAWL_DIR=${PBR_CRAWL_DIR:-}
       - PBR_VIEWER_URL=${PBR_VIEWER_URL:-}
