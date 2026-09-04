@@ -1,0 +1,46 @@
+# ビルドコンテキストから除外するもの。
+# Dockerfile が COPY するのは pyproject.toml と src/ だけだが、コンテキストは
+# 丸ごとビルダーへ転送される。クラウドのビルドサービスを使うと、除外しない限り
+# 個人データと秘密情報が外部のビルドサーバーへ送られる。
+
+# 台帳・APIキーの暗号化ストア・サーバー設定（Google のクライアントシークレット等）
+data/
+*.db
+*.db-wal
+*.db-shm
+*.secrets.json
+*.prefs.json
+*.accounts.json
+*.pbr_sync.json
+
+# 資格情報
+.env
+.env.*
+!.env.example
+
+# 開発環境（イメージ内では pip install し直すので不要）
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+
+# バージョン管理・エージェント作業ツリー
+.git/
+.gitignore
+.claude/
+
+# テスト・サンプル・ドキュメント（実行には不要）
+tests/
+samples/
+docs/
+*.md
+
+# エディタ / OS
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini

@@ -1,0 +1,2669 @@
+"""Crypto-Summary Web UI のFastAPIアプリ。
+
+ダッシュボード（資産サマリー）を提供する。価格は CoinGecko（read-only）から取得。
+取引履歴のインポート機能は今後追加予定。
+"""
+from __future__ import annotations
+
+import base64
+import hashlib
+import json
+import os
+import secrets
+import tempfile
+import uuid
+from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal
+from pathlib import Path
+from typing import Any
+
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi.responses import HTMLResponse, Response
+from fastapi.staticfiles import StaticFiles
+
+from ..core.ledger import Ledger
+from ..core.models import CanonicalTx, TxType
+from ..core.portfolio import assets_in_range, balances_as_of, daily_balances
+from ..core.price_history import fetch_price_history
+from ..core.prices import COINGECKO_IDS, SUPPORTED_CURRENCIES, _coingecko_api_key, fetch_coin_icons, fetch_prices
+from ..core import syncthing
+from ..core.secrets import SecretStore, SecretStoreError
+from ..sinks.cryptact_csv import to_cryptact_csv_string
+from ..sinks.koinly_csv import to_koinly_csv_string
+from ..sinks.summ_csv import _SUMM_HEADERS as _SUMM_CSV_HEADERS
+from ..sinks.summ_csv import link_nexo_transfers, to_summ_csv_string
+from ..sinks.summ_csv import to_summ_rows as _to_summ_rows_inner
+from ..sources.api.bybit import BybitApiSource
+from ..sources.csv_import import EXCHANGE_SOURCES
+from ..sources.jp.pbr_crawl import (
+    ENV_VAR as _PBR_CRAWL_ENV,
+    LEGACY_SOURCES as PBR_LEGACY_SOURCES,
+    SOURCE_ID as PBR_SOURCE_ID,
+    SYNC_FORMAT_VERSION,
+    PbrSyncError,
+    load_sync_state,
+    purge_pbr_crawl_year,
+    read_crawl_status,
+    resolve_crawl_dir,
+    sync_pbr_crawl,
+)
+from . import auth as cs_auth
+
+_STATIC_DIR = Path(__file__).parent / "static"
+_DUST = Decimal("0.00000001")
+# スパムエアドロップ判定：価格不明 ＋ 正の整数単位 ＋ 少量（≤10）
+_SPAM_MAX_UNITS = Decimal("10")
+
+# 前営業日の終値を探す遡り日数。取得漏れの日に耐えるため数日ぶんの窓を取る。
+# 広げてもリクエスト本数は変わらない（不足分は min(missing)..end を1回で取る）。
+_PREV_LOOKBACK_DAYS = 7
+
+
+def _prev_close_end() -> date:
+    """前日終値を探す窓の終端（この日以前で最新の終値を採る）を返す。
+
+    次の両方を満たす最新の日を返す。UTC 運用のコンテナでは単純に「昨日」。
+      - UTC で完全に閉じた日であること（price_history は UTC 日次で畳み込む）
+      - サーバのローカル日付より必ず過去であること（fetch_price_history に
+        「当日」とみなされると現物価格で埋まり、前日比が常に 0 になる）
+    """
+    return min(datetime.now(timezone.utc).date(), date.today()) - timedelta(days=1)
+
+
+def _latest_close(series: "dict[str, Decimal] | None") -> "tuple[str, Decimal] | None":
+    """日次終値の系列から最も新しい (日付, 価格) を返す。空・欠落なら None。"""
+    if not series:
+        return None
+    day = max(series)
+    return day, series[day]
+
+
+def _is_spam_token(balance: Decimal, price: "Decimal | None") -> bool:
+    """価格不明かつ少量整数残高のトークンをスパムエアドロップと見なす。"""
+    if price is not None:
+        return False
+    if balance <= 0:
+        return False
+    return balance <= _SPAM_MAX_UNITS and balance == balance.to_integral_value()
+
+# デフォルトのグルーピング設定（設定ファイルが存在しない場合に使われる）。
+# ユーザーは Web UI から変更でき、DB と同じディレクトリの .accounts.json に保存される。
+ACCOUNT_GROUPS: dict[str, list[str]] = {
+    "bitFlyer": ["bitflyer"],
+    "Nexo Pro": ["nexo", "nexo_dnw", "nexo_spot"],
+    # 先物ウォレットは貯蓄と同じ Nexo アカウント内にあり、資金も貯蓄との間で
+    # 出入りする（その振替は両側とも記録しない）。同じ口座にまとめないと
+    # 先物の損益分だけ貯蓄側の残高がずれて見える。
+    "Nexo": ["nexo_auto", "nexo_savings", "nexo_futures"],
+}
+
+# メモリキャッシュ（db_path → groups）。PUT 時に無効化する。
+_groups_cache: dict[str, dict[str, list[str]]] = {}
+
+
+def _groups_path(db_path: str) -> Path:
+    """DB ファイルと同じディレクトリに <stem>.accounts.json を置く。"""
+    p = Path(db_path)
+    return p.with_name(p.stem + ".accounts.json")
+
+
+def _load_groups(db_path: str) -> dict[str, list[str]]:
+    """設定ファイルからグループを読み込む（キャッシュあり）。
+
+    保存済みファイルを読み込んだ後、ACCOUNT_GROUPS に定義されているが
+    まだどのグループにも割り当てられていない source_id をデフォルト設定で補完する。
+    これにより、コードのデフォルト追加が既存ユーザーにも反映される。
+    """
+    if db_path in _groups_cache:
+        return _groups_cache[db_path]
+    path = _groups_path(db_path)
+    try:
+        groups: dict[str, list[str]] = json.loads(path.read_text(encoding="utf-8"))
+        # デフォルトに新たに追加されたグループエントリを補完する
+        assigned = {sid for ids in groups.values() for sid in ids}
+        for name, ids in ACCOUNT_GROUPS.items():
+            for sid in ids:
+                if sid not in assigned:
+                    groups.setdefault(name, []).append(sid)
+    except (OSError, json.JSONDecodeError):
+        groups = dict(ACCOUNT_GROUPS)
+    _groups_cache[db_path] = groups
+    return groups
+
+
+def _save_groups(db_path: str, groups: dict[str, list[str]]) -> None:
+    """グループ設定をファイルに保存してキャッシュを更新する。"""
+    _groups_cache[db_path] = groups
+    _groups_path(db_path).write_text(
+        json.dumps(groups, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+
+# ユーザー設定（口座グループ以外の表示設定）。<stem>.prefs.json に保存する。
+_DEFAULT_PREFS: dict[str, Any] = {
+    # PBR Lending の日次利息を残高・ポートフォリオ・エクスポートに含めるか。
+    # 取引自体は常に取り込まれ、ここでは算入するかだけを切り替える。
+    "include_daily_interest": True,
+    # PBR Lending クローラー連携の UI を出すか。
+    # None = 自動判定（その利用者に PBR のデータがあれば出す）。
+    # 全員が PBR Lending の口座を持つとは限らないので、既定では出さない。
+    "pbr_sync_enabled": None,
+}
+
+#: None（自動）を取りうる設定。bool へ丸めずに保存する。
+_TRISTATE_PREFS = frozenset({"pbr_sync_enabled"})
+
+_prefs_cache: dict[str, dict[str, Any]] = {}
+
+
+def _prefs_path(db_path: str) -> Path:
+    """DB ファイルと同じディレクトリに <stem>.prefs.json を置く。"""
+    p = Path(db_path)
+    return p.with_name(p.stem + ".prefs.json")
+
+
+def _load_prefs(db_path: str) -> dict[str, Any]:
+    """表示設定を読み込む（キャッシュあり）。未知のキーは既定値で補完する。"""
+    if db_path in _prefs_cache:
+        return _prefs_cache[db_path]
+    prefs = dict(_DEFAULT_PREFS)
+    try:
+        saved = json.loads(_prefs_path(db_path).read_text(encoding="utf-8"))
+        if isinstance(saved, dict):
+            for key in _DEFAULT_PREFS:
+                if key in saved:
+                    prefs[key] = saved[key]
+    except (OSError, json.JSONDecodeError):
+        pass
+    _prefs_cache[db_path] = prefs
+    return prefs
+
+
+def _save_prefs(db_path: str, prefs: dict[str, Any]) -> dict[str, Any]:
+    """表示設定を保存してキャッシュを更新する。既知のキーのみ受け付ける。"""
+    merged = dict(_load_prefs(db_path))
+    for key in _DEFAULT_PREFS:
+        if key not in prefs:
+            continue
+        value = prefs[key]
+        # 三値の設定は None（自動）をそのまま残す
+        merged[key] = None if (key in _TRISTATE_PREFS and value is None) else bool(value)
+    _prefs_cache[db_path] = merged
+    _prefs_path(db_path).write_text(
+        json.dumps(merged, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    return merged
+
+
+def _excluded_labels(db_path: str) -> set[str]:
+    """表示設定から、残高・集計に含めない label の集合を返す。"""
+    prefs = _load_prefs(db_path)
+    excluded: set[str] = set()
+    if not prefs.get("include_daily_interest", True):
+        excluded.add("daily_interest")
+    return excluded
+
+
+def _display_name(source_id: str, groups: dict[str, list[str]]) -> str:
+    for name, ids in groups.items():
+        if source_id in ids:
+            return name
+    # 保存済み設定に含まれていない場合はビルトインのデフォルトで確認
+    for name, ids in ACCOUNT_GROUPS.items():
+        if source_id in ids:
+            return name
+    return source_id.replace("_", " ").title()
+
+
+def _summary(db_path: str, currency: str) -> dict:
+    """全ソース合算の資産サマリーを計算して返す。"""
+    currency = currency.upper()
+    if currency not in SUPPORTED_CURRENCIES:
+        currency = "USD"
+
+    prev_end = _prev_close_end()
+    ledger = Ledger(db_path)
+    try:
+        excluded = _excluded_labels(db_path)
+        bals = ledger.balances(exclude_labels=excluded)
+        # 前日の残高（前日比の基準）。SQL 1本ぶんで、価格取得は増えない
+        prev_bals = balances_as_of(ledger, prev_end, exclude_labels=excluded)
+    finally:
+        ledger.close()
+
+    bals = {a: v for a, v in bals.items() if abs(v) >= _DUST}
+    prev_bals = {a: v for a, v in prev_bals.items() if abs(v) >= _DUST}
+    # 前日にあって当日に無い資産（その日に全部売った・送り出した）も対象に含める。
+    # 落とすと、売却日に受け取った側だけが増えて見かけの利益が出てしまう。
+    tracked = sorted(set(bals) | set(prev_bals))
+
+    warnings: list[str] = []
+    prices = fetch_prices(tracked, currency, warn=warnings.append)
+
+    # 前日終値は「現在価格がある資産」だけを対象にする。こうすると total_value と
+    # total_prev_value の対象集合が構造的に一致し、価格取得が全滅したときに
+    # 「total_value だけ 0 に落ちて前日比 -100%」という事故が起きない。
+    priced_assets = [a for a in tracked if prices.get(a.upper()) is not None]
+    hist = (
+        fetch_price_history(
+            priced_assets,
+            currency,
+            prev_end - timedelta(days=_PREV_LOOKBACK_DAYS),
+            prev_end,
+            warn=warnings.append,
+        )
+        if priced_assets
+        else {}
+    )
+
+    # 資産ごとに前日終値の基準日が違いうる（欠測日があると1つ前の日になる）。
+    # 残高もその日のものを使わないと、日付の違う残高と価格を掛けることになる。
+    prev_bal_by_date: dict[str, dict[str, Decimal]] = {prev_end.isoformat(): prev_bals}
+
+    def _balance_on(day_iso: str, asset: str) -> Decimal:
+        if day_iso not in prev_bal_by_date:
+            ledger = Ledger(db_path)
+            try:
+                prev_bal_by_date[day_iso] = balances_as_of(
+                    ledger, date.fromisoformat(day_iso), exclude_labels=excluded
+                )
+            finally:
+                ledger.close()
+        return prev_bal_by_date[day_iso].get(asset, Decimal("0"))
+
+    assets = []
+    total = Decimal("0")
+    for asset in tracked:
+        balance = bals.get(asset, Decimal("0"))
+        price = prices.get(asset.upper())
+        value = (balance * price) if price is not None else None
+        if value is not None:
+            total += value
+
+        # 前日比は「前日の残高 × 前日終値」との差＝入出金・売買も含めた実際の増減。
+        # 残高が数量そのものなので、いまの残高で評価すると入出庫が消えてしまう。
+        prev = _latest_close(hist.get(asset.upper()))
+        prev_date, prev_price = prev if prev else (None, None)
+        prev_balance = _balance_on(prev_date, asset) if prev_date else None
+        prev_value = (
+            (prev_balance * prev_price)
+            if (prev_price is not None and prev_balance is not None)
+            else None
+        )
+
+        assets.append({
+            "asset": asset,
+            "balance": str(balance),
+            "price": (str(price) if price is not None else None),
+            "value": (str(value) if value is not None else None),
+            "has_price": price is not None,
+            "prev_price": (str(prev_price) if prev_price is not None else None),
+            "prev_balance": (str(prev_balance) if prev_balance is not None else None),
+            "prev_value": (str(prev_value) if prev_value is not None else None),
+            "prev_date": prev_date,
+        })
+
+    # スパムエアドロップを除外
+    assets = [
+        a for a in assets
+        if not _is_spam_token(Decimal(a["balance"]), prices.get(a["asset"].upper()))
+    ]
+    # 前日比のためだけに載せた「当日ゼロ」の資産は、価格が付かないなら落とす
+    # （評価額にも前日比にも寄与せず、未対応コインとして数えられるだけになる）
+    assets = [a for a in assets if a["has_price"] or Decimal(a["balance"]) != 0]
+
+    assets.sort(
+        key=lambda a: (a["value"] is None, -(Decimal(a["value"]) if a["value"] else Decimal("0"))),
+    )
+
+    # 保有件数の類は「いま持っている資産」で数える（当日ゼロの行は前日比のため
+    # だけに載っているので、資産が1つ増えたようには見せない）
+    held = [a for a in assets if Decimal(a["balance"]) != 0]
+    priced = [a for a in held if a["has_price"]]
+    unpriced = [a["asset"] for a in held if not a["has_price"]]
+    # 評価額はあるが前日終値が取れなかった資産（表示通貨と異なる法定通貨など）。
+    # total_prev_value に入らないぶん、利用側で「前日比は部分的」と扱える。
+    prev_missing = [a["asset"] for a in assets if a["has_price"] and a["prev_value"] is None]
+
+    # スパム除外後の資産から集計する（対象集合のズレを構造的に排除する）。
+    # 1件も取れなければ null。0 と「判らない」は別物なので 0 は入れない。
+    prev_values = [Decimal(a["prev_value"]) for a in assets if a["prev_value"] is not None]
+    total_prev = str(sum(prev_values, Decimal("0"))) if prev_values else None
+
+    return {
+        "currency": currency,
+        "total_value": str(total),
+        "total_prev_value": total_prev,
+        "asset_count": len(held),
+        "priced_count": len(priced),
+        "unpriced": unpriced,
+        "prev_missing": prev_missing,
+        "assets": assets,
+        "warnings": warnings,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def _sources(db_path: str, currency: str) -> dict:
+    """口座（グルーピング済み）ごとの評価額内訳を返す。"""
+    currency = currency.upper()
+    if currency not in SUPPORTED_CURRENCIES:
+        currency = "USD"
+
+    groups = _load_groups(db_path)
+
+    ledger = Ledger(db_path)
+    try:
+        per_source = ledger.balances_by_source(exclude_labels=_excluded_labels(db_path))
+        counts = {src: cnt for src, cnt, _ in ledger.sources()}
+        date_ranges = ledger.date_ranges_by_source()
+    finally:
+        ledger.close()
+
+    all_assets = {a for bals in per_source.values() for a in bals}
+    warnings: list[str] = []
+    prices = fetch_prices(sorted(all_assets), currency, warn=warnings.append)
+
+    group_bals: dict[str, dict[str, Decimal]] = {}
+    group_tx: dict[str, int] = {}
+    group_ids: dict[str, list[str]] = {}
+    group_first: dict[str, str] = {}
+    group_last: dict[str, str] = {}
+
+    for src in sorted(per_source):
+        name = _display_name(src, groups)
+        if name not in group_bals:
+            group_bals[name] = {}
+            group_tx[name] = 0
+            group_ids[name] = []
+        group_ids[name].append(src)
+        group_tx[name] += counts.get(src, 0)
+        rng = date_ranges.get(src)
+        if rng:
+            lo, hi = rng
+            if name not in group_first or lo < group_first[name]:
+                group_first[name] = lo
+            if name not in group_last or hi > group_last[name]:
+                group_last[name] = hi
+        for asset, bal in per_source[src].items():
+            prev = group_bals[name].get(asset, Decimal("0"))
+            group_bals[name][asset] = prev + bal
+
+    sources = []
+    for name, bals in group_bals.items():
+        bals = {
+            a: v for a, v in bals.items()
+            if abs(v) >= _DUST and not _is_spam_token(v, prices.get(a.upper()))
+        }
+        total = Decimal("0")
+        for asset, balance in bals.items():
+            price = prices.get(asset.upper())
+            if price is not None:
+                total += balance * price
+        sources.append({
+            "source": name,
+            "source_ids": group_ids[name],
+            "tx_count": group_tx[name],
+            "asset_count": len(bals),
+            "total_value": str(total),
+            "first_ts": group_first.get(name),
+            "last_ts": group_last.get(name),
+        })
+
+    sources.sort(key=lambda s: -Decimal(s["total_value"]))
+
+    return {
+        "currency": currency,
+        "sources": sources,
+        "warnings": warnings,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def _account_assets(account: str, db_path: str, currency: str) -> dict:
+    """指定口座（グループ）の資産内訳を返す。"""
+    currency = currency.upper()
+    if currency not in SUPPORTED_CURRENCIES:
+        currency = "USD"
+
+    groups = _load_groups(db_path)
+
+    ledger = Ledger(db_path)
+    try:
+        per_source = ledger.balances_by_source(exclude_labels=_excluded_labels(db_path))
+    finally:
+        ledger.close()
+
+    target_ids: set[str] = set()
+    for src in per_source:
+        if _display_name(src, groups) == account:
+            target_ids.add(src)
+
+    if not target_ids:
+        return {"currency": currency, "account": account, "assets": [], "total_value": "0"}
+
+    merged: dict[str, Decimal] = {}
+    for src in target_ids:
+        for asset, bal in per_source[src].items():
+            merged[asset] = merged.get(asset, Decimal("0")) + bal
+    merged = {a: v for a, v in merged.items() if abs(v) >= _DUST}
+
+    warnings: list[str] = []
+    prices = fetch_prices(sorted(merged.keys()), currency, warn=warnings.append)
+
+    assets = []
+    total = Decimal("0")
+    for asset in sorted(merged):
+        balance = merged[asset]
+        price = prices.get(asset.upper())
+        value = (balance * price) if price is not None else None
+        if value is not None:
+            total += value
+        assets.append({
+            "asset": asset,
+            "balance": str(balance),
+            "price": (str(price) if price is not None else None),
+            "value": (str(value) if value is not None else None),
+            "has_price": price is not None,
+        })
+
+    # スパムエアドロップを除外
+    assets = [
+        a for a in assets
+        if not _is_spam_token(Decimal(a["balance"]), prices.get(a["asset"].upper()))
+    ]
+
+    assets.sort(
+        key=lambda a: (a["value"] is None, -(Decimal(a["value"]) if a["value"] else Decimal("0"))),
+    )
+
+    store = SecretStore(db_path)
+    wallet_map = {w["source_id"]: w for w in store.list_wallets()}
+    account_wallets = [
+        {
+            "source_id": sid,
+            "address": wallet_map[sid]["address"],
+            "chain": wallet_map[sid]["chain"],
+            "chain_label": _WALLET_CHAIN_LABELS.get(
+                wallet_map[sid]["chain"], wallet_map[sid]["chain"]
+            ),
+        }
+        for sid in sorted(target_ids)
+        if sid in wallet_map
+    ]
+
+    return {
+        "currency": currency,
+        "account": account,
+        "assets": assets,
+        "total_value": str(total),
+        "warnings": warnings,
+        "wallets": account_wallets,
+    }
+
+
+def _asset_accounts(asset: str, db_path: str, currency: str) -> dict:
+    """指定資産の口座別内訳を返す。"""
+    currency = currency.upper()
+    if currency not in SUPPORTED_CURRENCIES:
+        currency = "USD"
+
+    groups = _load_groups(db_path)
+
+    ledger = Ledger(db_path)
+    try:
+        per_source = ledger.balances_by_source(exclude_labels=_excluded_labels(db_path))
+    finally:
+        ledger.close()
+
+    warnings: list[str] = []
+    prices = fetch_prices([asset], currency, warn=warnings.append)
+    price = prices.get(asset.upper())
+
+    group_bals: dict[str, Decimal] = {}
+    for src, bals in per_source.items():
+        bal = bals.get(asset, Decimal("0"))
+        if abs(bal) < _DUST:
+            continue
+        name = _display_name(src, groups)
+        group_bals[name] = group_bals.get(name, Decimal("0")) + bal
+
+    accounts = []
+    total_balance = Decimal("0")
+    total_value = Decimal("0")
+    for name, balance in sorted(group_bals.items(), key=lambda x: -abs(x[1])):
+        value = (balance * price) if price is not None else None
+        if value is not None:
+            total_value += value
+        total_balance += balance
+        accounts.append({
+            "account": name,
+            "balance": str(balance),
+            "value": (str(value) if value is not None else None),
+        })
+
+    return {
+        "currency": currency,
+        "asset": asset,
+        "price": (str(price) if price is not None else None),
+        "accounts": accounts,
+        "total_balance": str(total_balance),
+        "total_value": str(total_value),
+        "warnings": warnings,
+    }
+
+
+_TX_TYPE_JA: dict[str, str] = {
+    "trade": "売買",
+    "deposit": "入金",
+    "withdraw": "出金",
+    "fee": "手数料",
+    "reward": "報酬",
+    "transfer": "振替",
+}
+
+_TX_PAGE_SIZE = 50
+
+
+def _tx_asset_deltas(tx) -> dict[str, Decimal]:
+    """1取引で動く全資産のデルタ（受取 +, 送付/手数料 -）を返す。"""
+    d: dict[str, Decimal] = {}
+    if tx.received_asset and tx.received_amount is not None:
+        d[tx.received_asset] = d.get(tx.received_asset, Decimal("0")) + tx.received_amount
+    if tx.sent_asset and tx.sent_amount is not None:
+        d[tx.sent_asset] = d.get(tx.sent_asset, Decimal("0")) - tx.sent_amount
+    if tx.fee_asset and tx.fee_amount is not None:
+        d[tx.fee_asset] = d.get(tx.fee_asset, Decimal("0")) - tx.fee_amount
+    return d
+
+
+def _build_running_balances(
+    all_txs: list,
+    groups: dict[str, list[str]],
+) -> dict[str, dict[str, dict[str, str]]]:
+    """全取引を時系列走査し {tx_id: {asset: {"global": str, "account": str}}} を返す。
+
+    全体残高はすべてのソース合算、口座内残高はその取引が属するグループ内の累計。
+    """
+    all_txs = sorted(all_txs, key=lambda t: (t.timestamp, t.id))
+    global_bal: dict[str, Decimal] = {}
+    account_bal: dict[str, Decimal] = {}  # f"{gname}\x00{asset}" → Decimal
+    result: dict[str, dict] = {}
+    for tx in all_txs:
+        gname = _display_name(tx.source, groups)
+        affected = {}
+        for asset, delta in _tx_asset_deltas(tx).items():
+            global_bal[asset] = global_bal.get(asset, Decimal("0")) + delta
+            akey = f"{gname}\x00{asset}"
+            account_bal[akey] = account_bal.get(akey, Decimal("0")) + delta
+            affected[asset] = {
+                "global": str(global_bal[asset]),
+                "account": str(account_bal[akey]),
+            }
+        result[tx.id] = affected
+    return result
+
+
+def _resolve_source_ids(
+    account: str | None, db_path: str, groups: dict[str, list[str]]
+) -> list[str] | None:
+    if not account:
+        return None
+    ledger = Ledger(db_path)
+    try:
+        all_ids = [src for src, *_ in ledger.sources()]
+    finally:
+        ledger.close()
+    mapped = [s for s in all_ids if _display_name(s, groups) == account]
+    return mapped if mapped else [account]
+
+
+def _parse_date(s: str | None) -> datetime | None:
+    if not s:
+        return None
+    try:
+        return datetime.fromisoformat(s).replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+def _transactions(
+    db_path: str,
+    account: str | None,
+    asset: str | None,
+    since_str: str | None,
+    until_str: str | None,
+    page: int,
+) -> dict:
+    """取引履歴ページを返す。account は表示名（グループ名）で受け取る。"""
+    groups = _load_groups(db_path)
+    source_ids = _resolve_source_ids(account, db_path, groups)
+    since = _parse_date(since_str)
+    until = _parse_date(until_str)
+
+    ledger = Ledger(db_path)
+    try:
+        # 残高計算用: アカウントフィルタなし・日付フィルタなし・資産フィルタのみ。
+        # 表示設定で除外中のラベルは残高に含めない（サマリー画面と一致させる）。
+        bal_txs, _ = ledger.transactions(
+            asset=asset, limit=10_000_000, exclude_labels=_excluded_labels(db_path)
+        )
+        # 表示用: 全フィルタ適用。除外中のラベルも行としては表示する
+        # （「取り込んだのに消えた」と見えないようにするため）。
+        offset = (max(page, 1) - 1) * _TX_PAGE_SIZE
+        txs, total = ledger.transactions(
+            source=source_ids,
+            asset=asset,
+            since=since,
+            until=until,
+            limit=_TX_PAGE_SIZE,
+            offset=offset,
+        )
+    finally:
+        ledger.close()
+
+    running = _build_running_balances(bal_txs, groups)
+
+    rows = []
+    for tx in txs:
+        row_balances = running.get(tx.id, {})
+        rows.append({
+            "id": tx.id,
+            "timestamp": tx.timestamp.isoformat(),
+            "account": _display_name(tx.source, groups),
+            "source_id": tx.source,
+            "type": tx.type.value,
+            "type_ja": _TX_TYPE_JA.get(tx.type.value, tx.type.value),
+            "received_asset": tx.received_asset,
+            "received_amount": str(tx.received_amount) if tx.received_amount is not None else None,
+            "sent_asset": tx.sent_asset,
+            "sent_amount": str(tx.sent_amount) if tx.sent_amount is not None else None,
+            "fee_asset": tx.fee_asset,
+            "fee_amount": str(tx.fee_amount) if tx.fee_amount is not None else None,
+            "label": tx.label,
+            "tx_hash": tx.tx_hash,
+            "running_balances": row_balances,
+        })
+
+    total_pages = max(1, (total + _TX_PAGE_SIZE - 1) // _TX_PAGE_SIZE)
+    return {
+        "transactions": rows,
+        "total": total,
+        "page": max(page, 1),
+        "total_pages": total_pages,
+        "page_size": _TX_PAGE_SIZE,
+        "filter_account": account,
+        "filter_asset": asset,
+    }
+
+
+def _add_manual_transaction(db_path: str, body: dict[str, Any]) -> dict:
+    """手動で取引を追加する。"""
+    groups = _load_groups(db_path)
+    # source は表示名 → ソースIDに変換
+    account_name = body.get("account", "")
+    src_ids = _resolve_source_ids(account_name, db_path, groups)
+    source_id = src_ids[0] if src_ids else account_name
+
+    ts_str = body.get("timestamp", "")
+    try:
+        ts = datetime.fromisoformat(ts_str)
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+    except (ValueError, AttributeError):
+        raise HTTPException(status_code=422, detail="invalid timestamp")
+
+    type_str = body.get("type", "deposit").lower()
+    try:
+        tx_type = TxType(type_str)
+    except ValueError:
+        raise HTTPException(status_code=422, detail=f"invalid type: {type_str}")
+
+    def _dec(v: Any) -> Decimal | None:
+        return Decimal(str(v)) if v not in (None, "", 0, "0") else None
+
+    tx_id = f"manual:{uuid.uuid4().hex[:12]}"
+    tx = CanonicalTx(
+        id=tx_id,
+        source=source_id,
+        timestamp=ts,
+        type=tx_type,
+        received_asset=body.get("received_asset") or None,
+        received_amount=_dec(body.get("received_amount")),
+        sent_asset=body.get("sent_asset") or None,
+        sent_amount=_dec(body.get("sent_amount")),
+        fee_asset=body.get("fee_asset") or None,
+        fee_amount=_dec(body.get("fee_amount")),
+        label=(body.get("label") or "手動追加"),
+        raw={},
+    )
+    ledger = Ledger(db_path)
+    try:
+        ledger.upsert(tx)
+    finally:
+        ledger.close()
+    return {"ok": True, "id": tx_id}
+
+
+# CSV インポートで提示する取引所・サービスの表示名。
+_EXCHANGE_LABELS: dict[str, str] = {
+    "nexo_auto": "Nexo（自動判別: 貯蓄口座/先物）",
+    "nexo_savings": "Nexo（貯蓄口座）",
+    "nexo_futures": "Nexo（先物取引）",
+    "nexo": "Nexo Pro（自動判別: スポット/入出金）",
+    "nexo_spot": "Nexo Pro（スポット取引）",
+    "nexo_dnw": "Nexo Pro（入出金）",
+    "bitflyer": "bitFlyer（現物 TradeHistory）",
+    "bitflyer_collateral": "bitFlyer（証拠金 CollateralHistory）",
+    "bitflyer_conversion": "bitFlyer（両替 ConversionHistory）",
+    "gmo": "GMOコイン",
+    "bitlend": "BitLending",
+    "pbr": "PBR Lending（自動判定）",
+    "pbr_lending": "PBR Lending（貸出日次レポート）",
+    "pbr_transfers": "PBR Lending（入出金履歴）",
+    "pbr_crawl": "PBR Lending（クローラー同期）",
+    "binance": "Binance（スポット）",
+    "universal": "汎用CSV",
+}
+
+# 新規口座追加で提示する取引所の表示順。
+_IMPORT_EXCHANGE_ORDER: list[str] = [
+    "nexo_auto", "nexo_savings", "nexo_futures", "nexo", "nexo_spot", "nexo_dnw",
+    "bitflyer", "bitflyer_collateral", "bitflyer_conversion",
+    "gmo", "bitlend", "pbr", "binance", "universal",
+]
+
+# UI のインポート選択肢には出さないが、内部・既存バッチ・CLI 用に登録は残す取引所。
+# PBR Lending は "pbr"（自動判定）に集約したため、個別形式は隠す。
+# pbr_crawl はファイルのアップロードではなく専用の同期ボタン（/api/sync/pbr）から使う。
+_HIDDEN_IMPORT_EXCHANGES: set[str] = {"pbr_lending", "pbr_transfers", "pbr_crawl"}
+
+
+def _import_exchanges() -> dict:
+    """CSV インポートで選択できる取引所・サービスの一覧を返す。"""
+    items: list[dict] = []
+    seen: set[str] = set()
+    for key in _IMPORT_EXCHANGE_ORDER:
+        if key in EXCHANGE_SOURCES:
+            items.append({"value": key, "label": _EXCHANGE_LABELS.get(key, key)})
+            seen.add(key)
+    for key in EXCHANGE_SOURCES:
+        if key not in seen and key not in _HIDDEN_IMPORT_EXCHANGES:
+            items.append({"value": key, "label": _EXCHANGE_LABELS.get(key, key)})
+    return {"exchanges": items}
+
+
+def _import_csv(db_path: str, body: dict[str, Any]) -> dict:
+    """base64エンコードされたCSVを取り込み、CSV単位削除用にバッチ記録する。"""
+    exchange = (body.get("exchange") or "").strip()
+    if exchange not in EXCHANGE_SOURCES:
+        raise HTTPException(status_code=422, detail=f"未対応の取引所です: {exchange}")
+
+    content_b64 = body.get("content_b64") or ""
+    if not content_b64:
+        raise HTTPException(status_code=422, detail="CSVファイルの内容がありません")
+    try:
+        raw = base64.b64decode(content_b64)
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=422, detail="ファイル内容のデコードに失敗しました")
+
+    filename = (body.get("filename") or f"{exchange}.csv").strip()
+    # source_id はインポート先の識別子（任意。未指定なら取引所名）。
+    source_id = (body.get("account") or "").strip() or exchange
+
+    adapter = EXCHANGE_SOURCES[exchange](source_id)
+    suffix = Path(filename).suffix or ".csv"
+    tmp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+            tmp.write(raw)
+            tmp_path = Path(tmp.name)
+        try:
+            txs = adapter.load(tmp_path)
+        except Exception as e:  # noqa: BLE001 - パースエラーをユーザーに返す
+            raise HTTPException(status_code=422, detail=f"CSV の解析に失敗しました: {e}")
+    finally:
+        if tmp_path is not None:
+            tmp_path.unlink(missing_ok=True)
+
+    # 「読めたが記録対象外として落とした」件数（アダプタが対応していれば）。
+    # 0件になった理由が見えないと「入れたのに反映されない」に見えるため必ず返す。
+    skipped = getattr(adapter, "skipped", 0)
+    skip_reasons = dict(getattr(adapter, "skip_reasons", {}) or {})
+
+    if not txs:
+        return {"ok": True, "imported": 0, "parsed": 0, "source": source_id,
+                "skipped": skipped, "skip_reasons": skip_reasons,
+                "message": "取引が見つかりませんでした"}
+
+    ledger = Ledger(db_path)
+    try:
+        before = ledger.count(source_id)
+        ledger.upsert_many(txs)
+        after = ledger.count(source_id)
+
+        latest_ts = max(t.timestamp for t in txs)
+        cursor = ledger.get_cursor(source_id)
+        if cursor is None or latest_ts > cursor:
+            ledger.set_cursor(source_id, latest_ts)
+
+        batch_id = f"batch:{uuid.uuid4().hex[:12]}"
+        ledger.record_import_batch(
+            batch_id, source_id, exchange, filename, [t.id for t in txs]
+        )
+    finally:
+        ledger.close()
+
+    return {
+        "ok": True,
+        "imported": after - before,
+        "parsed": len(txs),
+        "skipped": skipped,
+        "skip_reasons": skip_reasons,
+        "source": source_id,
+        "batch_id": batch_id,
+    }
+
+
+def _list_import_batches(db_path: str) -> dict:
+    """CSV取り込みバッチ一覧（表示名・取引所ラベル付き）を返す。"""
+    groups = _load_groups(db_path)
+    ledger = Ledger(db_path)
+    try:
+        batches = ledger.list_import_batches()
+    finally:
+        ledger.close()
+    for b in batches:
+        b["account"] = _display_name(b["source"], groups)
+        b["exchange_label"] = _EXCHANGE_LABELS.get(b["exchange"], b["exchange"])
+    return {"batches": batches}
+
+
+# エクスポート形式の定義。value はクエリ用、label はUI表示用。
+_EXPORT_FORMATS: list[dict] = [
+    {"value": "koinly", "label": "Koinly（Universal CSV）", "ready": True},
+    {"value": "cryptact", "label": "Cryptact（カスタムファイル）", "ready": True},
+    {"value": "summ", "label": "SUMM（カスタムCSV）", "ready": True},
+]
+
+
+def _export_formats() -> dict:
+    return {"formats": _EXPORT_FORMATS}
+
+
+def _collect_export_txs(
+    db_path: str, account: str | None, since: str | None, until: str | None
+) -> list:
+    """エクスポート対象の取引を時系列昇順で取得する。"""
+    groups = _load_groups(db_path)
+    source_ids = _resolve_source_ids(account, db_path, groups)
+    since_dt = _parse_date(since)
+    until_dt = _parse_date(until)
+
+    ledger = Ledger(db_path)
+    try:
+        txs, _ = ledger.transactions(
+            source=source_ids,
+            since=since_dt,
+            until=until_dt,
+            limit=10_000_000,
+            exclude_labels=_excluded_labels(db_path),
+        )
+    finally:
+        ledger.close()
+    txs.sort(key=lambda t: (t.timestamp, t.id))
+    return txs
+
+
+_NEXO_LINK_COMPANIONS = {"nexo": "nexo_savings", "nexo_savings": "nexo"}
+
+
+def _to_summ_csv_with_nexo_link(
+    db_path: str, txs: list, since: str | None, until: str | None
+) -> str:
+    """SUMM CSV文字列を生成する。
+
+    nexo / nexo_savings が片方だけ txs に含まれる場合、相手方を補完ロードして
+    link_nexo_transfers() による ID 統一を実行してから CSV 化する。
+    補完分のトランザクションは出力に含めない。
+    """
+    import csv as _csv
+    import io
+
+    sources_in_txs = {t.source for t in txs}
+    companion_source: str | None = None
+    for src, companion in _NEXO_LINK_COMPANIONS.items():
+        if src in sources_in_txs and companion not in sources_in_txs:
+            companion_source = companion
+            break
+
+    if companion_source:
+        ledger = Ledger(db_path)
+        try:
+            companion_txs, _ = ledger.transactions(source=[companion_source], limit=10_000_000)
+        finally:
+            ledger.close()
+        linked_all = link_nexo_transfers(list(txs) + companion_txs)
+        # 補完ソースを除いて出力用リストに絞る
+        linked = [t for t in linked_all if t.source in sources_in_txs]
+    else:
+        linked = list(txs)
+
+    rows = _to_summ_rows_inner(linked)
+    buf = io.StringIO()
+    writer = _csv.DictWriter(buf, fieldnames=_SUMM_CSV_HEADERS)
+    writer.writeheader()
+    writer.writerows(rows)
+    return buf.getvalue()
+
+
+def _export_csv(
+    db_path: str, fmt: str, account: str | None, since: str | None, until: str | None
+) -> Response:
+    """指定形式のCSVを生成して添付ファイルとして返す。"""
+    fmt = (fmt or "").lower()
+    known = {f["value"] for f in _EXPORT_FORMATS}
+    if fmt not in known:
+        raise HTTPException(status_code=422, detail=f"未対応の形式です: {fmt}")
+
+    txs = _collect_export_txs(db_path, account, since, until)
+
+    if fmt == "koinly":
+        text = to_koinly_csv_string(txs)
+    elif fmt == "cryptact":
+        text, _skipped = to_cryptact_csv_string(txs)
+    else:  # summ
+        text = _to_summ_csv_with_nexo_link(db_path, txs, since, until)
+
+    # ファイル名: <format>_<account>_<today>.csv（ASCIIのみ）
+    acc_part = ""
+    if account:
+        safe = "".join(c if c.isalnum() else "_" for c in account)
+        acc_part = f"_{safe}"
+    today = datetime.now(timezone.utc).strftime("%Y%m%d")
+    filename = f"{fmt}{acc_part}_{today}.csv"
+
+    # UTF-8 BOM 付きで返す（Excel での文字化け回避）
+    body = "﻿" + text
+    return Response(
+        content=body.encode("utf-8"),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+# API連携対応取引所。
+_API_EXCHANGE_LABELS: dict[str, str] = {
+    "bybit": "Bybit",
+}
+
+
+def _list_account_apis(db_path: str) -> dict:
+    store = SecretStore(db_path)
+    accounts = store.list_accounts()
+    for a in accounts:
+        a["exchange_label"] = _API_EXCHANGE_LABELS.get(a["exchange"], a["exchange"])
+    return {"accounts": accounts}
+
+
+def _register_account_api(db_path: str, body: dict[str, Any]) -> dict:
+    exchange = (body.get("exchange") or "").strip().lower()
+    source_id = (body.get("source_id") or "").strip()
+    api_key = (body.get("api_key") or "").strip()
+    api_secret = (body.get("api_secret") or "").strip()
+    category = (body.get("category") or "all").strip()
+
+    if not exchange or exchange not in _API_EXCHANGE_LABELS:
+        raise HTTPException(status_code=422, detail=f"未対応の取引所です: {exchange}")
+    if not source_id:
+        raise HTTPException(status_code=422, detail="ソースIDを指定してください")
+    if not api_key or not api_secret:
+        raise HTTPException(status_code=422, detail="APIキーとシークレットは必須です")
+
+    store = SecretStore(db_path)
+    try:
+        store.set_account_api(source_id, exchange, api_key, api_secret, category=category)
+    except SecretStoreError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    return {"ok": True, "source_id": source_id, "exchange": exchange}
+
+
+def _delete_account_api(db_path: str, source_id: str) -> dict:
+    store = SecretStore(db_path)
+    deleted = store.delete_account(source_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="登録が見つかりません")
+    return {"ok": True}
+
+
+def _sync_account_api(db_path: str, source_id: str) -> dict:
+    store = SecretStore(db_path)
+    try:
+        creds = store.get_account_api(source_id)
+    except SecretStoreError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    if creds is None:
+        raise HTTPException(status_code=404, detail="登録が見つかりません")
+
+    exchange = creds["exchange"]
+
+    ledger = Ledger(db_path)
+    try:
+        cursor = ledger.get_cursor(source_id)
+    finally:
+        ledger.close()
+
+    start_time_ms: int | None = None
+    if cursor:
+        start_time_ms = int(cursor.timestamp() * 1000)
+
+    if exchange == "bybit":
+        adapter = BybitApiSource(
+            source_id,
+            creds["api_key"],
+            creds["api_secret"],
+            category=creds.get("category", "spot"),
+        )
+        try:
+            txs = adapter.fetch_all(start_time_ms)
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"Bybit API エラー: {e}")
+    else:
+        raise HTTPException(status_code=422, detail=f"API連携未対応の取引所です: {exchange}")
+
+    if not txs:
+        return {"ok": True, "fetched": 0, "imported": 0, "source_id": source_id}
+
+    ledger = Ledger(db_path)
+    try:
+        before = ledger.count(source_id)
+        ledger.upsert_many(txs)
+        after = ledger.count(source_id)
+        latest_ts = max(t.timestamp for t in txs)
+        cur = ledger.get_cursor(source_id)
+        if cur is None or latest_ts > cur:
+            ledger.set_cursor(source_id, latest_ts)
+    finally:
+        ledger.close()
+
+    return {
+        "ok": True,
+        "fetched": len(txs),
+        "imported": after - before,
+        "source_id": source_id,
+    }
+
+
+# ---------------------------------------------------------------------------
+# サーバー設定ファイル（初回セットアップ用）
+# ---------------------------------------------------------------------------
+# data_dir/_server_config.json（マルチユーザー）または
+# <db_dir>/_server_config.json（シングルユーザー）に保存する。
+# CS_SECRET_KEY や ADMIN_EMAILS を Web セットアップ画面から設定した場合に使う。
+# env 変数が設定されている場合は常に env が優先される。
+
+_SERVER_CONFIG_FILE = "_server_config.json"
+
+
+def _server_config_path(base_dir: str) -> Path:
+    return Path(base_dir) / _SERVER_CONFIG_FILE
+
+
+def _load_server_config(base_dir: str) -> dict:
+    try:
+        return json.loads(_server_config_path(base_dir).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _save_server_config(base_dir: str, data: dict) -> None:
+    path = _server_config_path(base_dir)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+
+
+_SESSION_KEY_FILE = "_session_key"
+
+
+def _session_secret(base_dir: str) -> str:
+    """セッション署名鍵を返す。env が無ければ生成して base_dir に保存する。
+
+    固定の既定値にフォールバックすると、公開した瞬間に誰でもセッション Cookie を
+    偽造できてしまう。env が無い場合はランダムに生成し、再起動でログインが
+    切れないようファイルへ残す（ファイルは 0600、data ディレクトリ内）。
+    """
+    env_key = os.environ.get("SECRET_KEY", "").strip()
+    if env_key:
+        return env_key
+
+    path = Path(base_dir) / _SESSION_KEY_FILE
+    try:
+        saved = path.read_text(encoding="utf-8").strip()
+        if saved:
+            return saved
+    except OSError:
+        pass
+
+    key = secrets.token_hex(32)
+    try:
+        path.write_text(key, encoding="utf-8")
+        os.chmod(path, 0o600)
+    except OSError:
+        # 書けない場合もその場限りの鍵で動かす（再起動でログインは切れる）。
+        pass
+    return key
+
+
+def _needs_first_run_setup(base_dir: str) -> bool:
+    """初回セットアップが必要かどうかを返す。
+
+    CS_SECRET_KEY が env になく、かつ設定ファイルが未存在の場合 True。
+    セットアップ完了（キー設定またはスキップ）後はファイルが存在するため False になる。
+    """
+    if os.environ.get("CS_SECRET_KEY"):
+        return False
+    return not _server_config_path(base_dir).exists()
+
+
+def _apply_server_config(base_dir: str) -> None:
+    """設定ファイルの値を環境変数に反映する（env が設定済みの場合はスキップ）。
+
+    この関数を create_app の冒頭で呼ぶことで、
+    SecretStore など既存のコードは変更なしに設定ファイルの値を使える。
+    Docker では未設定の変数も空文字で渡るため、空文字は「未設定」として扱う。
+    """
+    cfg = _load_server_config(base_dir)
+    # 設定ファイルのキー → 反映先の環境変数名
+    mapping = {
+        "cs_secret_key": "CS_SECRET_KEY",
+        "admin_emails": "ADMIN_EMAILS",
+        "google_client_id": "GOOGLE_CLIENT_ID",
+        "google_client_secret": "GOOGLE_CLIENT_SECRET",
+        "base_url": "BASE_URL",
+        "coingecko_api_key": "COINGECKO_API_KEY",
+    }
+    for cfg_key, env_name in mapping.items():
+        val = cfg.get(cfg_key, "")
+        if val and not os.environ.get(env_name):
+            os.environ[env_name] = val
+
+
+# ---------------------------------------------------------------------------
+# ウォレットアドレス連携
+# ---------------------------------------------------------------------------
+
+# チェーン表示名（同期対象のラベル）
+_WALLET_CHAIN_LABELS: dict[str, str] = {
+    "evm": "EVM（Ethereum / Arbitrum / Polygon / Base / Optimism）",
+    "solana": "Solana",
+    "aptos": "Aptos",
+}
+
+# 登録時に明示指定できるチェーン（未指定ならアドレスから自動判定）
+_WALLET_CHAINS = frozenset(_WALLET_CHAIN_LABELS)
+
+
+# システム共通のスキャン用キー（管理者がWebまたはenvで設定するインフラキー）
+_SYSTEM_PROVIDER_KEYS: dict[str, str] = {
+    "etherscan": "ETHERSCAN_API_KEY",
+    "helius": "HELIUS_API_KEY",
+    "aptos": "APTOS_API_KEY",
+}
+
+# .env.example のプレースホルダ値（コピーしたままの場合に誤認識しないよう除外）
+_ENV_KEY_PLACEHOLDERS = frozenset({
+    "your_api_key_here",
+    "your_api_secret_here",
+    "your_etherscan_api_key_here",
+    "your_helius_api_key_here",
+    "your_aptos_api_key_here",
+    "your-etherscan-api-key",
+    "your-helius-api-key",
+    "your-aptos-api-key",
+    "changeme",
+})
+
+
+def _env_key(env_name: str) -> str:
+    """環境変数からキーを取得し、プレースホルダは空文字として扱う。"""
+    val = os.environ.get(env_name, "").strip()
+    if val.lower() in _ENV_KEY_PLACEHOLDERS:
+        return ""
+    return val
+
+
+def _system_key_or_env(system_db: str, provider: str, env_name: str) -> str | None:
+    """システム保存キー（暗号化）→ 環境変数 の順で解決する。
+
+    マスター鍵未設定などで復号できない場合は環境変数にフォールバックする。
+    """
+    try:
+        key = SecretStore(system_db).get_provider_key(provider)
+    except SecretStoreError:
+        key = None
+    return key or _env_key(env_name) or None
+
+
+def _system_key_status(system_db: str) -> dict:
+    """システムキーの状態（Web保存済みか / env設定済みか）を返す（値は含まない）。"""
+    try:
+        stored = SecretStore(system_db).list_provider_keys()
+    except SecretStoreError:
+        stored = {}
+    return {
+        provider: {
+            "stored": bool(stored.get(provider)),
+            "env": bool(_env_key(env_name)),
+        }
+        for provider, env_name in _SYSTEM_PROVIDER_KEYS.items()
+    }
+
+
+def _set_system_keys(system_db: str, body: dict[str, Any]) -> dict:
+    """システムキーを暗号化保存する。
+
+    body に含まれるキーのみ更新する。値が空文字なら削除する。
+    body に無いプロバイダーは変更しない。
+    """
+    store = SecretStore(system_db)
+    updated: list[str] = []
+    for provider in _SYSTEM_PROVIDER_KEYS:
+        if provider not in body:
+            continue
+        val = (body.get(provider) or "").strip()
+        try:
+            store.set_provider_key(provider, val)
+        except SecretStoreError as e:
+            raise HTTPException(status_code=500, detail=str(e))
+        updated.append(provider)
+    return {"ok": True, "updated": updated}
+
+
+# Solana アドレスの base58 アルファベット（0 O I l を除く 58 文字）
+_B58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+
+# 各チェーンのアドレス許容長（0x を除いた 16 進の桁数）
+_EVM_HEX_LEN = 40    # 20 バイト
+_APTOS_HEX_LEN = 64  # 32 バイト（先頭ゼロを省いた短縮表記もある）
+# 自動判定で Aptos とみなす下限。短縮表記に備えて上位 4 バイト分の余裕を持たせる。
+# ここを 1 桁まで緩めると、1 文字コピーし損ねた EVM アドレス（39桁）まで
+# 「短縮形の Aptos アドレス」として通ってしまい、同期して 0 件で初めて気づく。
+# 上位ゼロが 4 バイト以上続く実アドレスはまず無いが、その場合は
+# 登録時に chain=aptos を明示すれば通る（_is_aptos_address は 1〜64 桁を許容）。
+_APTOS_HEX_MIN_AUTO = 56
+
+
+def _hex_body(address: str) -> str | None:
+    """0x 始まりの 16 進アドレスなら 0x を除いた本体を小文字で返す。違えば None。"""
+    a = address.strip().lower()
+    if not a.startswith("0x"):
+        return None
+    body = a[2:]
+    # int(x, 16) はアンダースコアや符号も通してしまうので桁を直接見る
+    if not body or not all(c in "0123456789abcdef" for c in body):
+        return None
+    return body
+
+
+def _is_evm_address(address: str) -> bool:
+    body = _hex_body(address)
+    return body is not None and len(body) == _EVM_HEX_LEN
+
+
+def _is_aptos_address(address: str) -> bool:
+    """Aptos アドレスとして妥当か（明示指定時の検証用に短縮表記も広く許容）。"""
+    body = _hex_body(address)
+    return body is not None and len(body) <= _APTOS_HEX_LEN
+
+
+def _is_solana_address(address: str) -> bool:
+    """base58 として 32 バイトちょうどにデコードできるか。
+
+    Solana のアカウントアドレスは ed25519 公開鍵（PDA 含む）で必ず 32 バイト。
+    文字種と長さだけ見ると打ち間違いを拾えないので、実際にデコードして
+    バイト長まで確認する（先頭のゼロバイトは base58 では '1' として現れる）。
+
+    注意: Solana のアドレスは base58check ではなくチェックサムを持たないため、
+    1 文字落としても 32 バイトにデコードできてしまう場合がある。
+    文字種の誤り（0 O I l の混入）と桁数の誤りは弾けるが、完全な検証はできない。
+    """
+    a = address.strip()
+    if not (32 <= len(a) <= 44):
+        return False
+    value = 0
+    for ch in a:
+        idx = _B58_ALPHABET.find(ch)
+        if idx < 0:
+            return False
+        value = value * 58 + idx
+    leading_zeros = len(a) - len(a.lstrip("1"))
+    body_len = (value.bit_length() + 7) // 8 if value else 0
+    return leading_zeros + body_len == 32
+
+
+# チェーン名 → そのチェーンのアドレスとして妥当かを判定する関数
+_WALLET_CHAIN_VALIDATORS = {
+    "evm": _is_evm_address,
+    "aptos": _is_aptos_address,
+    "solana": _is_solana_address,
+}
+
+# エラーメッセージ用の短いチェーン名（_WALLET_CHAIN_LABELS は EVM が長すぎて読みにくい）
+_WALLET_CHAIN_SHORT_NAMES: dict[str, str] = {
+    "evm": "EVM",
+    "aptos": "Aptos",
+    "solana": "Solana",
+}
+
+# 登録を弾いたときに返す形式の説明（コピペ時の欠落・打ち間違いに気づけるように）
+_WALLET_ADDRESS_FORMAT_HINT = (
+    "対応形式は EVM が 0x + 16進40桁、Aptos が 0x + 16進64桁、"
+    "Solana が base58 32〜44文字です。"
+    "コピー漏れや余分な文字が混じっていないか確認してください。"
+)
+
+
+def _detect_wallet_chain(address: str) -> str | None:
+    """アドレス形式からチェーン種別を判定する。判定できなければ None。
+
+      - 0x + 16進40桁 → EVM（20バイト）
+      - 0x + 16進56〜64桁 → Aptos（32バイト、上位ゼロ省略込み）
+      - base58 で 32 バイトにデコードできる → Solana
+
+    どれにも当てはまらない文字列（桁落ち・打ち間違い・別チェーンのアドレス）は
+    None を返して登録時に弾く。以前は「0x 以外はすべて Solana」としていたため、
+    打ち間違いがそのまま Solana ウォレットとして登録され、同期して初めて
+    「取引 0 件」や API エラーになって原因が分かりにくかった。
+
+    判定は保守的にし、迷う長さは通さない。取りこぼした場合は登録時に
+    chain を明示指定すれば、そのチェーンの形式チェックだけを通って登録できる
+    （Aptos アドレスがちょうど 40 桁になり EVM と衝突する場合もこれで救済する）。
+    """
+    if _is_evm_address(address):
+        return "evm"
+    body = _hex_body(address)
+    if body is not None:
+        return "aptos" if _APTOS_HEX_MIN_AUTO <= len(body) <= _APTOS_HEX_LEN else None
+    if _is_solana_address(address):
+        return "solana"
+    return None
+
+
+def _list_wallets(db_path: str) -> dict:
+    store = SecretStore(db_path)
+    wallets = store.list_wallets()
+    ledger = Ledger(db_path)
+    try:
+        ranges = ledger.date_ranges_by_source()
+    finally:
+        ledger.close()
+    for w in wallets:
+        w["chain_label"] = _WALLET_CHAIN_LABELS.get(w["chain"], w["chain"])
+        rng = ranges.get(w["source_id"])
+        w["last_tx_ts"] = rng[1] if rng else None
+    return {"wallets": wallets}
+
+
+def _register_wallet(db_path: str, body: dict[str, Any]) -> dict:
+    address = (body.get("address") or "").strip()
+    source_id = (body.get("source_id") or "").strip()
+    api_key = (body.get("api_key") or "").strip() or None
+    helius_key = (body.get("helius_key") or "").strip() or None
+    aptos_key = (body.get("aptos_key") or "").strip() or None
+    requested_chain = (body.get("chain") or "").strip().lower()
+
+    if not address:
+        raise HTTPException(status_code=422, detail="ウォレットアドレスを入力してください")
+
+    # chain 明示指定は自動判定より優先する（0x 系で判別を外した場合の救済）。
+    # ただし指定チェーンのアドレス形式として妥当かは確認する。
+    if requested_chain:
+        if requested_chain not in _WALLET_CHAINS:
+            raise HTTPException(
+                status_code=422,
+                detail=f"未対応のチェーンです: {requested_chain}",
+            )
+        if not _WALLET_CHAIN_VALIDATORS[requested_chain](address):
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"{_WALLET_CHAIN_SHORT_NAMES[requested_chain]}のアドレス形式では"
+                    "ありません。" + _WALLET_ADDRESS_FORMAT_HINT
+                ),
+            )
+        chain = requested_chain
+    else:
+        chain = _detect_wallet_chain(address)
+        if chain is None:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "アドレスの形式からチェーンを判定できませんでした。"
+                    + _WALLET_ADDRESS_FORMAT_HINT
+                    + "形式が特殊なアドレスは「チェーン」で明示指定すると登録できます。"
+                ),
+            )
+    if not source_id:
+        # 表示名未指定ならアドレス先頭から自動生成
+        source_id = f"{chain}_{address[:8].lower()}"
+
+    store = SecretStore(db_path)
+    try:
+        store.set_wallet(
+            source_id, address, chain,
+            api_key=api_key, helius_key=helius_key, aptos_key=aptos_key,
+        )
+    except SecretStoreError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    return {"ok": True, "source_id": source_id, "chain": chain,
+            "chain_label": _WALLET_CHAIN_LABELS.get(chain, chain)}
+
+
+def _delete_wallet(db_path: str, source_id: str) -> dict:
+    store = SecretStore(db_path)
+    if not store.delete_wallet(source_id):
+        raise HTTPException(status_code=404, detail="ウォレット登録が見つかりません")
+    return {"ok": True}
+
+
+# 契約プランでは読めないと分かったチェーンの記録（APIキーごと）。
+# 無料プランの Base / Optimism は同期のたびに必ず弾かれるので、一度分かれば
+# 以降は叩かない。キーを差し替えれば別エントリになるため自動で確認し直される。
+# プランを上げたときのために管理者設定から手動で忘れさせられる
+# （プロセス内の記録なので、アプリを再起動しても消える）。
+_unsupported_chains: dict[str, set[int]] = {}
+
+
+def _key_fingerprint(key: str) -> str:
+    """APIキーそのものを保持せずにキーを識別するための短いハッシュ。"""
+    return hashlib.sha256(key.encode()).hexdigest()[:16]
+
+
+def _forget_unsupported_chains() -> int:
+    """記録を破棄して次の同期で確認し直させる。忘れた件数を返す。"""
+    cleared = sum(len(v) for v in _unsupported_chains.values())
+    _unsupported_chains.clear()
+    return cleared
+
+
+def _sync_wallet(db_path: str, source_id: str, system_db: str | None = None) -> dict:
+    sys_db = system_db or db_path
+    warnings: list[str] = []
+
+    store = SecretStore(db_path)
+    try:
+        wallet = store.get_wallet(source_id)
+    except SecretStoreError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    if wallet is None:
+        raise HTTPException(status_code=404, detail="ウォレット登録が見つかりません")
+
+    address = wallet["address"]
+    chain = wallet["chain"]
+    txs: list[CanonicalTx] = []
+
+    if chain == "solana":
+        from ..sources.solana.helius import HeliusApiSource
+
+        key = wallet.get("helius_key") or _system_key_or_env(sys_db, "helius", "HELIUS_API_KEY")
+        if not key:
+            raise HTTPException(
+                status_code=422,
+                detail="Solana には Helius APIキーが必要です。設定画面の「システム設定」で登録するか、環境変数 HELIUS_API_KEY を設定してください。",
+            )
+        try:
+            txs = HeliusApiSource(source_id, address, key).fetch_all(record_gas=True)
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(status_code=502, detail=f"Helius API エラー: {e}")
+    elif chain == "aptos":
+        from ..sources.aptos.indexer import AptosIndexerSource
+
+        # Aptos Indexer はキーなしでも読める。未設定なら匿名アクセス（レート制限あり）。
+        key = wallet.get("aptos_key") or _system_key_or_env(sys_db, "aptos", "APTOS_API_KEY")
+        try:
+            adapter = AptosIndexerSource(source_id, address, key)
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e))
+        try:
+            txs = adapter.fetch_all(record_gas=True)
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(status_code=502, detail=f"Aptos Indexer エラー: {e}")
+    else:  # evm — 全 EVM チェーンをスキャンしてマージ
+        from ..sources.api.etherscan import (
+            CHAIN_IDS,
+            ChainNotSupportedError,
+            EtherscanApiSource,
+        )
+
+        key = wallet.get("api_key") or _system_key_or_env(sys_db, "etherscan", "ETHERSCAN_API_KEY")
+        if not key:
+            raise HTTPException(
+                status_code=422,
+                detail="EVM には Etherscan V2 APIキーが必要です。設定画面の「システム設定」で登録するか、環境変数 ETHERSCAN_API_KEY を設定してください。",
+            )
+        errors: list[str] = []
+        unsupported: list[str] = []
+        known_unsupported = _unsupported_chains.setdefault(_key_fingerprint(key), set())
+        for chain_name, chain_id in CHAIN_IDS.items():
+            if chain_id in known_unsupported:
+                unsupported.append(chain_name)
+                continue
+            try:
+                adapter = EtherscanApiSource(source_id, address, key, chain_id)
+                txs.extend(adapter.fetch_all(record_gas=True))
+            except ChainNotSupportedError:
+                # 契約プランで読めないチェーン。キーを変えない限り毎回同じなので
+                # 失敗として扱わず、次回以降は叩かないよう覚えておく。
+                known_unsupported.add(chain_id)
+                unsupported.append(chain_name)
+            except Exception as e:  # noqa: BLE001 - 1チェーン失敗でも他は継続
+                errors.append(f"{chain_name}: {e}")
+        if errors and not txs:
+            raise HTTPException(status_code=502, detail="Etherscan API エラー: " + "; ".join(errors))
+        if errors:
+            # 他チェーンが取れていても、落ちたチェーンの取引は欠けている。
+            # 黙って成功にすると欠落に気づけないため警告として返す。
+            warnings.append("取得できなかったチェーンがあります → " + "; ".join(errors))
+        if unsupported and not txs:
+            # 1件も取れなかったときだけ、対象外チェーンがあることを添える
+            # （取れているときに毎回出すと、無料プランでは常時ノイズになる）。
+            warnings.append(
+                f"{'・'.join(unsupported)} は現在の Etherscan プランでは取得できません"
+            )
+
+    if not txs:
+        return {"ok": True, "fetched": 0, "imported": 0, "source_id": source_id,
+                "warnings": warnings}
+
+    ledger = Ledger(db_path)
+    try:
+        before = ledger.count(source_id)
+        ledger.upsert_many(txs)
+        after = ledger.count(source_id)
+        latest_ts = max(t.timestamp for t in txs)
+        cur = ledger.get_cursor(source_id)
+        if cur is None or latest_ts > cur:
+            ledger.set_cursor(source_id, latest_ts)
+    finally:
+        ledger.close()
+
+    return {
+        "ok": True,
+        "fetched": len(txs),
+        "imported": after - before,
+        "source_id": source_id,
+        "warnings": warnings,
+    }
+
+
+def _sync_all(db_path: str, system_db: str | None = None) -> dict:
+    """登録済みの全 API 口座・全ウォレットを順に同期する。
+
+    1件の失敗で全体を止めず、各ソースの結果（成功/失敗）を集約して返す。
+    """
+    store = SecretStore(db_path)
+    results: list[dict] = []
+
+    def _run(source_id: str, kind: str, fn) -> None:
+        try:
+            r = fn(source_id)
+            results.append({
+                "source_id": source_id,
+                "kind": kind,
+                "ok": True,
+                "fetched": r.get("fetched", 0),
+                "imported": r.get("imported", 0),
+                # 一部チェーンだけ失敗した場合の注意書き（成功扱いだが欠落がある）
+                "warnings": r.get("warnings") or [],
+            })
+        except HTTPException as e:
+            results.append({
+                "source_id": source_id, "kind": kind,
+                "ok": False, "error": str(e.detail),
+            })
+        except Exception as e:  # noqa: BLE001 - 1件失敗でも他は継続
+            results.append({
+                "source_id": source_id, "kind": kind,
+                "ok": False, "error": str(e),
+            })
+
+    for acct in store.list_accounts():
+        _run(acct["source_id"], "api", lambda sid: _sync_account_api(db_path, sid))
+    for wallet in store.list_wallets():
+        _run(wallet["source_id"], "wallet",
+             lambda sid: _sync_wallet(db_path, sid, system_db=system_db))
+
+    succeeded = [r for r in results if r["ok"]]
+    failed = [r for r in results if not r["ok"]]
+    total_imported = sum(r.get("imported", 0) for r in succeeded)
+    total_fetched = sum(r.get("fetched", 0) for r in succeeded)
+
+    return {
+        "ok": True,
+        "total": len(results),
+        "succeeded": len(succeeded),
+        "failed": len(failed),
+        "total_fetched": total_fetched,
+        "total_imported": total_imported,
+        "results": results,
+    }
+
+
+# ---------------------------------------------------------------------------
+# PBR Lending クローラー連携
+# ---------------------------------------------------------------------------
+
+#: クローラーのビューア画面 URL（iframe 埋め込み・別タブで開く用）。
+#: 解決するのはユーザーのブラウザなので、本体が Docker 内でもホストの
+#: 127.0.0.1 に届く。
+_PBR_VIEWER_ENV = "PBR_VIEWER_URL"
+
+
+def _pbr_viewer_url() -> str | None:
+    """クローラーのビューア画面 URL。未設定なら None（タブを出さない）。
+
+    クラウドに置いた場合、クローラー操作はこのアプリの役目ではない
+    （クロールは手元の機械で行い、結果はファイル同期で届く）。既定値を
+    補わないことで、URL を書いたときだけタブが出る。
+    """
+    return os.environ.get(_PBR_VIEWER_ENV, "").strip() or None
+
+
+def _pbr_data_flags(db_path: str) -> tuple[bool, bool]:
+    """(PBR の取引があるか, クローラー連携を使ったことがあるか) を返す。
+
+    この 2 つは別物。公式の年間 CSV を取り込むだけの利用者は前者だけが真で、
+    クローラーは要らない。連携の UI を出すかは後者で判断する。
+    """
+    ledger = Ledger(db_path)
+    try:
+        from_crawl = bool(ledger.count(PBR_SOURCE_ID))
+        from_csv = any(ledger.count(src) for src in PBR_LEGACY_SOURCES)
+    finally:
+        ledger.close()
+    # 年次パージ後などで pbr_crawl が空でも、同期の記録があれば使っている。
+    synced_before = bool(load_sync_state(db_path).get("last_sync"))
+    return (from_crawl or from_csv), (from_crawl or synced_before)
+
+
+def _pbr_enabled(db_path: str, used_crawl: bool | None = None) -> bool:
+    """この利用者に PBR Lending クローラー連携の UI を出すか。
+
+    全員が PBR Lending の口座を持つわけではなく、口座があっても年次の公式 CSV を
+    取り込むだけならクローラーは要らない。そのため既定では出さない。
+    設定が未指定（None）のときは、クローラー連携を使った実績があるかで判断する
+    （以前から使っている利用者は設定し直さなくてよい）。
+    """
+    pref = _load_prefs(db_path).get("pbr_sync_enabled")
+    if pref is not None:
+        return bool(pref)
+    return _pbr_data_flags(db_path)[1] if used_crawl is None else used_crawl
+
+
+def _pbr_sync_status(db_path: str) -> dict:
+    """クロール結果の状態と最終同期の記録を返す。
+
+    連携が使えない・使わない場合もエラーにしない（UI 側が表示を落とす）。
+      available : サーバー側にクロール出力ディレクトリの設定があるか
+      enabled   : この利用者が連携を使うか（利用者ごとの設定）
+      configured: 両方満たすか。UI はこれでカードとタブの表示を決める
+    """
+    directory = resolve_crawl_dir()
+    state = load_sync_state(db_path)
+    last_sync = state.get("last_sync") or None
+    available = directory is not None
+    # has_pbr_data: PBR 固有の設定（日次利息の算入）を出すかの判断に使う。
+    # used_crawl : クローラー連携の UI を出すかの既定値の判断に使う。
+    has_pbr_data, used_crawl = _pbr_data_flags(db_path)
+    enabled = _pbr_enabled(db_path, used_crawl) if available else False
+
+    if not available or not enabled:
+        return {
+            "available": available, "enabled": enabled, "configured": False,
+            "has_pbr_data": has_pbr_data, "used_crawl": used_crawl,
+            "crawl_dir": None, "viewer_url": None,
+            "crawl": None, "last_sync": last_sync,
+            "last_purge": state.get("last_purge") or None,
+            "has_data": False, "blocked": False, "up_to_date": False,
+        }
+
+    crawl = read_crawl_status(directory)
+    synced = last_sync or {}
+    # 取り込み規則が変わっている場合は、同じ入力でも取り込み直す。
+    synced_format = synced.get("format_version", 1)
+    return {
+        "available": True,
+        "enabled": True,
+        "configured": True,
+        "has_pbr_data": has_pbr_data,
+        "used_crawl": used_crawl,
+        "crawl_dir": str(directory),
+        "viewer_url": _pbr_viewer_url(),
+        "crawl": crawl,
+        "last_sync": last_sync,
+        "last_purge": state.get("last_purge") or None,
+        # 取り込める材料があるか（クロール結果、または手動インポート）。
+        "has_data": crawl["has_data"],
+        # 自動取り込みを止めるべきか（クロールが異常終了 / ファイルが整定中）。
+        # 手動の同期ボタンはこれに関係なく実行できる。
+        "blocked": crawl["blocked"],
+        # 取り込み済みの内容と一致しているか。クロール結果と手動インポートの
+        # 両方の更新を指紋で見る。blocked とは独立（整定中でも内容が同じなら最新）。
+        "up_to_date": bool(
+            crawl["has_data"]
+            and synced.get("signature")
+            and synced["signature"] == crawl["signature"]
+            and synced_format >= SYNC_FORMAT_VERSION
+        ),
+    }
+
+
+#: 同期エラーコード → HTTP ステータス。
+#: 409 は「force で上書きできる」ことを意味する。
+#: 500 はサーバー側の環境の問題（利用者の操作では直せない）。
+_PBR_ERROR_STATUS = {
+    "not_configured": 422,
+    "artifact_missing": 422,
+    "artifact_invalid": 422,
+    "no_rows": 422,
+    "marker_missing": 409,
+    "unhealthy": 409,
+    "state_unwritable": 500,
+}
+
+
+def _pbr_sync_run(db_path: str, body: dict[str, Any]) -> dict:
+    """クロール結果を取り込む（対象期間を洗い替える）。"""
+    force = bool(body.get("force"))
+    dry_run = bool(body.get("dry_run"))
+    try:
+        return sync_pbr_crawl(db_path, None, force=force, dry_run=dry_run)
+    except PbrSyncError as e:
+        status = _PBR_ERROR_STATUS.get(e.code, 422)
+        detail = e.message
+        if status == 409:
+            detail += "（force を指定すると強制的に同期できます）"
+        raise HTTPException(status_code=status, detail=detail)
+
+
+# --- ファイル同期の相手登録（Syncthing） ---
+#
+# 同期するのはこのサーバーの PBR_CRAWL_DIR で、Syncthing もサーバーに 1 つ。
+# つまりサーバー全体の設定なので、システムキーと同じく管理者だけが操作する。
+
+def _pbr_syncthing_overview() -> dict:
+    """ペアリング画面に出す状態。未設定・未接続でも例外にしない。"""
+    directory = resolve_crawl_dir()
+    if directory is None:
+        return {"configured": False, "reachable": False,
+                "error": f"{_PBR_CRAWL_ENV} が未設定です。"}
+    return syncthing.overview(
+        syncthing.folder_path(str(directory)), "receiveonly")
+
+
+def _pbr_syncthing_pair(body: dict[str, Any]) -> dict:
+    """相手のデバイスを登録し、受信専用の同期フォルダを用意する。"""
+    directory = resolve_crawl_dir()
+    if directory is None:
+        raise HTTPException(
+            status_code=422, detail=f"{_PBR_CRAWL_ENV} が未設定です。")
+    device_id = (body.get("device_id") or "").strip()
+    if not device_id:
+        raise HTTPException(status_code=422, detail="デバイス ID を入力してください")
+    name = (body.get("name") or "PBRLending-History-Check").strip()
+    try:
+        # 受信側なので除外設定は入れない（送る側が何を送るかを決める）。
+        result = syncthing.pair(
+            device_id, name, path=syncthing.folder_path(str(directory)),
+            folder_type="receiveonly")
+    except syncthing.SyncthingError as e:
+        raise HTTPException(
+            status_code=422 if e.code == "invalid_device_id" else 502,
+            detail=e.message,
+        )
+    return {"ok": True, **result}
+
+
+def _pbr_syncthing_dismiss(body: dict[str, Any]) -> dict:
+    device_id = (body.get("device_id") or "").strip()
+    if not device_id:
+        raise HTTPException(status_code=422, detail="デバイス ID を指定してください")
+    try:
+        syncthing.dismiss_pending_device(device_id)
+    except syncthing.SyncthingError as e:
+        raise HTTPException(
+            status_code=422 if e.code == "invalid_device_id" else 502,
+            detail=e.message,
+        )
+    return {"ok": True}
+
+
+def _pbr_purge(db_path: str, body: dict[str, Any]) -> dict:
+    """指定年のクロール由来データを削除する（公式CSVへの移行時）。"""
+    raw_year = body.get("year")
+    try:
+        year = int(raw_year)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=422, detail="年を指定してください")
+    if not 2000 <= year <= 2100:
+        raise HTTPException(status_code=422, detail=f"対象外の年です: {year}")
+    return purge_pbr_crawl_year(db_path, year)
+
+
+_RANGE_DAYS: dict[str, int | None] = {
+    "7d": 7, "30d": 30, "90d": 90, "1y": 365, "all": None,
+}
+
+
+def _scope_filters(db_path: str, scope: str) -> "tuple[list[str] | None, str | None]":
+    """scope 文字列 → (ソース絞り込み, 資産絞り込み)。
+
+    scope: "total" | "account:<表示名>" | "asset:<シンボル>"
+    口座名が解決できなければ絞り込みなし（＝全体）に倒す。
+    """
+    if scope.startswith("account:"):
+        account_name = scope[len("account:"):]
+        groups = _load_groups(db_path)
+        ledger = Ledger(db_path)
+        try:
+            all_ids = [src for src, *_ in ledger.sources()]
+        finally:
+            ledger.close()
+        return ([s for s in all_ids if _display_name(s, groups) == account_name] or None, None)
+    if scope.startswith("asset:"):
+        return (None, scope[len("asset:"):].upper())
+    return (None, None)
+
+
+def _balances_at(db_path: str, as_of: str | None, scope: str) -> dict:
+    """指定日の終わりの時点の資産別残高を返す（価格は付けない）。
+
+    前日比の基準や「1週間前・30日前との差」を作るための素材。価格を引かない
+    ぶん軽く、CoinGecko も叩かない。as_of 省略時は今日。
+    """
+    day = date.today()
+    if as_of:
+        try:
+            day = date.fromisoformat(as_of)
+        except ValueError:
+            raise HTTPException(
+                status_code=422, detail="as_of は YYYY-MM-DD で指定してください"
+            )
+    source_filter, asset_filter = _scope_filters(db_path, scope)
+    ledger = Ledger(db_path)
+    try:
+        bals = balances_as_of(
+            ledger,
+            day,
+            source=source_filter,
+            asset=asset_filter,
+            exclude_labels=_excluded_labels(db_path),
+        )
+    finally:
+        ledger.close()
+    return {
+        "as_of": day.isoformat(),
+        "scope": scope,
+        "assets": [
+            {"asset": a, "balance": str(v)}
+            for a, v in sorted(bals.items())
+            if abs(v) >= _DUST
+        ],
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def _portfolio_history(
+    db_path: str,
+    currency: str,
+    range_str: str,
+    scope: str,
+) -> dict:
+    """ポートフォリオ価値の日次時系列を返す。
+
+    scope: "total" | "account:<表示名>" | "asset:<シンボル>"
+    range_str: "7d" | "30d" | "90d" | "1y" | "all"
+    """
+    # NOTE: scope の解釈は _scope_filters に切り出してある（残高APIと共通）
+    currency = currency.upper()
+    if currency not in SUPPORTED_CURRENCIES:
+        currency = "USD"
+
+    if range_str not in _RANGE_DAYS:
+        range_str = "90d"
+
+    today = date.today()
+    days = _RANGE_DAYS[range_str]
+    range_start = (today - timedelta(days=days)) if days is not None else None
+
+    source_filter, asset_filter = _scope_filters(db_path, scope)
+
+    ledger = Ledger(db_path)
+    try:
+        snapshots = daily_balances(
+            ledger,
+            source=source_filter,
+            asset=asset_filter,
+            start=range_start,
+            end=today,
+            exclude_labels=_excluded_labels(db_path),
+        )
+    finally:
+        ledger.close()
+
+    if not snapshots:
+        return {
+            "currency": currency,
+            "range": range_str,
+            "scope": scope,
+            "points": [],
+            "unpriced": [],
+            "warnings": [],
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+    # 日付範囲の確定（all の場合は最初のスナップショット日から today まで）
+    first_snap_date = date.fromisoformat(min(snapshots))
+    effective_start = max(range_start, first_snap_date) if range_start else first_snap_date
+
+    all_assets = assets_in_range(snapshots)
+    if asset_filter:
+        all_assets = {asset_filter} & all_assets
+
+    warnings: list[str] = []
+    price_hist = fetch_price_history(
+        list(all_assets), currency, effective_start, today, warn=warnings.append
+    )
+
+    unpriced: set[str] = set()
+    points: list[dict] = []
+
+    d = effective_start
+    prev_snapshot: dict[str, Decimal] = {}
+    while d <= today:
+        iso = d.isoformat()
+        if iso in snapshots:
+            prev_snapshot = snapshots[iso]
+        elif not prev_snapshot:
+            d += timedelta(days=1)
+            continue
+
+        total_value = Decimal("0")
+        has_any_price = False
+        asset_balance = Decimal("0")  # asset スコープ用の保有数量
+        for asset, balance in prev_snapshot.items():
+            if asset_filter and asset != asset_filter:
+                continue
+            if asset_filter:
+                asset_balance += balance
+            day_prices = price_hist.get(asset, {})
+            price = day_prices.get(iso)
+            if price is not None:
+                total_value += balance * price
+                has_any_price = True
+            elif not _is_spam_token(balance, None):
+                unpriced.add(asset)
+
+        if has_any_price:
+            point = {"t": iso, "value": str(total_value)}
+            if asset_filter:
+                point["balance"] = str(asset_balance)
+            points.append(point)
+
+        d += timedelta(days=1)
+
+    # CoinGecko ID がない資産（スパム・未対応トークン）は unpriced から除外する。
+    # 残るのは「ID はあるが取得失敗」の資産のみ（一時的な取得不完全）。
+    unpriced_supported = sorted(a for a in unpriced if a.upper() in COINGECKO_IDS)
+    is_partial = bool(warnings) or bool(unpriced_supported)
+
+    return {
+        "currency": currency,
+        "range": range_str,
+        "scope": scope,
+        "points": points,
+        "unpriced": unpriced_supported,
+        "is_partial": is_partial,
+        "warnings": warnings,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def _get_account_groups(db_path: str) -> dict:
+    """UI設定用: 現在のグループ設定とDBの全ソースIDを返す。"""
+    groups = _load_groups(db_path)
+
+    ledger = Ledger(db_path)
+    try:
+        all_sources = [src for src, *_ in ledger.sources()]
+    finally:
+        ledger.close()
+
+    # どのグループにも属していないソースID
+    assigned = {sid for ids in groups.values() for sid in ids}
+    unassigned = [s for s in all_sources if s not in assigned]
+
+    return {
+        "groups": groups,
+        "all_source_ids": all_sources,
+        "unassigned_source_ids": unassigned,
+    }
+
+
+def _app_path(request: Request) -> str:
+    """公開パスから接頭辞（root_path）を除いた、アプリ内部から見たパス。
+
+    サブパス配信（https://例.com/crypto/）ではリクエストのパスに接頭辞が
+    付いたまま届く。ルーティングは Starlette が root_path を見て解決するが、
+    ミドルウェアが自前でパスを判定する箇所は自分で外す必要がある。
+    """
+    rp = request.scope.get("root_path") or ""
+    path = request.url.path
+    if rp and (path == rp or path.startswith(rp + "/")):
+        return path[len(rp):] or "/"
+    return path
+
+
+def create_app(
+    db_path: str = "ledger.db",
+    data_dir: str | None = None,
+) -> FastAPI:
+    """FastAPI アプリを生成する。
+
+    シングルユーザーモード: db_path を直接指定（CLIデフォルト、認証不要）。
+    マルチユーザーモード: data_dir を指定すると Google OAuth が有効になり、
+      ユーザーごとに {data_dir}/{google_sub}.db が使われる。
+    """
+    multi_user = data_dir is not None
+
+    # base_dir: サーバー設定ファイルの置き場所
+    if multi_user:
+        _data_dir_path = Path(data_dir).expanduser()
+        _data_dir_path.mkdir(parents=True, exist_ok=True)
+        _base_dir = str(_data_dir_path)
+    else:
+        _base_dir = str(Path(db_path).resolve().parent)
+
+    # 設定ファイルの値を env に反映（env 優先）。FastAPI の生成より先に呼ぶ —
+    # サブパス配信の接頭辞（root_path）は BASE_URL（設定ファイル由来を含む）
+    # から導くため。
+    _apply_server_config(_base_dir)
+
+    app = FastAPI(
+        title="Crypto-Summary",
+        docs_url="/api/docs",
+        # サブパス配信の接頭辞（例: /crypto）。空ならルート直下。
+        root_path=cs_auth.root_path(),
+    )
+
+    def _admin_emails() -> set[str]:
+        raw = os.environ.get("ADMIN_EMAILS", "")
+        return {e.strip().lower() for e in raw.split(",") if e.strip()}
+
+    if multi_user:
+        # Google OAuth セッション + ルート
+        from starlette.middleware.sessions import SessionMiddleware
+
+        secret_key = _session_secret(_base_dir)
+        # 公開 URL の全入口が https のときだけ Cookie に Secure を付ける。
+        # http の入口が1つでも残っていると、Secure 付きではそちらで
+        # ログインできなくなる（Cookie 属性は登録時の1度きりで決まる）。
+        https_only = cs_auth.https_only()
+        app.add_middleware(
+            SessionMiddleware, secret_key=secret_key, https_only=https_only,
+            same_site="lax",
+            # 既定名 "session" のままだと、同一ドメインのサブパスに並べた
+            # Asset Summary と Cookie を取り合い、互いのセッションを消し合う。
+            session_cookie="cs_session",
+        )
+
+        from .auth import require_user, require_user_or_service, router as auth_router
+
+        app.include_router(auth_router)
+
+        def get_db_path(user: dict = Depends(require_user)) -> str:
+            return str(_data_dir_path / f"{user['sub']}.db")
+
+        def get_db_path_read(user: dict = Depends(require_user_or_service)) -> str:
+            """読み取りルート用。サービストークン（Asset Summary 連携）も受け付ける。
+
+            サービス主体では DB を暗黙作成しない — 存在しない sub は 404。
+            （sqlite は接続しただけでファイルを作るため、ここで存在確認する。）
+            セッションユーザーは従来どおり lazy-create。
+            """
+            p = _data_dir_path / f"{user['sub']}.db"
+            if user.get("service") and not p.exists():
+                raise HTTPException(status_code=404, detail="この利用者の台帳がありません")
+            return str(p)
+
+        # システム共通シークレットは data_dir 内の専用ストアに保存する。
+        _system_db = str(_data_dir_path / "_system.db")
+
+        def system_store_path() -> str:
+            return _system_db
+
+        def is_admin_user(user: dict | None) -> bool:
+            admins = _admin_emails()
+            return bool(user and admins and user.get("email", "").lower() in admins)
+
+        def require_admin(user: dict = Depends(require_user)) -> dict:
+            if not is_admin_user(user):
+                raise HTTPException(status_code=403, detail="管理者権限が必要です")
+            return user
+
+    else:
+        # シングルユーザー: 固定 db_path、認証不要
+        _fixed_db = db_path
+
+        def get_db_path() -> str:  # type: ignore[misc]
+            return _fixed_db
+
+        # シングルユーザーでは元々認証なし — トークン・ヘッダーは無視して同じ DB。
+        get_db_path_read = get_db_path
+
+        # シングルユーザーではシステムキーもユーザーDBに保存し、所有者が管理者。
+        def system_store_path() -> str:
+            return _fixed_db
+
+        def is_admin_user(user: dict | None) -> bool:
+            return True
+
+        def require_admin() -> dict:  # type: ignore[misc]
+            return {"email": ""}
+
+    # ------------------------------------------------------------------
+    # API ルート（すべて get_db_path 依存で db パスを取得する）
+    # ------------------------------------------------------------------
+
+    @app.get("/api/summary")
+    def summary(currency: str = Query("USD"), db: str = Depends(get_db_path_read)) -> dict:
+        return _summary(db, currency)
+
+    @app.get("/api/sources")
+    def sources(currency: str = Query("USD"), db: str = Depends(get_db_path_read)) -> dict:
+        return _sources(db, currency)
+
+    @app.get("/api/account-assets")
+    def account_assets(
+        account: str = Query(...),
+        currency: str = Query("USD"),
+        db: str = Depends(get_db_path_read),
+    ) -> dict:
+        return _account_assets(account, db, currency)
+
+    @app.get("/api/asset-accounts")
+    def asset_accounts(
+        asset: str = Query(...),
+        currency: str = Query("USD"),
+        db: str = Depends(get_db_path_read),
+    ) -> dict:
+        return _asset_accounts(asset, db, currency)
+
+    @app.get("/api/transactions")
+    def transactions_api(
+        account: str | None = Query(None),
+        asset: str | None = Query(None),
+        since: str | None = Query(None),
+        until: str | None = Query(None),
+        page: int = Query(1),
+        db: str = Depends(get_db_path),
+    ) -> dict:
+        return _transactions(db, account, asset, since, until, page)
+
+    @app.post("/api/transactions")
+    def add_transaction(body: dict[str, Any], db: str = Depends(get_db_path)) -> dict:
+        return _add_manual_transaction(db, body)
+
+    @app.delete("/api/transactions/{tx_id}")
+    def delete_transaction(tx_id: str, db: str = Depends(get_db_path)) -> dict:
+        ledger = Ledger(db)
+        try:
+            deleted = ledger.delete_by_id(tx_id)
+        finally:
+            ledger.close()
+        if not deleted:
+            raise HTTPException(status_code=404, detail="Transaction not found")
+        return {"ok": True}
+
+    @app.get("/api/import/exchanges")
+    def import_exchanges() -> dict:
+        return _import_exchanges()
+
+    @app.post("/api/import/csv")
+    def import_csv(body: dict[str, Any], db: str = Depends(get_db_path)) -> dict:
+        return _import_csv(db, body)
+
+    @app.get("/api/import/batches")
+    def import_batches(db: str = Depends(get_db_path)) -> dict:
+        return _list_import_batches(db)
+
+    @app.delete("/api/import/batches/{batch_id}")
+    def delete_import_batch(batch_id: str, db: str = Depends(get_db_path)) -> dict:
+        ledger = Ledger(db)
+        try:
+            existing = {b["id"] for b in ledger.list_import_batches()}
+            if batch_id not in existing:
+                raise HTTPException(status_code=404, detail="バッチが見つかりません")
+            deleted = ledger.delete_import_batch(batch_id)
+        finally:
+            ledger.close()
+        return {"ok": True, "deleted": deleted}
+
+    @app.get("/api/export/formats")
+    def export_formats() -> dict:
+        return _export_formats()
+
+    @app.get("/api/export")
+    def export_csv(
+        format: str = Query("koinly"),
+        account: str | None = Query(None),
+        since: str | None = Query(None),
+        until: str | None = Query(None),
+        db: str = Depends(get_db_path),
+    ) -> Response:
+        return _export_csv(db, format, account, since, until)
+
+    @app.delete("/api/sources/{account}")
+    def clear_account(account: str, db: str = Depends(get_db_path)) -> dict:
+        """口座（表示名）配下の全ソースIDの取引をまとめて削除する。"""
+        groups = _load_groups(db)
+        ledger = Ledger(db)
+        try:
+            all_ids = [src for src, *_ in ledger.sources()]
+        finally:
+            ledger.close()
+        source_ids = [s for s in all_ids if _display_name(s, groups) == account]
+        if not source_ids:
+            raise HTTPException(status_code=404, detail="口座が見つかりません")
+        ledger = Ledger(db)
+        try:
+            total = sum(ledger.clear(sid) for sid in source_ids)
+        finally:
+            ledger.close()
+        return {"ok": True, "deleted": total, "source_ids": source_ids}
+
+    @app.get("/api/account-apis")
+    def list_account_apis(db: str = Depends(get_db_path)) -> dict:
+        return _list_account_apis(db)
+
+    @app.post("/api/account-apis")
+    def register_account_api(body: dict[str, Any], db: str = Depends(get_db_path)) -> dict:
+        return _register_account_api(db, body)
+
+    @app.delete("/api/account-apis/{source_id}")
+    def delete_account_api(source_id: str, db: str = Depends(get_db_path)) -> dict:
+        return _delete_account_api(db, source_id)
+
+    @app.post("/api/account-apis/{source_id}/sync")
+    def sync_account_api(source_id: str, db: str = Depends(get_db_path)) -> dict:
+        return _sync_account_api(db, source_id)
+
+    @app.get("/api/wallets")
+    def list_wallets(db: str = Depends(get_db_path)) -> dict:
+        return _list_wallets(db)
+
+    @app.post("/api/wallets")
+    def register_wallet(body: dict[str, Any], db: str = Depends(get_db_path)) -> dict:
+        return _register_wallet(db, body)
+
+    @app.delete("/api/wallets/{source_id}")
+    def delete_wallet(source_id: str, db: str = Depends(get_db_path)) -> dict:
+        return _delete_wallet(db, source_id)
+
+    @app.post("/api/wallets/{source_id}/sync")
+    def sync_wallet(source_id: str, db: str = Depends(get_db_path)) -> dict:
+        return _sync_wallet(db, source_id, system_db=system_store_path())
+
+    @app.post("/api/sync-all")
+    def sync_all(db: str = Depends(get_db_path)) -> dict:
+        return _sync_all(db, system_db=system_store_path())
+
+    @app.get("/api/sync/pbr/status")
+    def pbr_sync_status(db: str = Depends(get_db_path)) -> dict:
+        return _pbr_sync_status(db)
+
+    @app.post("/api/sync/pbr")
+    def pbr_sync(body: dict[str, Any], db: str = Depends(get_db_path)) -> dict:
+        return _pbr_sync_run(db, body)
+
+    @app.post("/api/sync/pbr/purge")
+    def pbr_sync_purge(body: dict[str, Any], db: str = Depends(get_db_path)) -> dict:
+        return _pbr_purge(db, body)
+
+    # ファイル同期の相手登録。サーバー全体の設定なので管理者だけ。
+    @app.get("/api/sync/pbr/syncthing")
+    def pbr_syncthing(admin: dict = Depends(require_admin)) -> dict:
+        return _pbr_syncthing_overview()
+
+    @app.post("/api/sync/pbr/syncthing/pair")
+    def pbr_syncthing_pair(
+        body: dict[str, Any], admin: dict = Depends(require_admin)
+    ) -> dict:
+        return _pbr_syncthing_pair(body)
+
+    @app.post("/api/sync/pbr/syncthing/dismiss")
+    def pbr_syncthing_dismiss(
+        body: dict[str, Any], admin: dict = Depends(require_admin)
+    ) -> dict:
+        return _pbr_syncthing_dismiss(body)
+
+    @app.get("/api/system-keys")
+    def get_system_keys(admin: dict = Depends(require_admin)) -> dict:
+        return {
+            "providers": _system_key_status(system_store_path()),
+            "cs_secret_key": bool(os.environ.get("CS_SECRET_KEY")),
+            "multi_user": multi_user,
+            "admin_configured": (not multi_user) or bool(_admin_emails()),
+        }
+
+    @app.post("/api/system-keys")
+    def set_system_keys(
+        body: dict[str, Any], admin: dict = Depends(require_admin)
+    ) -> dict:
+        result = _set_system_keys(system_store_path(), body)
+        # キーを入れ替えたらプランも変わりうるので、覚えた対応状況は捨てる
+        _forget_unsupported_chains()
+        return result
+
+    @app.post("/api/system-keys/recheck-chains")
+    def recheck_chains(admin: dict = Depends(require_admin)) -> dict:
+        """プラン非対応として覚えたチェーンを忘れ、次の同期で確認し直す。"""
+        return {"ok": True, "cleared": _forget_unsupported_chains()}
+
+    @app.get("/api/admin-config")
+    def get_admin_config(admin: dict = Depends(require_admin)) -> dict:
+        """管理者設定の現在値を返す（シークレット類は設定済みかどうかのみ）。"""
+        cfg = _load_server_config(_base_dir)
+        return {
+            "multi_user": multi_user,
+            "base_url": os.environ.get("BASE_URL") or cfg.get("base_url") or "",
+            "admin_emails": os.environ.get("ADMIN_EMAILS") or cfg.get("admin_emails") or "",
+            "google_client_id": os.environ.get("GOOGLE_CLIENT_ID") or cfg.get("google_client_id") or "",
+            "google_client_id_set": bool(
+                os.environ.get("GOOGLE_CLIENT_ID") or cfg.get("google_client_id")
+            ),
+            "google_client_secret_set": bool(
+                os.environ.get("GOOGLE_CLIENT_SECRET") or cfg.get("google_client_secret")
+            ),
+            "cs_secret_key_set": bool(os.environ.get("CS_SECRET_KEY")),
+            "coingecko_api_key_set": bool(_coingecko_api_key()),
+            "providers": _system_key_status(system_store_path()),
+        }
+
+    @app.post("/api/admin-config")
+    def set_admin_config(
+        body: dict[str, Any], admin: dict = Depends(require_admin)
+    ) -> dict:
+        """管理者設定を保存する（SECRET_KEY / DATA_DIR 以外の全設定が対象）。"""
+        cfg = _load_server_config(_base_dir)
+        updated: list[str] = []
+        oauth_changed = False
+
+        if "admin_emails" in body:
+            val = (body["admin_emails"] or "").strip()
+            cfg["admin_emails"] = val
+            os.environ["ADMIN_EMAILS"] = val
+            updated.append("admin_emails")
+
+        if "base_url" in body:
+            val = (body["base_url"] or "").strip().rstrip("/")
+            cfg["base_url"] = val
+            os.environ["BASE_URL"] = val
+            updated.append("base_url")
+            oauth_changed = True
+
+        if "google_client_id" in body:
+            val = (body["google_client_id"] or "").strip()
+            if val:
+                cfg["google_client_id"] = val
+                os.environ["GOOGLE_CLIENT_ID"] = val
+                updated.append("google_client_id")
+                oauth_changed = True
+
+        if "google_client_secret" in body:
+            val = (body["google_client_secret"] or "").strip()
+            if val:
+                cfg["google_client_secret"] = val
+                os.environ["GOOGLE_CLIENT_SECRET"] = val
+                updated.append("google_client_secret")
+                oauth_changed = True
+
+        if "coingecko_api_key" in body:
+            val = (body["coingecko_api_key"] or "").strip()
+            cfg["coingecko_api_key"] = val
+            os.environ["COINGECKO_API_KEY"] = val
+            updated.append("coingecko_api_key")
+
+        if multi_user and oauth_changed:
+            try:
+                from .auth import reset_oauth_client
+                reset_oauth_client()
+            except Exception:  # noqa: BLE001
+                pass
+
+        _save_server_config(_base_dir, cfg)
+        return {"ok": True, "updated": updated}
+
+    @app.get("/api/account-groups")
+    def get_account_groups(db: str = Depends(get_db_path)) -> dict:
+        return _get_account_groups(db)
+
+    @app.put("/api/account-groups")
+    def put_account_groups(body: dict[str, Any], db: str = Depends(get_db_path)) -> dict:
+        groups = body.get("groups")
+        if not isinstance(groups, dict):
+            raise HTTPException(status_code=422, detail="groups must be an object")
+        for name, ids in groups.items():
+            if not isinstance(name, str) or not isinstance(ids, list):
+                raise HTTPException(status_code=422, detail="invalid groups format")
+        _save_groups(db, groups)
+        return {"ok": True, "groups": groups}
+
+    @app.get("/api/prefs")
+    def get_prefs(db: str = Depends(get_db_path)) -> dict:
+        return {"prefs": _load_prefs(db)}
+
+    @app.put("/api/prefs")
+    def put_prefs(body: dict[str, Any], db: str = Depends(get_db_path)) -> dict:
+        prefs = body.get("prefs")
+        if not isinstance(prefs, dict):
+            raise HTTPException(status_code=422, detail="prefs must be an object")
+        unknown = set(prefs) - set(_DEFAULT_PREFS)
+        if unknown:
+            raise HTTPException(
+                status_code=422, detail=f"unknown pref keys: {', '.join(sorted(unknown))}"
+            )
+        return {"ok": True, "prefs": _save_prefs(db, prefs)}
+
+    @app.get("/api/portfolio-history")
+    def portfolio_history(
+        currency: str = Query("USD"),
+        range: str = Query("90d"),
+        scope: str = Query("total"),
+        db: str = Depends(get_db_path_read),
+    ) -> dict:
+        return _portfolio_history(db, currency, range, scope)
+
+    @app.get("/api/balances")
+    def balances(
+        as_of: str | None = Query(None, description="YYYY-MM-DD。省略時は今日"),
+        scope: str = Query("total"),
+        db: str = Depends(get_db_path_read),
+    ) -> dict:
+        """指定日時点の資産別残高（数量のみ・価格なし）。
+
+        前日比の基準や「N日前との差」を組み立てるための素材。
+        """
+        return _balances_at(db, as_of, scope)
+
+    @app.get("/api/coin-icons")
+    def coin_icons() -> dict:
+        return fetch_coin_icons()
+
+    # ------------------------------------------------------------------
+    # 初回セットアップ（認証不要・設定完了後はロック）
+    # ------------------------------------------------------------------
+
+    def _oauth_in_env() -> bool:
+        return bool(
+            os.environ.get("GOOGLE_CLIENT_ID")
+            and os.environ.get("GOOGLE_CLIENT_SECRET")
+        )
+
+    @app.get("/api/setup-status")
+    def setup_status() -> dict:
+        return {
+            "needs_setup": _needs_first_run_setup(_base_dir),
+            "multi_user": multi_user,
+            # マルチユーザーで OAuth が未設定なら、ウィザードで入力が必要。
+            "oauth_in_env": _oauth_in_env(),
+            "base_url_in_env": bool(os.environ.get("BASE_URL")),
+        }
+
+    @app.get("/api/generate-key")
+    def generate_key() -> dict:
+        """新しい Fernet キーを生成して返す（セットアップ画面用）。"""
+        from ..core.secrets import generate_master_key
+        return {"key": generate_master_key()}
+
+    @app.post("/api/setup")
+    def do_setup(body: dict[str, Any]) -> dict:
+        """初回セットアップ: 各種設定を設定ファイルに保存する。
+
+        マルチユーザーで OAuth が env 未設定の場合は、
+        GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET / BASE_URL の入力が必須。
+        セットアップ完了後（ファイルが存在する状態）はこのエンドポイントは 403 を返す。
+        """
+        if not _needs_first_run_setup(_base_dir):
+            raise HTTPException(status_code=403, detail="セットアップは既に完了しています")
+
+        cs_key = (body.get("cs_secret_key") or "").strip()
+        admin_emails = (body.get("admin_emails") or "").strip()
+        google_client_id = (body.get("google_client_id") or "").strip()
+        google_client_secret = (body.get("google_client_secret") or "").strip()
+        base_url = (body.get("base_url") or "").strip().rstrip("/")
+        skipped = bool(body.get("skipped"))
+
+        # マルチユーザーで OAuth が未設定の場合は、ログイン不能になるのを防ぐため
+        # OAuth 情報を必須とし、スキップを禁止する。
+        oauth_required = multi_user and not _oauth_in_env()
+        if oauth_required:
+            if skipped:
+                raise HTTPException(
+                    status_code=422,
+                    detail="マルチユーザーモードでは Google OAuth の設定が必要です（スキップできません）。",
+                )
+            if not (google_client_id and google_client_secret and base_url):
+                raise HTTPException(
+                    status_code=422,
+                    detail="GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET / BASE_URL をすべて入力してください。",
+                )
+
+        if cs_key:
+            from cryptography.fernet import Fernet
+            try:
+                Fernet(cs_key.encode("ascii"))
+            except Exception:
+                raise HTTPException(status_code=422, detail="CS_SECRET_KEY の形式が正しくありません。「生成する」ボタンで生成したキーを使ってください。")
+
+        cfg: dict[str, Any] = {}
+        if cs_key:
+            cfg["cs_secret_key"] = cs_key
+            os.environ["CS_SECRET_KEY"] = cs_key  # 再起動なしに即反映
+        if admin_emails:
+            cfg["admin_emails"] = admin_emails
+            if not os.environ.get("ADMIN_EMAILS"):
+                os.environ["ADMIN_EMAILS"] = admin_emails
+        if google_client_id:
+            cfg["google_client_id"] = google_client_id
+            if not os.environ.get("GOOGLE_CLIENT_ID"):
+                os.environ["GOOGLE_CLIENT_ID"] = google_client_id
+        if google_client_secret:
+            cfg["google_client_secret"] = google_client_secret
+            if not os.environ.get("GOOGLE_CLIENT_SECRET"):
+                os.environ["GOOGLE_CLIENT_SECRET"] = google_client_secret
+        if base_url:
+            cfg["base_url"] = base_url
+            if not os.environ.get("BASE_URL"):
+                os.environ["BASE_URL"] = base_url
+        if skipped:
+            cfg["setup_skipped"] = True
+
+        # OAuth 設定を変更したので、キャッシュ済みクライアントを破棄する。
+        if multi_user and (google_client_id or google_client_secret):
+            try:
+                from .auth import reset_oauth_client
+                reset_oauth_client()
+            except Exception:  # noqa: BLE001
+                pass
+
+        _save_server_config(_base_dir, cfg)
+        return {"ok": True, "key_set": bool(cs_key)}
+
+    @app.get("/api/health")
+    def health() -> dict:
+        """死活監視用（認証不要）。
+
+        クラウドのヘルスチェックはログイン前に叩かれるので、認証を通さない。
+        個人情報は返さず、プロセスが応答できることだけを示す。
+        """
+        return {"status": "ok"}
+
+    @app.get("/api/meta")
+    def meta(request: Request) -> dict:
+        if multi_user:
+            user = request.session.get("user")
+            admin = is_admin_user(user)
+        else:
+            admin = True
+        return {
+            "currencies": list(SUPPORTED_CURRENCIES),
+            "multi_user": multi_user,
+            "is_admin": admin,
+            "needs_setup": _needs_first_run_setup(_base_dir),
+        }
+
+    @app.get("/")
+    def index(request: Request) -> HTMLResponse:
+        # 静的ファイル・API・認証リンクはすべて相対 URL で書いてあるので、
+        # ここで基準を与える。パスだけの base（スキームとホストを書かない）に
+        # するのが要点 — TLS 終端プロキシの内側ではリクエストが http に
+        # 見えるため、絶対 URL を入れると https のページから http を読みに
+        # いって mixed content で止まる。
+        base = (request.scope.get("root_path") or "") + "/"
+        html = (_STATIC_DIR / "index.html").read_text(encoding="utf-8").replace(
+            "<head>", f'<head>\n  <base href="{base}">', 1
+        )
+        return HTMLResponse(html, headers={"Cache-Control": "no-cache"})
+
+    @app.middleware("http")
+    async def _no_cache_static(request, call_next):
+        """静的アセット（index.html / /static/*）は常に再検証させる。"""
+        # パスは call_next の前に読む — StaticFiles の Mount はマッチ時に
+        # scope の root_path を "/static" ぶん伸ばして書き換えるため、
+        # 後から読むと _app_path が接頭辞を正しく外せない。
+        path = _app_path(request)
+        response = await call_next(request)
+        if path == "/" or path.startswith("/static"):
+            response.headers["Cache-Control"] = "no-cache"
+        return response
+
+    app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
+    return app
+
+
+# uvicorn / Docker 用のモジュールレベルアプリインスタンス。
+# DATA_DIR が設定されていればマルチユーザーモード、なければシングルユーザーモード。
+# Docker では未設定の変数も空文字で渡るため、空はシングルユーザー扱いにする
+# （空のまま通すと base_dir が "" のマルチユーザーとして起動してしまう）。
+_env_data_dir = os.environ.get("DATA_DIR", "").strip() or None
+_env_db_path = os.environ.get("DB_PATH", "").strip() or "ledger.db"
+app = create_app(
+    db_path=_env_db_path,
+    data_dir=_env_data_dir,
+)

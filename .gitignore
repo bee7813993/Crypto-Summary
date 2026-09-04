@@ -1,0 +1,70 @@
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# SQLite databases
+*.db
+*.sqlite
+
+# Environment / secrets
+# データディレクトリごと除外する。中には台帳のほかに、暗号化マスター鍵や
+# Google のクライアントシークレットを平文で持つ _server_config.json、
+# 口座設定・同期記録が入る。*.db だけの除外では取りこぼす。
+data/
+.env
+.env.*
+!.env.example
+*.secrets.json
+
+# 取引所からダウンロードした実際の取引履歴。アダプタ開発のため手元に置くのは
+# 構わないが、注文ID・オンチェーンのTXハッシュ・入出金額が入るのでコミットしない。
+samples/
+
+# このマシン固有の compose 設定（クローラーのパスなど）。
+# Compose が docker-compose.yml に自動で重ねる。
+docker-compose.override.yml
+
+# Output files
+out/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Claude Code internal worktrees
+.claude/
+
+# pytest
+.pytest_cache/.coverage
+htmlcov/
+pbr_lending_2026_manual.csv
+
+# --- 取りこぼし防止 ---
+# .env_ のような変種は .env / .env.* のどちらにも当たらない。
+.env*
+!.env.example
+# リポジトリ直下に置いた取引所エクスポートや作業ファイル。
+/*.csv
+/*.tsv
+/*.xlsx
+*.accounts.json
+debug_*.py
+.playwright-mcp/

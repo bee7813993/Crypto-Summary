@@ -1,0 +1,124 @@
+# クラウドのコンテナサービス向けの構成。
+#
+# ローカル版 (docker-compose.yml) との違い:
+#   - クローラー (PBRLending-History-Check) は含めない。
+#     クロールは PBR Lending への手動ログインが要る対話作業で、noVNC は
+#     口座にログイン済みブラウザの全操作権限を与えるため、クラウドに置かない。
+#     クローラーは手元で動かし、その outputs をファイル同期でここへ運ぶ。
+#   - ホストのディレクトリではなく名前付きボリュームを使う。
+#   - PBR_CRAWL_DIR をデータボリュームの中に置く。ファイル同期の宛先がここ。
+#
+# 使い方:
+#   docker compose -f docker-compose.cloud.yml up -d --build
+#
+# 実サービスへ載せる場合は、このファイルをそのまま使うのではなく
+# 「必要な設定の一覧」として読んでください（多くのサービスは compose を
+# 直接受け付けず、レジストリへ push したイメージとサービス定義を使います）。
+# 詳細は docs/deploy.md を参照。
+
+services:
+  app:
+    build: .
+    image: crypto-summary-app:latest
+    ports:
+      - "8000:8000"
+    volumes:
+      # 台帳・設定・セッション鍵・同期記録。バックアップ対象はここ。
+      - cs-data:/data
+      # 同期で届くファイル。ボリュームを分けているのは、同期サイドカーに
+      # 台帳を触らせないため（読むだけなので :ro）。
+      - pbr-outputs:/data/pbr-outputs:ro
+    environment:
+      # --- 必須 ---
+      # 公開 URL。OAuth のリダイレクト URI の組み立てと、全エントリが https の
+      # ときセッション Cookie に Secure を付ける判定に使う。カンマ区切りで
+      # 複数可（例 https://example.com/crypto,http://localhost:8000）。
+      - "BASE_URL=${BASE_URL:?公開URLを設定してください（例 https://cs.example.com — カンマ区切りで複数可）}"
+      # サブパス配信の接頭辞（例 /crypto）。未設定なら BASE_URL 先頭エントリの
+      # パス部分から決まるので、通常は書かなくてよい。
+      - CS_ROOT_PATH=${CS_ROOT_PATH:-}
+
+      # ログインの有無を決める。
+      #   DATA_DIR=/data  → マルチユーザー（Google ログイン必須）
+      #   DATA_DIR=（空） → シングルユーザー（ログイン無し。DB_PATH を使う）
+      #
+      # Google は localhost 以外のリダイレクト URI に http を認めないので、
+      # LAN の http://192.168.x.x:8000 でお試しする場合はシングルユーザーに
+      # する。その場合アプリは LAN 上の誰でも開けるので、信頼できる
+      # ネットワークに限ること。
+      - DATA_DIR=${DATA_DIR-/data}
+      - DB_PATH=${DB_PATH:-/data/ledger.db}
+      # セッション署名鍵。未設定なら /data/_session_key に自動生成される。
+      # 複数環境で同じセッションを使いたい場合だけ明示する。
+      - SECRET_KEY=${SECRET_KEY:-}
+
+      # --- ログイン（マルチユーザー） ---
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET:-}
+      - ADMIN_EMAILS=${ADMIN_EMAILS:-}
+
+      # --- API キーの暗号化マスター鍵 ---
+      - CS_SECRET_KEY=${CS_SECRET_KEY:-}
+
+      # --- 任意 ---
+      - COINGECKO_API_KEY=${COINGECKO_API_KEY:-}
+
+      # --- ウォレットのスキャン用キー（任意）---
+      # Web の「システム設定」に保存した値が優先され、未保存のときだけここが使われる。
+      - ETHERSCAN_API_KEY=${ETHERSCAN_API_KEY:-}
+      - HELIUS_API_KEY=${HELIUS_API_KEY:-}
+      - APTOS_API_KEY=${APTOS_API_KEY:-}
+
+      # --- PBR Lending 連携 ---
+      # ファイル同期でクローラーの outputs を運び込む先。
+      # 手元のクローラー側 outputs ディレクトリと同期させる。
+      - PBR_CRAWL_DIR=/data/pbr-outputs
+
+      # --- ファイル同期の相手登録（下の syncthing サービスを使う場合） ---
+      # 設定するとインポート画面から同期相手を登録できる（管理者のみ）。
+      # このキーは Syncthing 全体を操作できるので、手元の個人 Syncthing の
+      # ものではなく、下のサイドカー専用のキーを使うこと。
+      - SYNCTHING_URL=http://syncthing:8384
+      - SYNCTHING_API_KEY=${SYNCTHING_API_KEY:-}
+      # クローラーのビューアは手元にあるので、利用者のブラウザから見える URL。
+      # 手元で見るだけなら既定 (http://127.0.0.1:4173) のままでよい。
+      # ただしこのアプリを https で公開している場合、http の iframe は
+      # mixed content でブロックされる（「新しいタブで開く」は使える）。
+      - PBR_VIEWER_URL=${PBR_VIEWER_URL:-}
+    restart: unless-stopped
+
+  # 手元のクローラーから outputs を受け取る同期先。
+  # app とは pbr-outputs ボリュームだけを共有する（台帳には触らせない）。
+  # 同期が不要なら（rsync などを使う、手元だけで完結する）このサービスは消してよい。
+  syncthing:
+    image: syncthing/syncthing:latest
+    hostname: crypto-summary
+    environment:
+      # app からの API 操作に使う。docker compose 実行時に .env で渡す:
+      #   SYNCTHING_API_KEY=$(python -c "import secrets;print(secrets.token_hex(24))")
+      - STGUIAPIKEY=${SYNCTHING_API_KEY:?SYNCTHING_API_KEY を設定してください}
+      # 名前付きボリュームは root 所有で作られるため、イメージ既定の
+      # PUID=1000 のままだと証明書を書けずに起動に失敗する。
+      - PUID=0
+      - PGID=0
+    volumes:
+      # Syncthing 自身の設定・鍵。イメージが期待するマウント点は /var/syncthing。
+      - syncthing-config:/var/syncthing
+      # 同期フォルダ。app と同じパスに見せることで、アプリが作る
+      # フォルダ設定のパスがそのまま通る（SYNCTHING_FOLDER_PATH 不要）。
+      - pbr-outputs:/data/pbr-outputs
+    ports:
+      # 同期の待受。ここだけは外から到達できる必要がある（NAT 越えは
+      # Syncthing のリレー／穴あけが面倒を見る）。
+      - "22000:22000/tcp"
+      - "22000:22000/udp"
+      # ローカル探索。同一 LAN でないなら閉じてよい。
+      - "21027:21027/udp"
+      # GUI(8384) は公開しない。設定は app の画面から行う。
+      # コンテナ間は Host ヘッダ検査に引っかからない（GUI が 0.0.0.0 待受のため）。
+    restart: unless-stopped
+
+volumes:
+  cs-data:
+  pbr-outputs:
+  syncthing-config:
