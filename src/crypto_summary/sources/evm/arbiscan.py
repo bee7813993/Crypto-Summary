@@ -51,7 +51,8 @@ _NATIVE_SYMBOLS = frozenset({"ETH", "BNB", "MATIC", "POL"})
 # メソッド名で判別して label="bridge_out" にする（_process の分岐 7 参照）。
 # 照合は _norm_method() で正規化してから行うため、API の functionName
 # ("depositForBurn(uint256,...)") と Arbiscan CSV の Method 列 ("Deposit For Burn")
-# のどちらの表記でも一致する。ブリッジを追加するときはここにメソッド名を足すだけでよい。
+# のどちらの表記でも一致する。ブリッジを追加するときはここにメソッド名を足し、
+# 名前が解決されない可能性があれば BRIDGE_OUT_SELECTORS にセレクタも足す。
 BRIDGE_OUT_METHODS: frozenset[str] = frozenset({
     # Circle CCTP — TokenMessenger (v1 / v2)
     "depositForBurn",
@@ -65,6 +66,34 @@ BRIDGE_OUT_METHODS: frozenset[str] = frozenset({
     # Wormhole Portal Bridge — TokenBridgeRelayer（自動リレー）
     "transferTokensWithRelay",
     "wrapAndTransferEthWithRelay",
+})
+
+# メソッド名が取れないときのための 4 バイトセレクタ（methodId）。
+# Etherscan の txlist は、コントラクトが未検証のときはもちろん、検証済みでも
+# タプル引数を持つ関数などで functionName を空で返すことがある。その場合
+# _method_name() は methodId（"0xd01cbba9"）を返し、エクスプローラの CSV の
+# Method 列も同じ表記になるので、名前だけでなくセレクタでも照合する。
+# 実例: Portal Bridge の CCTPv2WithExecutor（Ethereum
+# 0xdd68aba3e04cb1a05082402b9325753314803005、検証済み）経由の USDC 送信は
+# functionName が空で返り、名前照合だけでは lp_add に落ちていた。
+BRIDGE_OUT_SELECTORS: frozenset[str] = frozenset({
+    # Circle CCTP — TokenMessenger v1
+    "0x6fd3504e",  # depositForBurn(uint256,uint32,bytes32,address)
+    "0xf856ddb6",  # depositForBurnWithCaller(uint256,uint32,bytes32,address,bytes32)
+    # Circle CCTP — TokenMessengerV2
+    "0x8e0250ee",  # depositForBurn(uint256,uint32,bytes32,address,bytes32,uint256,uint32)
+    "0x779b432d",  # depositForBurnWithHook(uint256,uint32,bytes32,address,bytes32,uint256,uint32,bytes)
+    # Wormhole Portal Bridge — CCTPv2WithExecutor（CCTP v2 + Executor による自動リレー）
+    "0xd01cbba9",  # depositForBurn(uint256,uint16,uint32,bytes32,address,bytes32,uint256,uint32,
+                   #                (address,bytes,bytes),(uint256,uint256,address))
+    # Wormhole Portal Bridge — TokenBridge
+    "0x0f5287b0",  # transferTokens(address,uint256,uint16,bytes32,uint256,uint32)
+    "0xc5a5ebda",  # transferTokensWithPayload(address,uint256,uint16,bytes32,uint32,bytes)
+    "0x9981509f",  # wrapAndTransferETH(uint16,bytes32,uint256,uint32)
+    "0xbee9cdfc",  # wrapAndTransferETHWithPayload(uint16,bytes32,uint32,bytes)
+    # Wormhole Portal Bridge — TokenBridgeRelayer
+    "0x1019d654",  # transferTokensWithRelay(address,uint256,uint256,uint16,bytes32,uint32)
+    "0x29ac8361",  # wrapAndTransferEthWithRelay(uint256,uint16,bytes32,uint32)
 })
 
 
@@ -123,11 +152,17 @@ def _norm_method(method: str) -> str:
     return re.sub(r"[\s_]+", "", method.split("(", 1)[0]).lower()
 
 
-_BRIDGE_OUT_METHODS_NORM = frozenset(_norm_method(m) for m in BRIDGE_OUT_METHODS)
+_BRIDGE_OUT_METHODS_NORM = frozenset(
+    _norm_method(m) for m in BRIDGE_OUT_METHODS | BRIDGE_OUT_SELECTORS
+)
 
 
 def _is_bridge_out_method(method: str) -> bool:
-    """Method 列 / functionName が既知のブリッジ送信メソッド (BRIDGE_OUT_METHODS) か。"""
+    """Method 列 / functionName / methodId が既知のブリッジ送信メソッドか。
+
+    メソッド名 (BRIDGE_OUT_METHODS) と 4 バイトセレクタ (BRIDGE_OUT_SELECTORS) の
+    どちらでも一致する。
+    """
     return _norm_method(method) in _BRIDGE_OUT_METHODS_NORM
 
 
