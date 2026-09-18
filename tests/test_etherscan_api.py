@@ -428,3 +428,62 @@ def test_no_transactions_is_not_retried(monkeypatch):
     src = EtherscanApiSource("eth", WALLET, "KEY", 1)
     assert src._request("txlist", 0) == []
     assert len(calls) == 1
+
+
+def test_bridge_out_by_selector_when_function_name_empty():
+    """functionName が空でも methodId（4 バイトセレクタ）が既知なら bridge_out。
+
+    Portal Bridge の CCTPv2WithExecutor 経由の送信は、コントラクトが検証済みでも
+    Etherscan の txlist が functionName を空で返す（実例: Ethereum
+    0xdd68aba3e04cb1a05082402b9325753314803005、methodId 0xd01cbba9）。
+    _method_name() は methodId にフォールバックするので、セレクタで照合する。
+    """
+    src = FakeEtherscan({
+        "txlist": [{
+            "hash": "0x08", "timeStamp": "1789647527",  # 2026-09-17 02:18:47 UTC
+            "from": WALLET, "to": "0xdd68aba3e04cb1a05082402b9325753314803005",
+            "value": "90512240415280",  # 0.00009051224041528 ETH（Executor 手数料）
+            "gasUsed": "180000", "gasPrice": "100000000",
+            "isError": "0",
+            "functionName": "",
+            "methodId": "0xd01cbba9",
+        }],
+        "tokentx": [{
+            "hash": "0x08", "timeStamp": "1789647527",
+            "from": WALLET, "to": "0xdd68aba3e04cb1a05082402b9325753314803005",
+            "value": "505247212", "tokenDecimal": "6",  # 505.247212 USDC
+            "contractAddress": USDC, "tokenName": "USD Coin", "tokenSymbol": "USDC",
+        }],
+    })
+    txs = src.fetch_all(record_gas=False)
+    assert len(txs) == 2
+    assert {t.label for t in txs} == {"bridge_out"}
+    assert {t.type for t in txs} == {TxType.TRANSFER}
+    usdc = next(t for t in txs if t.sent_asset == "USDC")
+    assert usdc.sent_amount == Decimal("505.247212")
+    eth = next(t for t in txs if t.sent_asset == "ETH")
+    assert eth.sent_amount == Decimal("0.00009051224041528")
+
+
+def test_unknown_selector_stays_lp_add():
+    """functionName が空で methodId も未知なら従来どおり lp_add。"""
+    src = FakeEtherscan({
+        "txlist": [{
+            "hash": "0x09", "timeStamp": "1789647527",
+            "from": WALLET, "to": OTHER,
+            "value": "300000000000000",
+            "gasUsed": "180000", "gasPrice": "100000000",
+            "isError": "0",
+            "functionName": "",
+            "methodId": "0x12345678",
+        }],
+        "tokentx": [{
+            "hash": "0x09", "timeStamp": "1789647527",
+            "from": WALLET, "to": OTHER,
+            "value": "1000000", "tokenDecimal": "6",
+            "contractAddress": USDC, "tokenName": "USD Coin", "tokenSymbol": "USDC",
+        }],
+    })
+    txs = src.fetch_all(record_gas=False)
+    assert len(txs) == 2
+    assert {t.label for t in txs} == {"lp_add"}

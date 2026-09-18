@@ -266,7 +266,7 @@ def test_bridge_out_method_forms(method):
 
 @pytest.mark.parametrize("method", [
     "", "Multicall", "addLiquidity", "Add Liquidity ETH", "Transfer",
-    "0x6fd3504e",  # 未検証コントラクトで Method 列がセレクタのままの場合
+    "0x12345678",  # 未知のセレクタ（既知のものは BRIDGE_OUT_SELECTORS で一致させる）
 ])
 def test_non_bridge_methods_not_matched(method):
     assert not _is_bridge_out_method(method)
@@ -483,3 +483,29 @@ def test_native_asset_polygon_fee(tmp_path):
     assert fee.fee_asset == "MATIC"
     withdraw = next(t for t in txs if t.type == TxType.WITHDRAW)
     assert withdraw.sent_asset == "MATIC"
+
+
+def test_bridge_out_selector_in_method_column(tmp_path):
+    """CSV の Method 列がセレクタ表記（"0xd01cbba9"）でも bridge_out。
+
+    エクスプローラがメソッド名を解決できないと Method 列には methodId が入る。
+    """
+    h = _hash(83)
+    n = _normal(tmp_path,
+        f'"{h}","1","1","2026-09-17 02:18:47","{WALLET}","{OTHER}","","0","0.00009","0","0.00001","0.04","4000","","","0xd01cbba9"')
+    e = _erc20(tmp_path,
+        f'"{h}","1","1","2026-09-17 02:18:47","{WALLET}","{OTHER}","505.247212","$505","{USDC_ADDR}","USD Coin","USDC"')
+    txs = _src().load_multi(n, e)
+    assert len(txs) == 2
+    assert {tx.label for tx in txs} == {"bridge_out"}
+    assert {tx.type for tx in txs} == {TxType.TRANSFER}
+
+
+def test_is_bridge_out_method_accepts_selectors():
+    """既知セレクタは大文字小文字を問わず一致し、未知セレクタ・空文字は一致しない。"""
+    assert _is_bridge_out_method("0xd01cbba9")
+    assert _is_bridge_out_method("0xD01CBBA9")
+    assert _is_bridge_out_method("0x6fd3504e")  # CCTP v1 depositForBurn
+    assert _is_bridge_out_method("0x1019d654")  # Portal transferTokensWithRelay
+    assert not _is_bridge_out_method("0x12345678")
+    assert not _is_bridge_out_method("")
