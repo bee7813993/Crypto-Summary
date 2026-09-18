@@ -41,6 +41,22 @@ def test_upsert_is_idempotent(ledger):
     assert ledger.count() == 1
 
 
+def test_upsert_updates_label_and_tx_hash_on_conflict(ledger):
+    """同じ id で label / tx_hash が変わって再投入されたら上書きされる。
+
+    ソース側の分類変更（例: ブリッジ送信を lp_add → bridge_out）は id を
+    変えないため、衝突時に label を上書きしないと再同期で既存行に反映されない。
+    """
+    tx = _tx("1")
+    ledger.upsert(tx.model_copy(update={"label": "lp_add", "tx_hash": None}))
+    ledger.upsert(tx.model_copy(update={"label": "bridge_out", "tx_hash": "0xabc"}))
+
+    assert ledger.count() == 1
+    row = ledger.all()[0]
+    assert row.label == "bridge_out"
+    assert row.tx_hash == "0xabc"
+
+
 def test_upsert_many(ledger):
     txs = [_tx(str(i)) for i in range(1, 6)]
     ledger.upsert_many(txs)
@@ -384,6 +400,24 @@ def test_replace_windows_is_idempotent(ledger):
     assert ledger.count("pbr_crawl") == 2
     # 古いバッチは prune され常に 1 件
     assert [b["id"] for b in ledger.list_import_batches()] == ["b2"]
+
+
+def test_replace_windows_updates_label_on_conflict(ledger):
+    """窓外に同じ id の行が残っていても、再投入で label / tx_hash は上書きされる。"""
+    old = _dated_tx(1, source="pbr_crawl").model_copy(update={"label": "lp_add"})
+    ledger.upsert(old)                                # 窓外: 消えずに衝突する
+    fresh = [old.model_copy(update={"label": "bridge_out", "tx_hash": "0xabc"})]
+
+    stats = ledger.replace_windows(
+        [(["pbr_crawl"], _W_START, _W_END)], fresh,
+        batch_id="b1", source="pbr_crawl", exchange="pbr_crawl",
+        filename="crawl.json",
+    )
+
+    assert stats == {"deleted": 0, "inserted": 0, "parsed": 1}
+    row = ledger.all(source="pbr_crawl")[0]
+    assert row.label == "bridge_out"
+    assert row.tx_hash == "0xabc"
 
 
 def test_replace_windows_rolls_back_on_failure(ledger):

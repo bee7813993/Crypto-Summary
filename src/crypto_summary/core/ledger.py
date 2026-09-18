@@ -86,6 +86,10 @@ class Ledger:
     # ------------------------------------------------------------------
 
     def upsert(self, tx: CanonicalTx) -> None:
+        # 衝突時は label / tx_hash も上書きする。ソース側の分類変更は id を変えない
+        # ため、ここで上書きしないと再同期しても既存行に反映されない。label を UI
+        # から編集する経路は無いので利用者の編集を壊す心配は無い（手動追加行は
+        # id の manual: 接頭辞で識別しており label には依存しない）。
         self._conn.execute(
             """
             INSERT INTO transactions VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
@@ -97,6 +101,8 @@ class Ledger:
                 sent_amount     = excluded.sent_amount,
                 fee_asset       = excluded.fee_asset,
                 fee_amount      = excluded.fee_amount,
+                label           = excluded.label,
+                tx_hash         = excluded.tx_hash,
                 raw             = excluded.raw
             """,
             (
@@ -306,6 +312,8 @@ class Ledger:
                     sent_amount     = excluded.sent_amount,
                     fee_asset       = excluded.fee_asset,
                     fee_amount      = excluded.fee_amount,
+                    label           = excluded.label,
+                    tx_hash         = excluded.tx_hash,
                     raw             = excluded.raw
                 """,
                 [
