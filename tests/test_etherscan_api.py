@@ -11,6 +11,7 @@ WALLET = "0xaabbccdd00000000000000000000000000000002"
 OTHER = "0xaabbccdd00000000000000000000000000000001"
 WBTC = "0x2f2a2543b76a4166549f7aab2e75bef0aefc5b0f"
 WETH = "0x82af49447d8a07e3bd95bd0d56f35241523fbab1"
+USDC = "0xaf88d065e77c8cc2239327c5edb3a432268e5831"
 
 
 class FakeEtherscan(EtherscanApiSource):
@@ -165,6 +166,76 @@ def test_reverted_tx_with_token_recorded():
     wd = [t for t in txs if t.type == TxType.WITHDRAW]
     assert len(wd) == 1
     assert wd[0].sent_asset == "SOLVBTC"
+
+
+def test_cctp_deposit_for_burn_is_bridge_out():
+    """CCTP 送信（USDC + ETH リレイヤー手数料、受取なし）は lp_add ではなく bridge_out。
+
+    functionName "depositForBurn(uint256,uint32,bytes32,address)" から
+    _method_name() でメソッド名を取り出し、既知ブリッジメソッドと照合する。
+    TxType は TRANSFER のまま、資産ごとの行も lp_add と同じ構成。
+    """
+    src = FakeEtherscan({
+        "txlist": [{
+            "hash": "0x06", "timeStamp": "1788948000",  # 2026-09-09 10:00 UTC
+            "from": WALLET, "to": OTHER,
+            "value": "300000000000000",  # 0.0003 ETH（リレイヤー手数料）
+            "gasUsed": "150000", "gasPrice": "100000000",
+            "isError": "0",
+            "functionName": "depositForBurn(uint256,uint32,bytes32,address)",
+            "methodId": "0x6fd3504e",
+        }],
+        "tokentx": [{
+            "hash": "0x06", "timeStamp": "1788948000",
+            "from": WALLET, "to": OTHER,
+            "value": "212851555", "tokenDecimal": "6",  # 212.851555 USDC
+            "contractAddress": USDC, "tokenName": "USD Coin", "tokenSymbol": "USDC",
+        }],
+    })
+    txs = src.fetch_all(record_gas=False)
+    assert len(txs) == 2
+    assert {t.label for t in txs} == {"bridge_out"}
+    assert {t.type for t in txs} == {TxType.TRANSFER}
+    usdc = next(t for t in txs if t.sent_asset == "USDC")
+    assert usdc.sent_amount == Decimal("212.851555")
+    eth = next(t for t in txs if t.sent_asset == "ETH")
+    assert eth.sent_amount == Decimal("0.0003")
+
+
+def test_add_liquidity_stays_lp_add():
+    """通常の addLiquidity（トークン 2 種を送出、受取なし）は引き続き lp_add。"""
+    src = FakeEtherscan({
+        "txlist": [{
+            "hash": "0x07", "timeStamp": "1759062315",
+            "from": WALLET, "to": OTHER, "value": "0",
+            "gasUsed": "200000", "gasPrice": "100000000",
+            "isError": "0",
+            "functionName": (
+                "addLiquidity(address,address,uint256,uint256,"
+                "uint256,uint256,address,uint256)"
+            ),
+            "methodId": "0xe8e33700",
+        }],
+        "tokentx": [
+            {
+                "hash": "0x07", "timeStamp": "1759062315",
+                "from": WALLET, "to": OTHER,
+                "value": "1000000000", "tokenDecimal": "6",  # 1000 USDC
+                "contractAddress": USDC, "tokenName": "USD Coin", "tokenSymbol": "USDC",
+            },
+            {
+                "hash": "0x07", "timeStamp": "1759062315",
+                "from": WALLET, "to": OTHER,
+                "value": "250000000000000000", "tokenDecimal": "18",  # 0.25 WETH
+                "contractAddress": WETH, "tokenName": "Wrapped Ether", "tokenSymbol": "WETH",
+            },
+        ],
+    })
+    txs = src.fetch_all(record_gas=False)
+    assert len(txs) == 2
+    assert {t.label for t in txs} == {"lp_add"}
+    assert {t.type for t in txs} == {TxType.TRANSFER}
+    assert {t.sent_asset for t in txs} == {"USDC", "WETH"}
 
 
 def test_empty_result():

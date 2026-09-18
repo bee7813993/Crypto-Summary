@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from crypto_summary.sources.evm.arbiscan import ArbiscanCsvSource
+from crypto_summary.sources.evm.arbiscan import ArbiscanCsvSource, _is_bridge_out_method
 from crypto_summary.core.models import TxType
 
 WALLET = "0xaabbccdd00000000000000000000000000000002"
@@ -12,6 +12,7 @@ OTHER = "0xaabbccdd00000000000000000000000000000001"
 ZERO = "0x0000000000000000000000000000000000000000"
 WBTC = "0x2f2a2543b76a4166549f7aab2e75bef0aefc5b0f"
 WETH_ADDR = "0x82af49447d8a07e3bd95bd0d56f35241523fbab1"
+USDC_ADDR = "0xaf88d065e77c8cc2239327c5edb3a432268e5831"
 
 NORMAL_HEADER = (
     '"Transaction Hash","Blockno","UnixTimestamp","DateTime (UTC)",'
@@ -198,6 +199,77 @@ def test_lp_add(tmp_path):
     assert types == {TxType.TRANSFER}
     assets = {tx.sent_asset for tx in txs}
     assert assets == {"ETH", "WBTC"}
+
+
+# ── 8b. ブリッジ送信（トークン + ETH リレイヤー手数料を送出、受取なし）──
+#
+# CCTP depositForBurn / Portal Bridge transferTokensWithRelay は LP 追加と同じ
+# 「複数資産送出・受取なし」の形になるため、メソッド名で判別して bridge_out にする。
+
+def test_cctp_deposit_for_burn_is_bridge_out(tmp_path):
+    """CSV の Method 列 "Deposit For Burn" → bridge_out（TxType・行構成は lp_add と同じ）。"""
+    h = _hash(80)
+    n = _normal(tmp_path,
+        f'"{h}","1","1","2026-09-09 10:00:00","{WALLET}","{OTHER}","","0","0.0003","0","0.00001","0.04","4000","","","Deposit For Burn"')
+    e = _erc20(tmp_path,
+        f'"{h}","1","1","2026-09-09 10:00:00","{WALLET}","{OTHER}","212.851555","$212","{USDC_ADDR}","USD Coin","USDC"')
+    txs = _src().load_multi(n, e)
+    # ETH TRANSFER + USDC TRANSFER（残高計算は lp_add のときと変わらない）
+    assert len(txs) == 2
+    assert {tx.label for tx in txs} == {"bridge_out"}
+    assert {tx.type for tx in txs} == {TxType.TRANSFER}
+    assert {tx.sent_asset for tx in txs} == {"ETH", "USDC"}
+    usdc = next(tx for tx in txs if tx.sent_asset == "USDC")
+    assert usdc.sent_amount == Decimal("212.851555")
+    assert all(tx.tx_hash == h for tx in txs)
+
+
+def test_portal_bridge_transfer_with_relay_is_bridge_out(tmp_path):
+    """Portal Bridge (Wormhole) の "Transfer Tokens With Relay" も bridge_out。"""
+    h = _hash(81)
+    n = _normal(tmp_path,
+        f'"{h}","1","1","2026-09-17 09:00:00","{WALLET}","{OTHER}","","0","0.0005","0","0.00001","0.04","4000","","","Transfer Tokens With Relay"')
+    e = _erc20(tmp_path,
+        f'"{h}","1","1","2026-09-17 09:00:00","{WALLET}","{OTHER}","505.247212","$505","{USDC_ADDR}","USD Coin","USDC"')
+    txs = _src().load_multi(n, e)
+    assert len(txs) == 2
+    assert {tx.label for tx in txs} == {"bridge_out"}
+    assert {tx.type for tx in txs} == {TxType.TRANSFER}
+
+
+def test_add_liquidity_stays_lp_add(tmp_path):
+    """通常の Add Liquidity（ETH + トークン送出）は引き続き lp_add。"""
+    h = _hash(82)
+    n = _normal(tmp_path,
+        f'"{h}","1","1","2025-09-28 12:00:00","{WALLET}","{OTHER}","","0","0.565","0","0.0001","0.1","4000","","","Add Liquidity ETH"')
+    e = _erc20(tmp_path,
+        f'"{h}","1","1","2025-09-28 12:00:00","{WALLET}","{OTHER}","0.00716","$786","{WBTC}","Wrapped BTC","WBTC"')
+    txs = _src().load_multi(n, e)
+    assert len(txs) == 2
+    assert {tx.label for tx in txs} == {"lp_add"}
+    assert {tx.type for tx in txs} == {TxType.TRANSFER}
+
+
+@pytest.mark.parametrize("method", [
+    "depositForBurn",                                  # API: _method_name() 後
+    "depositForBurn(uint256,uint32,bytes32,address)",  # API: 生の functionName
+    "Deposit For Burn",                                # CSV: Arbiscan の Method 列
+    "Deposit For Burn With Caller",
+    "transferTokens",
+    "transferTokensWithRelay",
+    "Transfer Tokens With Payload",
+])
+def test_bridge_out_method_forms(method):
+    """API / CSV どちらの表記でも既知ブリッジメソッドとして一致する。"""
+    assert _is_bridge_out_method(method)
+
+
+@pytest.mark.parametrize("method", [
+    "", "Multicall", "addLiquidity", "Add Liquidity ETH", "Transfer",
+    "0x6fd3504e",  # 未検証コントラクトで Method 列がセレクタのままの場合
+])
+def test_non_bridge_methods_not_matched(method):
+    assert not _is_bridge_out_method(method)
 
 
 # ── 9. LP 撤退（WBTC + 内部 ETH を受取）─────────────────────────────
