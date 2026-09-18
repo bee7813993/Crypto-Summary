@@ -12,6 +12,7 @@ Arbiscan (arbiscan.io) や Etherscan (etherscan.io) でエクスポートした
   WITHDRAW : 純 ETH 送出 / 単一トークン送出
   TRADE    : ETH⇔Token / Token⇔Token スワップ・ETH Wrap
   TRANSFER : LP 流動性追加 (lp_add) / 撤退 (lp_remove) — 複数資産が同時移動
+             ブリッジ送信 (bridge_out) — 既知ブリッジメソッドによる複数資産送出
   FEE      : ガス代 (--record-gas 指定時のみ)
 
 スパムトークン (ERC-20 TOKEN* / ERC20 ***) と失敗取引は自動スキップ。
@@ -43,6 +44,28 @@ _PHISHING_RE = re.compile(
 
 # ネイティブ通貨シンボルと同名の ERC20 トークンは残高を汚染しないよう改名する
 _NATIVE_SYMBOLS = frozenset({"ETH", "BNB", "MATIC", "POL"})
+
+# クロスチェーンブリッジの送信メソッド。
+# これらは 1 トランザクションで「トークン送出 + ネイティブ通貨（リレイヤー手数料）
+# 送出、受取なし」となり、LP 流動性追加（複数資産の同時送出）と形が同じになる。
+# メソッド名で判別して label="bridge_out" にする（_process の分岐 7 参照）。
+# 照合は _norm_method() で正規化してから行うため、API の functionName
+# ("depositForBurn(uint256,...)") と Arbiscan CSV の Method 列 ("Deposit For Burn")
+# のどちらの表記でも一致する。ブリッジを追加するときはここにメソッド名を足すだけでよい。
+BRIDGE_OUT_METHODS: frozenset[str] = frozenset({
+    # Circle CCTP — TokenMessenger (v1 / v2)
+    "depositForBurn",
+    "depositForBurnWithCaller",
+    "depositForBurnWithHook",
+    # Wormhole Portal Bridge — TokenBridge
+    "transferTokens",
+    "transferTokensWithPayload",
+    "wrapAndTransferETH",
+    "wrapAndTransferETHWithPayload",
+    # Wormhole Portal Bridge — TokenBridgeRelayer（自動リレー）
+    "transferTokensWithRelay",
+    "wrapAndTransferEthWithRelay",
+})
 
 
 def _d(v: str) -> Decimal:
@@ -89,6 +112,23 @@ def _is_bridge_artifact(r: dict) -> bool:
         return False
     contract = (r.get("ContractAddress") or "").lower()
     return bool(contract and contract != _ZERO_ADDR)
+
+
+def _norm_method(method: str) -> str:
+    """Method 列 / functionName をメソッド名同士で比較できる形に正規化する。
+
+    "depositForBurn(uint256,uint32,bytes32,address)" / "Deposit For Burn"
+    → "depositforburn"（引数リストを落とし、空白・アンダースコアを除いて小文字化）
+    """
+    return re.sub(r"[\s_]+", "", method.split("(", 1)[0]).lower()
+
+
+_BRIDGE_OUT_METHODS_NORM = frozenset(_norm_method(m) for m in BRIDGE_OUT_METHODS)
+
+
+def _is_bridge_out_method(method: str) -> bool:
+    """Method 列 / functionName が既知のブリッジ送信メソッド (BRIDGE_OUT_METHODS) か。"""
+    return _norm_method(method) in _BRIDGE_OUT_METHODS_NORM
 
 
 def _erc20_sym(r: dict) -> str:
@@ -306,21 +346,26 @@ class ArbiscanCsvSource:
             ))
             return results
 
-        # ── 7. LP 流動性追加（複数資産を送出）───────────────────────
-        # ETH + トークン、またはトークン2種以上を同時送出
+        # ── 7. 複数資産を送出（受取なし）───────────────────────────
+        # ETH + トークン、またはトークン2種以上を同時送出 → LP 流動性追加 (lp_add)。
+        # ただし CCTP depositForBurn / Portal Bridge transferTokensWithRelay 等の
+        # ブリッジ送信も「トークン + ネイティブ通貨のリレイヤー手数料」で同じ形に
+        # なるため、既知メソッド (BRIDGE_OUT_METHODS) なら bridge_out にする。
+        # TxType (TRANSFER) と資産ごとの行構成は共通で、残高計算は変わらない。
         total_out = len(t_sent) + (1 if eth_out > _DUST else 0)
         if total_out >= 2 and not t_recv and int_eth_in <= _DUST:
+            label = "bridge_out" if _is_bridge_out_method(method) else "lp_add"
             if eth_out > _DUST:
                 results.append(self._tx(
                     tx_hash + "|eth", ts, TxType.TRANSFER,
                     sent_asset=na, sent_amount=eth_out,
-                    label="lp_add", tx_hash=tx_hash,
+                    label=label, tx_hash=tx_hash,
                 ))
             for i, (sym, amt) in enumerate(t_sent):
                 results.append(self._tx(
                     tx_hash + f"|t{i}", ts, TxType.TRANSFER,
                     sent_asset=sym, sent_amount=amt,
-                    label="lp_add", tx_hash=tx_hash,
+                    label=label, tx_hash=tx_hash,
                 ))
             return results
 
