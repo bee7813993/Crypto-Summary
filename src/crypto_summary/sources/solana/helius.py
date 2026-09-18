@@ -10,8 +10,17 @@ API キー権限:
   https://dev.helius.xyz で無料発行し、.env の HELIUS_API_KEY に設定。
 
 取得エンドポイント:
-  GET /v0/addresses/{address}/transactions
-    — SOL / SPL トークンの転送がパース済みで返る（nativeTransfers / tokenTransfers）
+  GET /v0/addresses/{address}/transactions?token-accounts=balanceChanged
+    — SOL / SPL トークンの転送がパース済みで返る（nativeTransfers / tokenTransfers）。
+      各アカウントの残高変化（accountData[].tokenBalanceChanges）も付く。
+    — token-accounts を付けないと「ウォレット本体の公開鍵が account keys に
+      含まれる取引」しか返らない。SPL トークンはウォレット本体ではなく
+      トークンアカウント（ATA）で受け取るため、既存 ATA への入金や、
+      リレイヤーが送信して ATA へ直接 mint するブリッジ受取
+      （Portal Bridge / CCTP の receiveMessage、Wormhole の完了処理など）が
+      丸ごと落ち、出金だけが記録されて残高がマイナスになる。
+      balanceChanged はウォレット所有トークンアカウントの残高が動いた取引を
+      すべて含める（all は残高の動かない参照のみの取引まで含むので不要）。
   POST / (RPC getAssetBatch)
     — トークンミント → シンボル / 名称の解決（DAS API）
 
@@ -40,6 +49,8 @@ _PAGE_SIZE = 100
 _RATE_LIMIT_SLEEP = 0.15   # Helius 無料枠 ≈ 10 req/s。余裕を見て送出する。
 _MAX_PAGES = 500            # 100 件 × 500 ページ = 最大 50,000 件
 _DAS_BATCH = 1000          # getAssetBatch は 1 リクエストで最大 1000 ミント
+# ウォレット所有トークンアカウントの残高が動いた取引も履歴に含める（モジュール docstring 参照）
+_TOKEN_ACCOUNTS_MODE = "balanceChanged"
 
 # Wrapped SOL mint。nativeTransfers と tokenTransfers 両方に現れるので SOL に統合して扱う。
 # ラップ操作では (1) native SOL → WSOLトークンアカウント と (2) WSOL token transfer が
@@ -118,12 +129,7 @@ class HeliusApiSource:
     def fetch_all(self, record_gas: bool = True) -> list[CanonicalTx]:
         """全取引履歴を取得して CanonicalTx リストを返す。"""
         records = self._fetch_all_pages()
-        mints = {
-            tt.get("mint", "")
-            for tx in records
-            for tt in (tx.get("tokenTransfers") or [])
-            if tt.get("mint")
-        }
+        mints = {m for tx in records for m in self._token_flows(tx) if m}
         meta = self._resolve_symbols(sorted(mints))
         return self._build(records, meta, record_gas)
 
@@ -133,7 +139,11 @@ class HeliusApiSource:
 
     def _request(self, before: str | None) -> list[dict[str, Any]]:
         """1 ページ分の取引（降順）を HTTP で取得する。"""
-        params: dict[str, Any] = {"api-key": self.api_key, "limit": _PAGE_SIZE}
+        params: dict[str, Any] = {
+            "api-key": self.api_key,
+            "limit": _PAGE_SIZE,
+            "token-accounts": _TOKEN_ACCOUNTS_MODE,
+        }
         if before:
             params["before"] = before
         time.sleep(_RATE_LIMIT_SLEEP)
@@ -243,17 +253,32 @@ class HeliusApiSource:
         is_payer = tx.get("feePayer") == self.wallet
         fee_sol = _d(tx.get("fee", 0)) / _LAMPORTS
 
+        results: list[CanonicalTx] = []
+
+        # ガス（オプション、fee payer のみ）
+        if record_gas and is_payer and fee_sol > _ZERO:
+            results.append(self._tx(
+                sig + "|gas", ts, TxType.FEE,
+                fee_asset="SOL", fee_amount=fee_sol, label="gas", tx_hash=sig,
+            ))
+
+        # 失敗した取引は手数料だけ消費して資産は動かない
+        # （パース済みの転送が残っていても実行されていない）。
+        if tx.get("transactionError"):
+            return results
+
         # 資産ごとの正味フロー（+ = 受取 / − = 送出）を集計する。
-        # nativeTransfers / tokenTransfers はプログラムレベルの実移動なので、
-        # スワップの差額（おつり）も自動的に相殺される。
+        # nativeTransfers と SPL トークンの残高変化（_token_flows）は実際の資産移動
+        # なので、スワップの差額（おつり）も自動的に相殺される。
         #
         # WSOL（Wrapped SOL）の扱い:
         #   Solana ではウォレットの実 SOL 残高変動は nativeTransfers がすべて記録する。
         #   SOL→WSOL ラップは「WALLET → WSOLトークンアカウント」のネイティブ転送として
         #   現れ（WSOLアカウントは別アドレス）、アンラップ／返却も同様にネイティブ転送になる。
-        #   一方 WSOL の tokenTransfers はトークンアカウント間の移動で、その裏付け SOL は
-        #   既にネイティブ転送で計上済み。両方数えると二重計上になるため、
-        #   WSOL の tokenTransfers は無視し、nativeTransfers だけで SOL を追跡する。
+        #   一方 WSOL のトークンフロー（残高変化 / tokenTransfers）はトークンアカウント
+        #   間の移動で、その裏付け SOL は既にネイティブ転送で計上済み。両方数えると
+        #   二重計上になるため、WSOL のトークンフローは無視し、nativeTransfers だけで
+        #   SOL を追跡する。
         flows: dict[str, Decimal] = {}
 
         for nt in tx.get("nativeTransfers") or []:
@@ -266,29 +291,15 @@ class HeliusApiSource:
             if nt.get("fromUserAccount") == self.wallet:
                 flows["SOL"] = flows.get("SOL", _ZERO) - amt
 
-        for tt in tx.get("tokenTransfers") or []:
-            mint = tt.get("mint", "")
+        for mint, amt in self._token_flows(tx).items():
             # WSOL は SOL の裏付けが nativeTransfers に既出のため無視（二重計上防止）
             if mint == _WSOL_MINT:
                 continue
-            amt = _d(tt.get("tokenAmount"))  # 既に小数調整済み
             sym, name = meta.get(mint, ("", ""))
             if _is_spam(sym, name):
                 continue
             asset = sym or _short_mint(mint)
-            if tt.get("toUserAccount") == self.wallet:
-                flows[asset] = flows.get(asset, _ZERO) + amt
-            if tt.get("fromUserAccount") == self.wallet:
-                flows[asset] = flows.get(asset, _ZERO) - amt
-
-        results: list[CanonicalTx] = []
-
-        # ガス（オプション、fee payer のみ）
-        if record_gas and is_payer and fee_sol > _ZERO:
-            results.append(self._tx(
-                sig + "|gas", ts, TxType.FEE,
-                fee_asset="SOL", fee_amount=fee_sol, label="gas", tx_hash=sig,
-            ))
+            flows[asset] = flows.get(asset, _ZERO) + amt
 
         received = sorted(
             ((a, v) for a, v in flows.items() if v > _DUST), key=lambda x: x[0])
@@ -347,6 +358,42 @@ class HeliusApiSource:
             results.append(self._tx(sig + f"|o{i}", ts, TxType.WITHDRAW,
                 sent_asset=a, sent_amount=v, label="token_out", tx_hash=sig))
         return results
+
+    def _token_flows(self, tx: dict[str, Any]) -> dict[str, Decimal]:
+        """ミントごとの正味 SPL トークンフロー（+ = 受取 / − = 送出）を返す。
+
+        第一情報源は accountData[].tokenBalanceChanges のうち userAccount が
+        ウォレットのもの（= ウォレット所有トークンアカウントの pre/post 残高差）。
+        transfer / mint_to / burn / Token-2022 / CPI 経由と命令の種類を問わず
+        実際の残高変化がそのまま出るので、ブリッジ受取（CCTP の receiveMessage は
+        リレイヤーが送信し、ウォレットの ATA へ直接 mint される）のように
+        ウォレット本体が取引に現れないケースも取りこぼさない。
+        tokenTransfers は Helius が命令を個別にパースした結果で、宛先オーナーが
+        未解決（toUserAccount が空）になることがあるため、accountData を持たない
+        応答でのみ後方互換として使う。
+        """
+        flows: dict[str, Decimal] = {}
+        account_data = tx.get("accountData")
+        if account_data:
+            for ad in account_data:
+                for ch in ad.get("tokenBalanceChanges") or []:
+                    if ch.get("userAccount") != self.wallet:
+                        continue
+                    mint = ch.get("mint") or ""
+                    raw = ch.get("rawTokenAmount") or {}
+                    decimals = int(_d(raw.get("decimals")))
+                    amt = _d(raw.get("tokenAmount")) / (Decimal(10) ** decimals)
+                    flows[mint] = flows.get(mint, _ZERO) + amt
+            return flows
+
+        for tt in tx.get("tokenTransfers") or []:
+            mint = tt.get("mint") or ""
+            amt = _d(tt.get("tokenAmount"))  # 既に小数調整済み
+            if tt.get("toUserAccount") == self.wallet:
+                flows[mint] = flows.get(mint, _ZERO) + amt
+            if tt.get("fromUserAccount") == self.wallet:
+                flows[mint] = flows.get(mint, _ZERO) - amt
+        return flows
 
     def _tx(self, raw_key: str, ts: datetime, tx_type: TxType, **kw) -> CanonicalTx:
         return CanonicalTx(

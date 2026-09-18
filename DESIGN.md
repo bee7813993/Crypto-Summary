@@ -134,6 +134,13 @@ class CanonicalTx(BaseModel):
   Aptos は Aptos Indexer GraphQL の `fungible_asset_activities` を使う。
   Aptos は旧 Coin(v1) と Fungible Asset(v2) が同テーブルに統合されているため、
   APT もネイティブ USDC も同じ経路で取得できる。
+- Solana の履歴は `token-accounts=balanceChanged` を付けて取得し、SPL トークンの
+  フローは `accountData[].tokenBalanceChanges`（ウォレット所有トークンアカウントの
+  残高変化）から集計する。SPL トークンはウォレット本体ではなくトークンアカウント
+  （ATA）で受け取るため、既定の取得方法（ウォレット本体が account keys に含まれる
+  取引のみ）では既存 ATA への入金や、リレイヤーが送信して ATA へ直接 mint する
+  ブリッジ受取（Portal Bridge / CCTP の `receiveMessage` 等）が落ち、
+  出金だけが記録されて残高がマイナスになる。
 - スワップは送出/受領 ERC20 transfer の差分から `TRADE` として解釈。
   非 EVM 系も「1トランザクション内の資産別 正味フロー」に畳んでから同じ規則で分類する。
 - ガス代は `FEE`(ネイティブ通貨建て) として付与。
