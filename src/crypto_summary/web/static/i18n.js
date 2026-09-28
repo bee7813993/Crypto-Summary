@@ -407,6 +407,15 @@ var TRANSLATIONS = {
     "filter.from": "開始: ",
     "filter.to": "終了: ",
     "filter.count": "{count} 件",
+    "tx.orderLabel": "並び順（日時）",
+    "tx.orderAsc": "古い順",
+    "tx.orderDesc": "新しい順",
+    "tx.viewLabel": "表示",
+    "tx.viewList": "一覧",
+    "tx.viewMonth": "月ごと",
+    "tx.monthCount": "{n}件",
+    "tx.monthCountOne": "1件",
+    "tx.monthToggle": "押すとこの月の取引を開閉します",
 
     // Theme/mask toggle titles
     "toggle.toDark": "ダークモードに切替",
@@ -833,6 +842,15 @@ var TRANSLATIONS = {
     "filter.from": "From: ",
     "filter.to": "To: ",
     "filter.count": "{count} txs",
+    "tx.orderLabel": "Order (date)",
+    "tx.orderAsc": "Oldest first",
+    "tx.orderDesc": "Newest first",
+    "tx.viewLabel": "View",
+    "tx.viewList": "All",
+    "tx.viewMonth": "By month",
+    "tx.monthCount": "{n} txs",
+    "tx.monthCountOne": "1 tx",
+    "tx.monthToggle": "Click to show or hide this month's transactions",
 
     // Theme/mask toggle titles
     "toggle.toDark": "Switch to dark mode",
