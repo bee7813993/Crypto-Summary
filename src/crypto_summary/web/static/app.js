@@ -39,8 +39,9 @@ let _assetHistChart = null;
 let _dashHistRange = localStorage.getItem("cs_dash_range") || "90d";
 let _acctHistRange = localStorage.getItem("cs_acct_range") || "90d";
 let _assetHistRange = localStorage.getItem("cs_asset_range") || "90d";
-// 資産詳細の推移グラフで表示する指標: "value"（評価額）| "balance"（保有数）
-let _assetHistMetric = localStorage.getItem("cs_asset_metric") === "balance" ? "balance" : "value";
+// 資産詳細の推移グラフで表示する指標: "price"（価格）| "value"（評価額・既定）| "balance"（保有数）
+let _assetHistMetric = ["price", "balance"].includes(localStorage.getItem("cs_asset_metric"))
+  ? localStorage.getItem("cs_asset_metric") : "value";
 let _acctHistName = null;
 let _assetHistSymbol = null;
 
@@ -154,6 +155,48 @@ function fmtAmountSig(value, sig = 7) {
   if (!isFinite(n) || n === 0) return fmtAmount(value);
   const rounded = Number(n.toPrecision(sig));
   return rounded.toLocaleString(undefined, { maximumFractionDigits: 20 });
+}
+
+// 単価用。暗号資産は 1 未満の価格（DOGE の $0.1234、SHIB の $0.00001234 など）が
+// 多く、小数 2 桁では 0 に潰れるので、1 未満は有効数字 4 桁で出す
+// （Asset Summary の fmtPrice に当たる。あちらは株価・基準価額向けに小数 4 桁まで）。
+function fmtPrice(value, currency) {
+  if (maskAmounts) return (CURRENCY_SYMBOL[currency] || "") + "●●●●●";
+  const n = Number(value);
+  const digits = n !== 0 && Math.abs(n) < 1
+    ? { maximumSignificantDigits: 4 }
+    : { maximumFractionDigits: 2 };
+  return (CURRENCY_SYMBOL[currency] || "") + n.toLocaleString(undefined, digits);
+}
+
+// 軸ラベル用の短縮表記。スマホの狭い描画域で「$12,000.00」級のラベルが
+// プロット幅を食い潰すのを防ぐ（JPY は億/万、他通貨は compact 表記）。
+// Asset Summary の fmtMoneyShort と同じ規則。
+function fmtMoneyShort(value, currency) {
+  const n = Number(value);
+  if (maskAmounts || !isFinite(n)) return fmtMoney(value, currency);
+  const sign = n < 0 ? "−" : "";
+  const abs = Math.abs(n);
+  if (currency === "JPY") {
+    if (abs >= 100_000_000) {
+      const oku = abs / 100_000_000;
+      return sign + "¥" + (oku >= 10 ? Math.round(oku).toLocaleString() : oku.toFixed(1)) + "億";
+    }
+    if (abs >= 10_000) return sign + "¥" + Math.round(abs / 10_000).toLocaleString() + "万";
+    return fmtMoney(value, currency);
+  }
+  if (abs >= 10_000) {
+    return sign + (CURRENCY_SYMBOL[currency] || "") +
+      abs.toLocaleString(undefined, { notation: "compact", maximumFractionDigits: 1 });
+  }
+  return fmtMoney(value, currency);
+}
+
+// 狭い画面の縦軸用: 桁の大きい数量を「144万」「1.4M」に畳む（fmtMoneyShort の数量版）
+function fmtAmountShort(value) {
+  const n = Number(value);
+  if (maskAmounts || !isFinite(n) || Math.abs(n) < 10_000) return fmtAmount(value);
+  return n.toLocaleString(undefined, { notation: "compact", maximumFractionDigits: 1 });
 }
 
 function fmtDate(iso) {
@@ -769,7 +812,8 @@ function setChartActive(idx) {
 
 // ---- 推移グラフ ----
 
-// opts.metric: "value"（評価額・既定）| "balance"（保有数量。1 資産のグラフだけ）
+// opts.metric: "value"（評価額・既定）| "balance"（保有数量）| "price"（価格）。
+// balance と price は 1 資産のグラフ（資産詳細）だけ
 function renderHistoryChart(canvasId, points, currency, existingChart, opts = {}) {
   const canvas = document.getElementById(canvasId);
   if (!canvas) return null;
@@ -786,10 +830,25 @@ function renderHistoryChart(canvasId, points, currency, existingChart, opts = {}
   if (emptyEl) emptyEl.classList.add("hidden");
 
   const isBalance = opts.metric === "balance";
-  const fmtY = (v) => (isBalance ? fmtAmount(v) : fmtMoney(v, currency));
+  const isPrice = opts.metric === "price";
   const labels = points.map((p) => p.t);
-  const values = points.map((p) => Number(isBalance ? p.balance : p.value));
+  const values = points.map((p) => Number(isBalance ? p.balance : isPrice ? p.price : p.value));
   const balances = points.map((p) => (p.balance != null ? p.balance : null));
+
+  // 狭い描画域（スマホ縦持ちなど）では日付を "MM-DD" に短縮し、本数も減らす。
+  // フル表記のままだと "2026-08-17" が隣とくっついて読めない。完全な日付は
+  // ツールチップで見られる。非表示中は clientWidth が 0 になるので画面幅で代用。
+  // （Asset Summary の推移グラフと同じ規則）
+  const wrapW = canvas.parentElement ? canvas.parentElement.clientWidth : 0;
+  const narrow = (wrapW > 0 ? wrapW : window.innerWidth) < 480;
+  // 縦軸の目盛りは狭い画面で短縮し、ツールチップは常に完全な表記にする
+  const fmtTick = (v) => {
+    if (isBalance) return narrow ? fmtAmountShort(v) : fmtAmount(v);
+    if (isPrice) return fmtPrice(v, currency);
+    return narrow ? fmtMoneyShort(v, currency) : fmtMoney(v, currency);
+  };
+  const fmtTip = (v) =>
+    (isBalance ? fmtAmount(v) : isPrice ? fmtPrice(v, currency) : fmtMoney(v, currency));
 
   const th = chartTheme();
   return new Chart(canvas, {
@@ -823,18 +882,27 @@ function renderHistoryChart(canvasId, points, currency, existingChart, opts = {}
       interaction: { mode: "index", intersect: false },
       scales: {
         x: {
-          ticks: { color: th.tick, font: { size: 11 }, maxTicksLimit: 8, maxRotation: 0 },
+          ticks: {
+            color: th.tick,
+            font: { size: 11 },
+            maxTicksLimit: narrow ? 4 : 8,
+            maxRotation: 0,
+            callback(v) {
+              const label = String(this.getLabelForValue(v));
+              return narrow ? label.replace(/^\d{4}-/, "") : label;
+            },
+          },
           grid: { color: th.grid },
           border: { display: false },
         },
         y: {
           // 保有数量は 0 からの量として見せる（軸を切ると、少しの買い増しが
-          // 倍増のように見える）。評価額は変動が見えるよう従来どおり自動
+          // 倍増のように見える）。評価額・価格は変動が見えるよう従来どおり自動
           beginAtZero: isBalance,
           ticks: {
             color: th.tick,
             font: { size: 11 },
-            callback(v) { return fmtY(v); },
+            callback(v) { return fmtTick(v); },
           },
           grid: { color: th.grid },
           border: { display: false },
@@ -851,9 +919,9 @@ function renderHistoryChart(canvasId, points, currency, existingChart, opts = {}
           padding: 10,
           callbacks: {
             title: ([item]) => item.label,
-            label: (item) => "  " + fmtY(item.parsed.y),
+            label: (item) => "  " + fmtTip(item.parsed.y),
             afterLabel: (item) => {
-              if (isBalance) return undefined;
+              if (isBalance || isPrice) return undefined;
               const bal = balances[item.dataIndex];
               return bal != null ? "  " + fmtAmount(bal) : undefined;
             },
@@ -953,18 +1021,33 @@ function loadAssetHistoryChart(symbol, range, metric) {
   );
 }
 
-// 資産詳細の推移グラフの見出しと 評価額／保有数 トグルを、選択中の指標に合わせる。
+const _ASSET_METRIC_TITLE = {
+  price: "label.priceHistorySection",
+  value: "label.valueHistorySection",
+  balance: "label.quantityHistorySection",
+};
+
+/** data-i18n ごと差し替えて文言を入れる（言語切替の applyI18n で元に戻らないように）。 */
+function _setI18nText(el, key) {
+  if (!el) return;
+  el.setAttribute("data-i18n", key);
+  el.textContent = t(key);
+}
+
+// 資産詳細の推移グラフの 価格／評価額／保有数 トグル・見出し・空のときの文言を、
+// 選択中の指標に合わせる（読み込みを待たずに合わせる）。
 function _syncAssetMetric() {
   document.querySelectorAll("#asset-metric-tabs [data-metric]").forEach((btn) => {
     const on = btn.dataset.metric === _assetHistMetric;
     btn.classList.toggle("active", on);
     btn.setAttribute("aria-pressed", on ? "true" : "false");
   });
-  // data-i18n ごと差し替え、言語切替（applyI18n）後も見出しが指標に追従するようにする
-  const title = document.getElementById("asset-history-title");
-  const key = _assetHistMetric === "balance" ? "label.quantityHistorySection" : "label.valueHistorySection";
-  title.setAttribute("data-i18n", key);
-  title.textContent = t(key);
+  _setI18nText(document.getElementById("asset-history-title"), _ASSET_METRIC_TITLE[_assetHistMetric]);
+  // 価格が無いのと取引が無いのは別の理由なので、空のときの文言も分ける
+  _setI18nText(
+    document.getElementById("asset-history-chart").parentElement.querySelector(".history-empty"),
+    _assetHistMetric === "price" ? "label.noPriceData" : "label.noTxData"
+  );
 }
 
 // ---- 口座別ページ ----

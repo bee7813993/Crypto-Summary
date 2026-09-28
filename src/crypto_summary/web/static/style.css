@@ -729,7 +729,7 @@ html.light .tx-type-transfer { background: #d1fae5; color: #065f46; }
   margin-bottom: 12px;
 }
 .history-header h2 { margin-bottom: 0; }
-/* 表示対象（評価額・保有数）とレンジのタブ2組 */
+/* 表示対象（価格・評価額・保有数）とレンジのタブ2組 */
 .history-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 12px; }
 .range-tabs { display: flex; gap: 2px; }
 /* 表示対象は「何を見るか」、レンジは「いつを見るか」。同じ見た目のボタンが
