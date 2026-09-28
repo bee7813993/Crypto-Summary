@@ -268,16 +268,16 @@ CS 側はこの棄却をしません（ポリシーは利用側に委ねます�
 
 ## 8. `GET /api/portfolio-history`
 
-評価額（または 1 資産の保有数量）の日次時系列。
+評価額（または 1 資産の保有数量・価格）の日次時系列。
 
 **クエリ**
 - `currency`
 - `range`: `7d` | `30d` | `90d` | `1y` | `all`（不正な値は `90d` に丸め）
 - `scope`: `total` | `account:<表示名>` | `asset:<シンボル>`
-- `metric`: `value`（既定。評価額）| `balance`（保有数量。後述）。
-  数量は単位の違う資産を足せないため、`balance` は `scope=asset:<シンボル>` の
-  ときだけ有効です。それ以外のスコープや不正な値は `value` に丸めます
-  （応答の `metric` に実際に使われた値が入ります）
+- `metric`: `value`（既定。評価額）| `balance`（保有数量）| `price`（価格）。後の 2 つは後述。
+  数量は単位の違う資産を足せず、価格は 1 資産にしか無いため、`balance` と `price` は
+  `scope=asset:<シンボル>` のときだけ有効です。それ以外のスコープや不正な値は
+  `value` に丸めます（応答の `metric` に実際に使われた値が入ります）
 
 ```jsonc
 {
@@ -338,6 +338,33 @@ CS 側はこの棄却をしません（ポリシーは利用側に委ねます�
 - 点には `value` が付きません。`unpriced` は常に `[]`、`is_partial` は常に `false` です。
 - 古い CS は `metric` を知らず評価額を返します。応答に `metric` が無ければ
   `balance` は使えないものとして扱ってください。
+
+### `metric=price`（1 資産の価格の推移）
+
+```jsonc
+{
+  "currency": "JPY",
+  "range": "90d",
+  "scope": "asset:BTC",
+  "metric": "price",
+  "points": [
+    { "t": "2026-08-12", "price": "9000000" }
+  ],
+  "unpriced": [],
+  "is_partial": false,
+  "warnings": [],
+  "generated_at": "..."
+}
+```
+
+- `currency` 建ての日次終値（当日は現在価格）です。評価額の計算に使う価格と同じものです。
+- **保有とは関係なく**、`range` の開始日から今日まで並びます（`all` だけは区切りが
+  無いので、台帳にその資産が現れた日から）。持っていない期間の価格も出ます。
+- 価格が取れなかった日は点ごと落ちます。CoinGecko に ID があるのに 1 日も取れなければ
+  `unpriced` にその資産が入り、`is_partial` が `true` になります。ID の無い資産や、
+  表示通貨と異なる法定通貨は `points: []` のまま `is_partial: false` です。
+- 点には `value` も `balance` も付きません。`balance` と同じく、応答に `metric` が
+  無ければ古い CS なので `price` は使えません。
 
 ---
 

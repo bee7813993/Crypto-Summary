@@ -1929,9 +1929,9 @@ def _portfolio_history(
 
     scope: "total" | "account:<表示名>" | "asset:<シンボル>"
     range_str: "7d" | "30d" | "90d" | "1y" | "all"
-    metric: "value"（評価額）| "balance"（保有数量）。数量は単位の違う資産を
-      足し合わせられないので balance は asset スコープでだけ受け付け、
-      それ以外（不正な値を含む）は value に丸める。
+    metric: "value"（評価額）| "balance"（保有数量）| "price"（価格）。数量は単位の
+      違う資産を足し合わせられず、価格は 1 資産にしか無いので、balance と price は
+      asset スコープでだけ受け付け、それ以外（不正な値を含む）は value に丸める。
     """
     # NOTE: scope の解釈は _scope_filters に切り出してある（残高APIと共通）
     currency = currency.upper()
@@ -1946,7 +1946,7 @@ def _portfolio_history(
     range_start = (today - timedelta(days=days)) if days is not None else None
 
     source_filter, asset_filter = _scope_filters(db_path, scope)
-    if metric != "balance" or not asset_filter:
+    if metric not in ("balance", "price") or not asset_filter:
         metric = "value"
 
     ledger = Ledger(db_path)
@@ -1961,6 +1961,34 @@ def _portfolio_history(
         )
     finally:
         ledger.close()
+
+    if metric == "price":
+        # 価格は保有と関係なく決まるので、持っていない期間もレンジいっぱいに出す
+        # （ALL だけは区切りが無いので、台帳にその資産が現れた日から）。
+        price_start = range_start or (date.fromisoformat(min(snapshots)) if snapshots else None)
+        price_warnings: list[str] = []
+        series = (
+            fetch_price_history(
+                [asset_filter], currency, price_start, today, warn=price_warnings.append
+            ).get(asset_filter, {})
+            if price_start
+            else {}
+        )
+        points = [{"t": d, "price": str(series[d])} for d in sorted(series)]
+        # 評価額と同じく、CoinGecko に ID があるのに取れなかったときだけ unpriced に
+        # 載せる（ID の無い資産はいくら待っても取れないので「取得中」扱いにしない）
+        unpriced = [asset_filter] if not points and asset_filter in COINGECKO_IDS else []
+        return {
+            "currency": currency,
+            "range": range_str,
+            "scope": scope,
+            "metric": metric,
+            "points": points,
+            "unpriced": unpriced,
+            "is_partial": bool(price_warnings) or bool(unpriced),
+            "warnings": price_warnings,
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+        }
 
     if not snapshots:
         return {
@@ -2518,7 +2546,9 @@ def create_app(
         currency: str = Query("USD"),
         range: str = Query("90d"),
         scope: str = Query("total"),
-        metric: str = Query("value", description="value（評価額）| balance（保有数量。asset スコープのみ）"),
+        metric: str = Query(
+            "value", description="value（評価額）| balance（保有数量）| price（価格）。後の 2 つは asset スコープのみ"
+        ),
         db: str = Depends(get_db_path_read),
     ) -> dict:
         return _portfolio_history(db, currency, range, scope, metric)

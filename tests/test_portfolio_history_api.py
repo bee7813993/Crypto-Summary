@@ -345,3 +345,57 @@ def test_unknown_metric_falls_back_to_value(app_client):
 def test_value_is_the_default_metric(app_client):
     data = app_client.get("/api/portfolio-history?currency=USD&range=90d&scope=asset:BTC").json()
     assert data["metric"] == "value"
+
+
+# ---------- metric=price（1 資産の価格の推移） ----------
+
+def test_price_metric_covers_range_before_first_holding(tmp_path, btc_only_prices):
+    """価格は保有と関係なく決まるので、持つ前の日もレンジいっぱいに出る。"""
+    client = _client_with(tmp_path, [
+        _tx("in", "ex", _recent(2), TxType.DEPOSIT, ra="BTC", rv=1),
+    ])
+    data = client.get(
+        "/api/portfolio-history?currency=USD&range=7d&scope=asset:BTC&metric=price"
+    ).json()
+    assert data["metric"] == "price"
+    assert data["unpriced"] == [] and data["is_partial"] is False
+    # モックは 7〜1 日前の終値だけを返す（当日は無い）
+    assert [p["t"] for p in data["points"]] == [_iso(d) for d in range(7, 0, -1)]
+    assert all(set(p) == {"t", "price"} for p in data["points"])
+    assert {Decimal(p["price"]) for p in data["points"]} == {Decimal("50000")}
+
+
+def test_price_metric_all_range_starts_at_first_holding(tmp_path, btc_only_prices):
+    client = _client_with(tmp_path, [
+        _tx("in", "ex", _recent(3), TxType.DEPOSIT, ra="BTC", rv=1),
+    ])
+    data = client.get("/api/portfolio-history?range=all&scope=asset:BTC&metric=price").json()
+    assert [p["t"] for p in data["points"]] == [_iso(3), _iso(2), _iso(1)]
+
+
+def test_price_metric_flags_unfetched_price_as_partial(tmp_path, btc_only_prices):
+    """CoinGecko に ID があるのに取れなかった資産は「取得中」として知らせる。"""
+    client = _client_with(tmp_path, [
+        _tx("in", "ex", _recent(2), TxType.DEPOSIT, ra="ETH", rv=1),
+    ])
+    data = client.get("/api/portfolio-history?range=7d&scope=asset:ETH&metric=price").json()
+    assert data["points"] == []
+    assert data["unpriced"] == ["ETH"] and data["is_partial"] is True
+
+
+def test_price_metric_for_asset_without_price_source(tmp_path, no_coingecko):
+    """CoinGecko に無い資産は価格の点が無いだけで、取得中扱いにはしない。"""
+    client = _client_with(tmp_path, [
+        _tx("in", "wallet", _recent(2), TxType.DEPOSIT, ra="NOPRICE", rv=42),
+    ])
+    data = client.get("/api/portfolio-history?range=7d&scope=asset:NOPRICE&metric=price").json()
+    assert data["metric"] == "price"
+    assert data["points"] == [] and data["unpriced"] == [] and data["is_partial"] is False
+
+
+def test_price_metric_needs_asset_scope(app_client):
+    data = app_client.get(
+        "/api/portfolio-history?currency=USD&range=90d&scope=total&metric=price"
+    ).json()
+    assert data["metric"] == "value"
+    assert data["points"] and all("value" in p for p in data["points"])
