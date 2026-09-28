@@ -616,7 +616,13 @@ tr.tx-month-row:focus-visible { outline: 2px solid var(--accent); outline-offset
 .tx-month-types { font-weight: 400; color: var(--text-dim); margin-left: 6px; }
 /* 見出しは 1 つのセルにまとめる（スマホで列を畳む nth-child の規則に掛からないように） */
 .tx-month-cell { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 16px; }
-.tx-month-net { margin-left: auto; font-variant-numeric: tabular-nums; white-space: nowrap; }
+/* 資産ごとの増減。見出しの右側に並べ、入りきらなければ右寄せのまま折り返す */
+.tx-month-nets {
+  flex: 1 1 240px;
+  display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 2px 14px;
+  font-weight: 500;
+}
+.tx-month-net { font-variant-numeric: tabular-nums; white-space: nowrap; }
 
 /* ---- インポートページ ---- */
 .import-tabs {

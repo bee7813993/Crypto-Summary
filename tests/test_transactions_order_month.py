@@ -124,17 +124,42 @@ def test_months_follow_the_order_and_count_each_type(client):
         {"type": "reward", "type_ja": "報酬", "count": 1},
         {"type": "withdraw", "type_ja": "出金", "count": 1},
     ]
-    assert october["net"] is None  # 資産で絞り込まないと増減は出さない
+    # 絞り込まなければ、その月に動いた資産ごとの増減（ここでは BTC だけ）
+    assert october["nets"] == [{"asset": "BTC", "net": "-0.48"}]
 
 
-def test_months_net_is_the_assets_change_in_the_month(client):
+def test_months_net_is_the_filtered_assets_change_in_the_month(client):
+    """資産で絞り込むと、その資産の増減だけ（売買の相手の ETH は出さない）。"""
     data = client.get("/api/transactions/months?asset=BTC&tz=Asia/Tokyo").json()
-    net = {m["month"]: Decimal(m["net"]) for m in data["months"]}
-    assert net == {
-        "2026-08": Decimal("1"),
-        "2026-09": Decimal("-0.1") - Decimal("0.001") + Decimal("0.01"),
-        "2026-10": Decimal("-0.5") + Decimal("0.02"),
+    nets = {m["month"]: [(n["asset"], Decimal(n["net"])) for n in m["nets"]] for m in data["months"]}
+    assert nets == {
+        "2026-08": [("BTC", Decimal("1"))],
+        "2026-09": [("BTC", Decimal("-0.1") - Decimal("0.001") + Decimal("0.01"))],
+        "2026-10": [("BTC", Decimal("-0.5") + Decimal("0.02"))],
     }
+
+
+def test_months_without_asset_filter_list_every_asset_that_moved(client):
+    data = client.get("/api/transactions/months?tz=Asia/Tokyo").json()
+    september = next(m for m in data["months"] if m["month"] == "2026-09")
+    # 資産名の順。売買の両側（BTC を払って ETH を受け取る）がそれぞれ出る
+    assert [(n["asset"], Decimal(n["net"])) for n in september["nets"]] == [
+        ("BTC", Decimal("-0.1") - Decimal("0.001") + Decimal("0.01")),
+        ("ETH", Decimal("2")),
+    ]
+
+
+def test_month_nets_skip_zero_unless_it_is_the_filtered_asset(tmp_path):
+    """入って同じだけ出た資産は増減が無いので省く。絞り込んだ資産なら 0 でも出す。"""
+    client = _client(tmp_path, [
+        _tx("in", _utc(2026, 9, 1), ra="SOL", rv="3"),
+        _tx("out", _utc(2026, 9, 2), TxType.WITHDRAW, sa="SOL", sv="3"),
+        _tx("btc", _utc(2026, 9, 3), ra="BTC", rv="0.1"),
+    ])
+    unfiltered = client.get("/api/transactions/months").json()["months"][0]
+    assert unfiltered["nets"] == [{"asset": "BTC", "net": "0.1"}]
+    filtered = client.get("/api/transactions/months?asset=SOL").json()["months"][0]
+    assert [(n["asset"], Decimal(n["net"])) for n in filtered["nets"]] == [("SOL", Decimal("0"))]
 
 
 def test_months_use_the_same_filters_as_the_list(client):

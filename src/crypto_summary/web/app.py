@@ -748,6 +748,21 @@ def _transactions(
     }
 
 
+def _month_nets(nets: dict[str, Decimal], asset: str | None) -> list[dict]:
+    """月の見出しに出す資産ごとの増減（資産名の順）。
+
+    資産で絞り込んでいればその資産だけを 0 でも出す（見出しごとに同じ資産が並ぶ）。
+    絞り込んでいなければ、その月に増減のあった資産すべて（入って同じだけ出た 0 は省く）。
+    """
+    if asset:
+        return [{"asset": asset, "net": str(nets.get(asset, Decimal(0)))}]
+    return [
+        {"asset": a, "net": str(v)}
+        for a, v in sorted(nets.items(), key=lambda kv: (kv[0].casefold(), kv[0]))
+        if v != 0
+    ]
+
+
 def _transaction_months(
     db_path: str,
     account: str | None,
@@ -757,12 +772,14 @@ def _transaction_months(
     order: str = "desc",
     tz: tzinfo = timezone.utc,
 ) -> dict:
-    """取引履歴の月ごとの見出し（件数・種類ごとの件数・資産の増減）を返す。
+    """取引履歴の月ごとの見出し（件数・種類ごとの件数・資産ごとの増減）を返す。
 
     絞り込みは /api/transactions と同じ。月は現地（tz）で区切る。取引の行は
     返さない（開いた月だけ /api/transactions?month= で読む）ので、取引が多くても軽い。
-    net はその月の資産の増減（受取 − 送付 − 手数料）で、単位の違う資産は足せない
-    ため資産で絞り込んでいるときだけ出す。除外中のラベルも行としては出すので数える。
+    nets はその月の資産ごとの増減（受取 − 送付 − 手数料）。単位の違う資産は足せない
+    ので資産ごとに分けて、資産名の順に並べる。資産で絞り込んでいるときはその資産だけ
+    （0 でも出す）、絞り込んでいなければ増減が 0 でない資産すべて。除外中のラベルも
+    行としては出すので数える。
     """
     groups = _load_groups(db_path)
     source_ids = _resolve_source_ids(account, db_path, groups)
@@ -784,17 +801,14 @@ def _transaction_months(
             when = when.replace(tzinfo=timezone.utc)
         m = months.setdefault(
             when.astimezone(tz).strftime("%Y-%m"),
-            {"count": 0, "types": Counter(), "net": Decimal(0)},
+            {"count": 0, "types": Counter(), "nets": {}},
         )
         m["count"] += 1
         m["types"][tx_type] += 1
-        if asset:
-            if ra == asset and rv:
-                m["net"] += Decimal(rv)
-            if sa == asset and sv:
-                m["net"] -= Decimal(sv)
-            if fa == asset and fv:
-                m["net"] -= Decimal(fv)
+        nets = m["nets"]
+        for leg_asset, amount, sign in ((ra, rv, 1), (sa, sv, -1), (fa, fv, -1)):
+            if leg_asset and amount:
+                nets[leg_asset] = nets.get(leg_asset, Decimal(0)) + sign * Decimal(amount)
 
     return {
         "months": [
@@ -806,7 +820,7 @@ def _transaction_months(
                     {"type": t, "type_ja": _TX_TYPE_JA.get(t, t), "count": n}
                     for t, n in sorted(months[ym]["types"].items(), key=lambda kv: (-kv[1], kv[0]))
                 ],
-                "net": str(months[ym]["net"]) if asset else None,
+                "nets": _month_nets(months[ym]["nets"], asset),
             }
             for ym in sorted(months, reverse=order != "asc")
         ],

@@ -1710,14 +1710,15 @@ async function _renderTxMonths(req, f, filters, reload) {
     head.title = t("tx.monthToggle");
     const count = t(m.count === 1 ? "tx.monthCountOne" : "tx.monthCount", { n: m.count.toLocaleString() });
     const types = m.types.map((ty) => `${_txTypeLabel(ty)} ${ty.count}`).join("・");
-    // 増減は資産で絞り込んでいるときだけ（単位の違う資産は足せない）
-    const net = m.net != null
-      ? `<span class="tx-month-net">${escapeHtml(_fmtSignedAmount(m.net))} ${escapeHtml(f.asset)}</span>`
-      : "";
+    // 資産ごとの増減（単位の違う資産は足せないので分けて並べる）。資産で絞り込んで
+    // いればその資産だけ、無ければその月に動いた資産すべてで、入りきらなければ折り返す
+    const nets = (m.nets || []).map((n) =>
+      `<span class="tx-month-net ${changeClass(Number(n.net))}">${escapeHtml(_fmtSignedAmount(n.net))} ${escapeHtml(n.asset)}</span>`
+    ).join("");
     head.innerHTML = `<td colspan="9"><div class="tx-month-cell">
       <span class="tx-month-label"><span class="tx-month-chev" aria-hidden="true"></span>${escapeHtml(_fmtMonth(m.month))}</span>
       <span>${escapeHtml(count)} <span class="tx-month-types">${escapeHtml(types)}</span></span>
-      ${net}
+      ${nets ? `<span class="tx-month-nets">${nets}</span>` : ""}
     </div></td>`;
     tbody.appendChild(head);
 
