@@ -39,6 +39,8 @@ let _assetHistChart = null;
 let _dashHistRange = localStorage.getItem("cs_dash_range") || "90d";
 let _acctHistRange = localStorage.getItem("cs_acct_range") || "90d";
 let _assetHistRange = localStorage.getItem("cs_asset_range") || "90d";
+// 資産詳細の推移グラフで表示する指標: "value"（評価額）| "balance"（保有数）
+let _assetHistMetric = localStorage.getItem("cs_asset_metric") === "balance" ? "balance" : "value";
 let _acctHistName = null;
 let _assetHistSymbol = null;
 
@@ -767,7 +769,9 @@ function setChartActive(idx) {
 
 // ---- 推移グラフ ----
 
-function renderHistoryChart(canvasId, points, currency, existingChart) {
+// opts.metric: "value"（評価額・既定）| "balance"（保有数量）
+// opts.unit:   保有数量に添える単位（資産シンボル）。1 資産のグラフでだけ渡す
+function renderHistoryChart(canvasId, points, currency, existingChart, opts = {}) {
   const canvas = document.getElementById(canvasId);
   if (!canvas) return null;
   if (existingChart) existingChart.destroy();
@@ -782,8 +786,10 @@ function renderHistoryChart(canvasId, points, currency, existingChart) {
   canvas.style.display = "";
   if (emptyEl) emptyEl.classList.add("hidden");
 
+  const isBalance = opts.metric === "balance";
+  const fmtQty = (v) => fmtAmount(v) + (opts.unit ? " " + opts.unit : "");
   const labels = points.map((p) => p.t);
-  const values = points.map((p) => Number(p.value));
+  const values = points.map((p) => Number(isBalance ? p.balance : p.value));
   const balances = points.map((p) => (p.balance != null ? p.balance : null));
 
   const th = chartTheme();
@@ -804,6 +810,9 @@ function renderHistoryChart(canvasId, points, currency, existingChart) {
         },
         fill: true,
         tension: 0.3,
+        // 保有数量は取引のあった日に段差で変わる。曲線でつなぐと取引の前から
+        // 増減し始めたように見え、0 を割り込むこともあるので階段で描く。
+        stepped: isBalance,
         pointRadius: 0,
         pointHoverRadius: 4,
         borderWidth: 2,
@@ -823,7 +832,7 @@ function renderHistoryChart(canvasId, points, currency, existingChart) {
           ticks: {
             color: th.tick,
             font: { size: 11 },
-            callback(v) { return fmtMoney(v, currency); },
+            callback(v) { return isBalance ? fmtAmount(v) : fmtMoney(v, currency); },
           },
           grid: { color: th.grid },
           border: { display: false },
@@ -840,10 +849,13 @@ function renderHistoryChart(canvasId, points, currency, existingChart) {
           padding: 10,
           callbacks: {
             title: ([item]) => item.label,
-            label: (item) => "  " + fmtMoney(item.parsed.y, currency),
+            label: (item) => "  " + (isBalance
+              ? fmtQty(balances[item.dataIndex])
+              : fmtMoney(item.parsed.y, currency)),
             afterLabel: (item) => {
+              if (isBalance) return undefined;
               const bal = balances[item.dataIndex];
-              return bal != null ? "  " + fmtAmount(bal) : undefined;
+              return bal != null ? "  " + fmtQty(bal) : undefined;
             },
           },
         },
@@ -859,16 +871,30 @@ function _setRangeActive(tabsId, range) {
     btn.classList.toggle("active", btn.dataset.range === range));
 }
 
-async function _fetchHistAndRender(scope, range, canvasId, loadingId, unpricedId, getRef, setRef) {
+// グラフ（canvasId）ごとの最新リクエスト番号。レンジや指標を続けて切り替えると、
+// 先に投げた遅いリクエスト（評価額は価格取得を挟む）が後から返ってきて、
+// 選択中とは違う内容でグラフを上書きしてしまう。最新以外の応答は捨てる。
+const _histReqSeq = {};
+
+// opts: renderHistoryChart に渡す { metric, unit }（metric は API にも渡す）
+async function _fetchHistAndRender(scope, range, canvasId, loadingId, unpricedId, getRef, setRef, opts = {}) {
+  const seq = (_histReqSeq[canvasId] || 0) + 1;
+  _histReqSeq[canvasId] = seq;
+  const isStale = () => _histReqSeq[canvasId] !== seq;
+
   const currency = document.getElementById("currency").value;
   const loading = document.getElementById(loadingId);
   const unpricedEl = document.getElementById(unpricedId);
+  const metric = opts.metric || "value";
   if (loading) loading.classList.remove("hidden");
   try {
     const data = await fetchJSON(
-      `/api/portfolio-history?scope=${encodeURIComponent(scope)}&range=${range}&currency=${currency}`
+      `/api/portfolio-history?scope=${encodeURIComponent(scope)}&range=${range}&currency=${currency}&metric=${metric}`
     );
-    setRef(renderHistoryChart(canvasId, data.points, currency, getRef()));
+    if (isStale()) return;
+    // サーバーが実際に使った指標で描く（asset 以外のスコープでは value に丸められる）
+    setRef(renderHistoryChart(canvasId, data.points, currency, getRef(),
+      { ...opts, metric: data.metric || "value" }));
     if (unpricedEl) {
       if (data.is_partial) {
         unpricedEl.textContent = t("label.historyPartial");
@@ -878,10 +904,11 @@ async function _fetchHistAndRender(scope, range, canvasId, loadingId, unpricedId
       }
     }
   } catch (e) {
+    if (isStale()) return;
     console.warn("[crypto-summary] portfolio history:", e);
     setRef(renderHistoryChart(canvasId, [], currency, getRef()));
   } finally {
-    if (loading) loading.classList.add("hidden");
+    if (loading && !isStale()) loading.classList.add("hidden");
   }
 }
 
@@ -909,17 +936,35 @@ function loadAcctHistoryChart(name, range) {
   );
 }
 
-function loadAssetHistoryChart(symbol, range) {
+function loadAssetHistoryChart(symbol, range, metric) {
   if (symbol != null) _assetHistSymbol = symbol;
   if (range != null) _assetHistRange = range;
+  if (metric != null) _assetHistMetric = metric;
   if (!_assetHistSymbol) return;
   localStorage.setItem("cs_asset_range", _assetHistRange);
+  localStorage.setItem("cs_asset_metric", _assetHistMetric);
   _setRangeActive("asset-range-tabs", _assetHistRange);
+  _syncAssetMetric();
   return _fetchHistAndRender(
     `asset:${_assetHistSymbol}`, _assetHistRange,
     "asset-history-chart", "asset-history-loading", "asset-history-unpriced",
-    () => _assetHistChart, (c) => { _assetHistChart = c; }
+    () => _assetHistChart, (c) => { _assetHistChart = c; },
+    { metric: _assetHistMetric, unit: _assetHistSymbol }
   );
+}
+
+// 資産詳細の推移グラフの見出しと 評価額／保有数 トグルを、選択中の指標に合わせる。
+function _syncAssetMetric() {
+  document.querySelectorAll("#asset-metric-tabs [data-metric]").forEach((btn) => {
+    const on = btn.dataset.metric === _assetHistMetric;
+    btn.classList.toggle("active", on);
+    btn.setAttribute("aria-pressed", on ? "true" : "false");
+  });
+  // data-i18n ごと差し替え、言語切替（applyI18n）後も見出しが指標に追従するようにする
+  const title = document.getElementById("asset-history-title");
+  const key = _assetHistMetric === "balance" ? "label.balanceHistorySection" : "label.valueHistorySection";
+  title.setAttribute("data-i18n", key);
+  title.textContent = t(key);
 }
 
 // ---- 口座別ページ ----
@@ -3498,6 +3543,9 @@ document.getElementById("acct-range-tabs").querySelectorAll(".range-tab").forEac
 
 document.getElementById("asset-range-tabs").querySelectorAll(".range-tab").forEach((btn) =>
   btn.addEventListener("click", () => loadAssetHistoryChart(null, btn.dataset.range)));
+
+document.getElementById("asset-metric-tabs").querySelectorAll("[data-metric]").forEach((btn) =>
+  btn.addEventListener("click", () => loadAssetHistoryChart(null, null, btn.dataset.metric)));
 
 // ---- 初期化 ----
 

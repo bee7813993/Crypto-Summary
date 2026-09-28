@@ -362,10 +362,16 @@
             <button id="asset-tx-link" class="action-btn" data-i18n="btn.assetTxHistory">≡ この資産の取引履歴</button>
           </div>
 
-          <!-- 推移グラフ（資産詳細） -->
+          <!-- 推移グラフ（資産詳細）。1 資産なので評価額と保有数を切り替えられる -->
           <section class="card history-card">
             <div class="history-header">
-              <h2 data-i18n="label.valueHistorySection">評価額推移</h2>
+              <div class="history-title">
+                <h2 id="asset-history-title" data-i18n="label.valueHistorySection">評価額推移</h2>
+                <div class="metric-tabs" id="asset-metric-tabs">
+                  <button class="metric-tab active" data-metric="value" aria-pressed="true" data-i18n="label.metricValue">評価額</button>
+                  <button class="metric-tab" data-metric="balance" aria-pressed="false" data-i18n="label.metricBalance">保有数</button>
+                </div>
+              </div>
               <div class="range-tabs" id="asset-range-tabs">
                 <button class="range-tab" data-range="7d">7D</button>
                 <button class="range-tab" data-range="30d">30D</button>
