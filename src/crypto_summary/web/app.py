@@ -9,13 +9,16 @@ import base64
 import hashlib
 import json
 import os
+import re
 import secrets
 import tempfile
 import uuid
-from datetime import date, datetime, timedelta, timezone
+from collections import Counter
+from datetime import date, datetime, timedelta, timezone, tzinfo
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, Response
@@ -627,6 +630,34 @@ def _parse_date(s: str | None) -> datetime | None:
         return None
 
 
+def _client_tz(name: str | None, offset_minutes: int | None = None) -> tzinfo:
+    """ブラウザのタイムゾーン。IANA 名が解決できなければ UTC からの分数、それも無ければ UTC。
+
+    日時は UTC で保存し、画面はブラウザの現地時刻で出している。月ごとの区切りも
+    現地時刻で切らないと、月末の夜の取引が画面に出る日付と違う月にまとまる
+    （日本時間の 10/1 05:00 は UTC では 9/30）。
+    """
+    if name:
+        try:
+            return ZoneInfo(name)
+        except (ZoneInfoNotFoundError, ValueError, OSError):
+            pass
+    if offset_minutes is not None and abs(offset_minutes) <= 14 * 60:
+        return timezone(timedelta(minutes=offset_minutes))
+    return timezone.utc
+
+
+def _month_bounds(month: str, tz: tzinfo) -> tuple[datetime, datetime] | None:
+    """現地の "YYYY-MM" を UTC の半開区間 [月初, 翌月初) にする。読めなければ None。"""
+    m = re.fullmatch(r"(\d{4})-(\d{2})", month)
+    if not m or not 1 <= int(m[2]) <= 12:
+        return None
+    y, mo = int(m[1]), int(m[2])
+    start = datetime(y, mo, 1, tzinfo=tz)
+    end = datetime(y + mo // 12, mo % 12 + 1, 1, tzinfo=tz)
+    return start.astimezone(timezone.utc), end.astimezone(timezone.utc)
+
+
 def _transactions(
     db_path: str,
     account: str | None,
@@ -634,12 +665,27 @@ def _transactions(
     since_str: str | None,
     until_str: str | None,
     page: int,
+    order: str = "desc",
+    month: str | None = None,
+    tz: tzinfo = timezone.utc,
 ) -> dict:
-    """取引履歴ページを返す。account は表示名（グループ名）で受け取る。"""
+    """取引履歴ページを返す。account は表示名（グループ名）で受け取る。
+
+    order: "desc"（新しい順・既定）| "asc"（古い順）。ページ送りもこの順で進む。
+    month: 現地（tz）の "YYYY-MM"。指定するとその月の取引を全件返す（月ごとの
+      表示で開いた月の行。ページ送りはしない）。
+    """
     groups = _load_groups(db_path)
     source_ids = _resolve_source_ids(account, db_path, groups)
     since = _parse_date(since_str)
     until = _parse_date(until_str)
+    before = None
+    if month:
+        bounds = _month_bounds(month, tz)
+        if bounds is None:
+            raise HTTPException(status_code=422, detail="month は YYYY-MM で指定してください")
+        since = max(since, bounds[0]) if since else bounds[0]
+        before = bounds[1]
 
     ledger = Ledger(db_path)
     try:
@@ -650,14 +696,17 @@ def _transactions(
         )
         # 表示用: 全フィルタ適用。除外中のラベルも行としては表示する
         # （「取り込んだのに消えた」と見えないようにするため）。
-        offset = (max(page, 1) - 1) * _TX_PAGE_SIZE
+        page_size = 10_000_000 if month else _TX_PAGE_SIZE
+        offset = 0 if month else (max(page, 1) - 1) * _TX_PAGE_SIZE
         txs, total = ledger.transactions(
             source=source_ids,
             asset=asset,
             since=since,
             until=until,
-            limit=_TX_PAGE_SIZE,
+            before=before,
+            limit=page_size,
             offset=offset,
+            descending=order != "asc",
         )
     finally:
         ledger.close()
@@ -685,13 +734,98 @@ def _transactions(
             "running_balances": row_balances,
         })
 
-    total_pages = max(1, (total + _TX_PAGE_SIZE - 1) // _TX_PAGE_SIZE)
+    total_pages = 1 if month else max(1, (total + _TX_PAGE_SIZE - 1) // _TX_PAGE_SIZE)
     return {
         "transactions": rows,
         "total": total,
-        "page": max(page, 1),
+        "page": 1 if month else max(page, 1),
         "total_pages": total_pages,
         "page_size": _TX_PAGE_SIZE,
+        "order": "asc" if order == "asc" else "desc",
+        "month": month,
+        "filter_account": account,
+        "filter_asset": asset,
+    }
+
+
+def _month_nets(nets: dict[str, Decimal], asset: str | None) -> list[dict]:
+    """月の見出しに出す資産ごとの増減（資産名の順）。
+
+    資産で絞り込んでいればその資産だけを 0 でも出す（見出しごとに同じ資産が並ぶ）。
+    絞り込んでいなければ、その月に増減のあった資産すべて（入って同じだけ出た 0 は省く）。
+    """
+    if asset:
+        return [{"asset": asset, "net": str(nets.get(asset, Decimal(0)))}]
+    return [
+        {"asset": a, "net": str(v)}
+        for a, v in sorted(nets.items(), key=lambda kv: (kv[0].casefold(), kv[0]))
+        if v != 0
+    ]
+
+
+def _transaction_months(
+    db_path: str,
+    account: str | None,
+    asset: str | None,
+    since_str: str | None,
+    until_str: str | None,
+    order: str = "desc",
+    tz: tzinfo = timezone.utc,
+) -> dict:
+    """取引履歴の月ごとの見出し（件数・種類ごとの件数・資産ごとの増減）を返す。
+
+    絞り込みは /api/transactions と同じ。月は現地（tz）で区切る。取引の行は
+    返さない（開いた月だけ /api/transactions?month= で読む）ので、取引が多くても軽い。
+    nets はその月の資産ごとの増減（受取 − 送付 − 手数料）。単位の違う資産は足せない
+    ので資産ごとに分けて、資産名の順に並べる。資産で絞り込んでいるときはその資産だけ
+    （0 でも出す）、絞り込んでいなければ増減が 0 でない資産すべて。除外中のラベルも
+    行としては出すので数える。
+    """
+    groups = _load_groups(db_path)
+    source_ids = _resolve_source_ids(account, db_path, groups)
+    ledger = Ledger(db_path)
+    try:
+        rows = ledger.timeline(
+            source=source_ids,
+            asset=asset,
+            since=_parse_date(since_str),
+            until=_parse_date(until_str),
+        )
+    finally:
+        ledger.close()
+
+    months: dict[str, dict] = {}
+    for ts, tx_type, ra, rv, sa, sv, fa, fv in rows:
+        when = datetime.fromisoformat(ts)
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=timezone.utc)
+        m = months.setdefault(
+            when.astimezone(tz).strftime("%Y-%m"),
+            {"count": 0, "types": Counter(), "nets": {}},
+        )
+        m["count"] += 1
+        m["types"][tx_type] += 1
+        nets = m["nets"]
+        for leg_asset, amount, sign in ((ra, rv, 1), (sa, sv, -1), (fa, fv, -1)):
+            if leg_asset and amount:
+                nets[leg_asset] = nets.get(leg_asset, Decimal(0)) + sign * Decimal(amount)
+
+    return {
+        "months": [
+            {
+                "month": ym,
+                "count": months[ym]["count"],
+                # 多い種類から
+                "types": [
+                    {"type": t, "type_ja": _TX_TYPE_JA.get(t, t), "count": n}
+                    for t, n in sorted(months[ym]["types"].items(), key=lambda kv: (-kv[1], kv[0]))
+                ],
+                "nets": _month_nets(months[ym]["nets"], asset),
+            }
+            for ym in sorted(months, reverse=order != "asc")
+        ],
+        "total": len(rows),
+        "order": "asc" if order == "asc" else "desc",
         "filter_account": account,
         "filter_asset": asset,
     }
@@ -1923,11 +2057,15 @@ def _portfolio_history(
     currency: str,
     range_str: str,
     scope: str,
+    metric: str = "value",
 ) -> dict:
-    """ポートフォリオ価値の日次時系列を返す。
+    """ポートフォリオの日次時系列を返す。
 
     scope: "total" | "account:<表示名>" | "asset:<シンボル>"
     range_str: "7d" | "30d" | "90d" | "1y" | "all"
+    metric: "value"（評価額）| "balance"（保有数量）| "price"（価格）。数量は単位の
+      違う資産を足し合わせられず、価格は 1 資産にしか無いので、balance と price は
+      asset スコープでだけ受け付け、それ以外（不正な値を含む）は value に丸める。
     """
     # NOTE: scope の解釈は _scope_filters に切り出してある（残高APIと共通）
     currency = currency.upper()
@@ -1942,6 +2080,8 @@ def _portfolio_history(
     range_start = (today - timedelta(days=days)) if days is not None else None
 
     source_filter, asset_filter = _scope_filters(db_path, scope)
+    if metric not in ("balance", "price") or not asset_filter:
+        metric = "value"
 
     ledger = Ledger(db_path)
     try:
@@ -1956,11 +2096,40 @@ def _portfolio_history(
     finally:
         ledger.close()
 
+    if metric == "price":
+        # 価格は保有と関係なく決まるので、持っていない期間もレンジいっぱいに出す
+        # （ALL だけは区切りが無いので、台帳にその資産が現れた日から）。
+        price_start = range_start or (date.fromisoformat(min(snapshots)) if snapshots else None)
+        price_warnings: list[str] = []
+        series = (
+            fetch_price_history(
+                [asset_filter], currency, price_start, today, warn=price_warnings.append
+            ).get(asset_filter, {})
+            if price_start
+            else {}
+        )
+        points = [{"t": d, "price": str(series[d])} for d in sorted(series)]
+        # 評価額と同じく、CoinGecko に ID があるのに取れなかったときだけ unpriced に
+        # 載せる（ID の無い資産はいくら待っても取れないので「取得中」扱いにしない）
+        unpriced = [asset_filter] if not points and asset_filter in COINGECKO_IDS else []
+        return {
+            "currency": currency,
+            "range": range_str,
+            "scope": scope,
+            "metric": metric,
+            "points": points,
+            "unpriced": unpriced,
+            "is_partial": bool(price_warnings) or bool(unpriced),
+            "warnings": price_warnings,
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+        }
+
     if not snapshots:
         return {
             "currency": currency,
             "range": range_str,
             "scope": scope,
+            "metric": metric,
             "points": [],
             "unpriced": [],
             "warnings": [],
@@ -1970,6 +2139,37 @@ def _portfolio_history(
     # 日付範囲の確定（all の場合は最初のスナップショット日から today まで）
     first_snap_date = date.fromisoformat(min(snapshots))
     effective_start = max(range_start, first_snap_date) if range_start else first_snap_date
+    days_in_range = [
+        (effective_start + timedelta(days=i)).isoformat()
+        for i in range((today - effective_start).days + 1)
+    ]
+
+    def holdings_on(iso: str) -> dict[str, Decimal]:
+        # daily_balances は保有が 1 つでもある日を必ず返す（取引の無い日も前日の
+        # 残高を引き継いで載る）。載っていない日は「何も持っていない日」なので、
+        # 前日の保有を引きずらず空として扱う（asset スコープではその資産だけを見る）。
+        return {
+            a: b for a, b in snapshots.get(iso, {}).items()
+            if not asset_filter or a == asset_filter
+        }
+
+    if metric == "balance":
+        # 数量は台帳だけで決まる。価格を引かないので CoinGecko を叩かず、
+        # 価格の無い資産でも日が欠けない（評価額のように点が落ちない）。
+        return {
+            "currency": currency,
+            "range": range_str,
+            "scope": scope,
+            "metric": metric,
+            "points": [
+                {"t": iso, "balance": str(holdings_on(iso).get(asset_filter, Decimal("0")))}
+                for iso in days_in_range
+            ],
+            "unpriced": [],
+            "is_partial": False,
+            "warnings": [],
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+        }
 
     all_assets = assets_in_range(snapshots)
     if asset_filter:
@@ -1983,24 +2183,20 @@ def _portfolio_history(
     unpriced: set[str] = set()
     points: list[dict] = []
 
-    d = effective_start
-    prev_snapshot: dict[str, Decimal] = {}
-    while d <= today:
-        iso = d.isoformat()
-        if iso in snapshots:
-            prev_snapshot = snapshots[iso]
-        elif not prev_snapshot:
-            d += timedelta(days=1)
+    for iso in days_in_range:
+        holdings = holdings_on(iso)
+        if not holdings:
+            # 何も持っていない日の評価額は価格によらず 0 と判っている。点を落とすと
+            # 手放す前の点と次に持った日の点が直結し、保有が続いていたように見える。
+            point = {"t": iso, "value": "0"}
+            if asset_filter:
+                point["balance"] = "0"
+            points.append(point)
             continue
 
         total_value = Decimal("0")
         has_any_price = False
-        asset_balance = Decimal("0")  # asset スコープ用の保有数量
-        for asset, balance in prev_snapshot.items():
-            if asset_filter and asset != asset_filter:
-                continue
-            if asset_filter:
-                asset_balance += balance
+        for asset, balance in holdings.items():
             day_prices = price_hist.get(asset, {})
             price = day_prices.get(iso)
             if price is not None:
@@ -2012,10 +2208,8 @@ def _portfolio_history(
         if has_any_price:
             point = {"t": iso, "value": str(total_value)}
             if asset_filter:
-                point["balance"] = str(asset_balance)
+                point["balance"] = str(holdings.get(asset_filter, Decimal("0")))
             points.append(point)
-
-        d += timedelta(days=1)
 
     # CoinGecko ID がない資産（スパム・未対応トークン）は unpriced から除外する。
     # 残るのは「ID はあるが取得失敗」の資産のみ（一時的な取得不完全）。
@@ -2026,6 +2220,7 @@ def _portfolio_history(
         "currency": currency,
         "range": range_str,
         "scope": scope,
+        "metric": metric,
         "points": points,
         "unpriced": unpriced_supported,
         "is_partial": is_partial,
@@ -2211,9 +2406,32 @@ def create_app(
         since: str | None = Query(None),
         until: str | None = Query(None),
         page: int = Query(1),
+        order: str = Query("desc", pattern="^(asc|desc)$"),
+        month: str | None = Query(None, description="現地の YYYY-MM。その月を全件返す"),
+        tz: str | None = Query(None, description="ブラウザの IANA タイムゾーン（月の区切り用）"),
+        tz_offset: int | None = Query(None, description="tz が解決できないときの UTC からの分数"),
         db: str = Depends(get_db_path),
     ) -> dict:
-        return _transactions(db, account, asset, since, until, page)
+        return _transactions(
+            db, account, asset, since, until, page,
+            order=order, month=month, tz=_client_tz(tz, tz_offset),
+        )
+
+    @app.get("/api/transactions/months")
+    def transaction_months_api(
+        account: str | None = Query(None),
+        asset: str | None = Query(None),
+        since: str | None = Query(None),
+        until: str | None = Query(None),
+        order: str = Query("desc", pattern="^(asc|desc)$"),
+        tz: str | None = Query(None),
+        tz_offset: int | None = Query(None),
+        db: str = Depends(get_db_path),
+    ) -> dict:
+        """取引履歴の月ごとの見出し（取引の行は含まない）。"""
+        return _transaction_months(
+            db, account, asset, since, until, order=order, tz=_client_tz(tz, tz_offset),
+        )
 
     @app.post("/api/transactions")
     def add_transaction(body: dict[str, Any], db: str = Depends(get_db_path)) -> dict:
@@ -2485,9 +2703,12 @@ def create_app(
         currency: str = Query("USD"),
         range: str = Query("90d"),
         scope: str = Query("total"),
+        metric: str = Query(
+            "value", description="value（評価額）| balance（保有数量）| price（価格）。後の 2 つは asset スコープのみ"
+        ),
         db: str = Depends(get_db_path_read),
     ) -> dict:
-        return _portfolio_history(db, currency, range, scope)
+        return _portfolio_history(db, currency, range, scope, metric)
 
     @app.get("/api/balances")
     def balances(

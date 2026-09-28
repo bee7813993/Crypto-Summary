@@ -614,22 +614,16 @@ class Ledger:
         ).fetchall()
         return [self._row_to_tx(r) for r in rows]
 
-    def transactions(
+    def _tx_where(
         self,
-        source: str | list[str] | None = None,
-        asset: str | None = None,
-        since: datetime | None = None,
-        until: datetime | None = None,
-        limit: int = 50,
-        offset: int = 0,
-        exclude_labels: set[str] | None = None,
-    ) -> tuple[list[CanonicalTx], int]:
-        """取引履歴をフィルタ付きで返す。戻り値: (取引リスト, 総件数)。
-
-        source: 単一文字列 / リスト / None(全ソース)
-        asset:  received_asset / sent_asset / fee_asset のいずれかに一致
-        exclude_labels: 指定 label の取引を除外する
-        """
+        source: str | list[str] | None,
+        asset: str | None,
+        since: datetime | None,
+        until: datetime | None,
+        exclude_labels: set[str] | None,
+        before: datetime | None,
+    ) -> tuple[str, list]:
+        """transactions / timeline 共通の WHERE 句。"""
         clauses, params = [], []
         src_clause, src_params = self._source_clause(source)
         if src_clause:
@@ -650,18 +644,65 @@ class Ledger:
         if until:
             clauses.append("timestamp <= ?")
             params.append(until.isoformat())
-        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        if before:
+            clauses.append("timestamp < ?")
+            params.append(before.isoformat())
+        return (("WHERE " + " AND ".join(clauses)) if clauses else ""), params
+
+    def transactions(
+        self,
+        source: str | list[str] | None = None,
+        asset: str | None = None,
+        since: datetime | None = None,
+        until: datetime | None = None,
+        limit: int = 50,
+        offset: int = 0,
+        exclude_labels: set[str] | None = None,
+        before: datetime | None = None,
+        descending: bool = True,
+    ) -> tuple[list[CanonicalTx], int]:
+        """取引履歴をフィルタ付きで返す。戻り値: (取引リスト, 総件数)。
+
+        source: 単一文字列 / リスト / None(全ソース)
+        asset:  received_asset / sent_asset / fee_asset のいずれかに一致
+        exclude_labels: 指定 label の取引を除外する
+        before: この時刻より前だけ（含まない）。月などの半開区間で切るとき用
+        descending: 新しい順（既定）。False なら古い順。同じ時刻は取り込んだ順
+          （rowid）で、新しい順ではそれも逆にする — 並びが一意に決まるので、
+          ページ送りで行が重複・欠落しない
+        """
+        where, params = self._tx_where(source, asset, since, until, exclude_labels, before)
 
         total: int = self._conn.execute(
             f"SELECT COUNT(*) FROM transactions {where}", params
         ).fetchone()[0]
 
+        direction = "DESC" if descending else "ASC"
         rows = self._conn.execute(
             f"SELECT * FROM transactions {where} "
-            f"ORDER BY timestamp DESC LIMIT ? OFFSET ?",
+            f"ORDER BY timestamp {direction}, rowid {direction} LIMIT ? OFFSET ?",
             params + [limit, offset],
         ).fetchall()
         return [self._row_to_tx(r) for r in rows], total
+
+    def timeline(
+        self,
+        source: str | list[str] | None = None,
+        asset: str | None = None,
+        since: datetime | None = None,
+        until: datetime | None = None,
+    ) -> list[tuple]:
+        """集計用に、絞り込んだ取引の軽い列だけを返す（取引オブジェクトを作らない）。
+
+        各行: (timestamp, type, received_asset, received_amount, sent_asset,
+        sent_amount, fee_asset, fee_amount)。金額は保存した文字列のまま。
+        """
+        where, params = self._tx_where(source, asset, since, until, None, None)
+        return self._conn.execute(
+            "SELECT timestamp, type, received_asset, received_amount, sent_asset, "
+            f"sent_amount, fee_asset, fee_amount FROM transactions {where}",
+            params,
+        ).fetchall()
 
     def close(self) -> None:
         self._conn.close()

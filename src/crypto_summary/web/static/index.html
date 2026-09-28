@@ -362,16 +362,23 @@
             <button id="asset-tx-link" class="action-btn" data-i18n="btn.assetTxHistory">≡ この資産の取引履歴</button>
           </div>
 
-          <!-- 推移グラフ（資産詳細） -->
+          <!-- 推移グラフ（資産詳細）。1 資産なので価格・評価額・保有数を切り替えられる -->
           <section class="card history-card">
             <div class="history-header">
-              <h2 data-i18n="label.valueHistorySection">評価額推移</h2>
-              <div class="range-tabs" id="asset-range-tabs">
-                <button class="range-tab" data-range="7d">7D</button>
-                <button class="range-tab" data-range="30d">30D</button>
-                <button class="range-tab active" data-range="90d">90D</button>
-                <button class="range-tab" data-range="1y">1Y</button>
-                <button class="range-tab" data-range="all">ALL</button>
+              <h2 id="asset-history-title" data-i18n="label.valueHistorySection">評価額推移</h2>
+              <div class="history-controls">
+                <div class="range-tabs metric-tabs" id="asset-metric-tabs">
+                  <button class="range-tab" data-metric="price" aria-pressed="false" data-i18n="chart.metricPrice">価格</button>
+                  <button class="range-tab active" data-metric="value" aria-pressed="true" data-i18n="chart.metricValue">評価額</button>
+                  <button class="range-tab" data-metric="balance" aria-pressed="false" data-i18n="chart.metricQuantity">保有数</button>
+                </div>
+                <div class="range-tabs" id="asset-range-tabs">
+                  <button class="range-tab" data-range="7d">7D</button>
+                  <button class="range-tab" data-range="30d">30D</button>
+                  <button class="range-tab active" data-range="90d">90D</button>
+                  <button class="range-tab" data-range="1y">1Y</button>
+                  <button class="range-tab" data-range="all">ALL</button>
+                </div>
               </div>
             </div>
             <div class="history-chart-wrap">
@@ -456,6 +463,17 @@
             <input type="date" id="tx-filter-until" class="filter-date" />
           </div>
           <button id="tx-filter-clear" class="link-btn" data-i18n="btn.clearFilter">絞り込みを解除</button>
+          <!-- 並び順（日時）と表示（一覧／月ごと）。Asset Summary の取引一覧と同じ切替 -->
+          <div id="tx-view-bar" class="tx-view-bar">
+            <div class="range-tabs" data-name="order" role="group" data-i18n-title="tx.orderLabel" title="並び順（日時）">
+              <button type="button" class="range-tab" data-value="asc" data-i18n="tx.orderAsc">古い順</button>
+              <button type="button" class="range-tab" data-value="desc" data-i18n="tx.orderDesc">新しい順</button>
+            </div>
+            <div class="range-tabs" data-name="view" role="group" data-i18n-title="tx.viewLabel" title="表示">
+              <button type="button" class="range-tab" data-value="list" data-i18n="tx.viewList">一覧</button>
+              <button type="button" class="range-tab" data-value="month" data-i18n="tx.viewMonth">月ごと</button>
+            </div>
+          </div>
         </div>
 
         <div id="tx-active-filter" class="tx-active-filter hidden"></div>

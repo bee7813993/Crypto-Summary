@@ -39,6 +39,9 @@ let _assetHistChart = null;
 let _dashHistRange = localStorage.getItem("cs_dash_range") || "90d";
 let _acctHistRange = localStorage.getItem("cs_acct_range") || "90d";
 let _assetHistRange = localStorage.getItem("cs_asset_range") || "90d";
+// 資産詳細の推移グラフで表示する指標: "price"（価格）| "value"（評価額・既定）| "balance"（保有数）
+let _assetHistMetric = ["price", "balance"].includes(localStorage.getItem("cs_asset_metric"))
+  ? localStorage.getItem("cs_asset_metric") : "value";
 let _acctHistName = null;
 let _assetHistSymbol = null;
 
@@ -152,6 +155,48 @@ function fmtAmountSig(value, sig = 7) {
   if (!isFinite(n) || n === 0) return fmtAmount(value);
   const rounded = Number(n.toPrecision(sig));
   return rounded.toLocaleString(undefined, { maximumFractionDigits: 20 });
+}
+
+// 単価用。暗号資産は 1 未満の価格（DOGE の $0.1234、SHIB の $0.00001234 など）が
+// 多く、小数 2 桁では 0 に潰れるので、1 未満は有効数字 4 桁で出す
+// （Asset Summary の fmtPrice に当たる。あちらは株価・基準価額向けに小数 4 桁まで）。
+function fmtPrice(value, currency) {
+  if (maskAmounts) return (CURRENCY_SYMBOL[currency] || "") + "●●●●●";
+  const n = Number(value);
+  const digits = n !== 0 && Math.abs(n) < 1
+    ? { maximumSignificantDigits: 4 }
+    : { maximumFractionDigits: 2 };
+  return (CURRENCY_SYMBOL[currency] || "") + n.toLocaleString(undefined, digits);
+}
+
+// 軸ラベル用の短縮表記。スマホの狭い描画域で「$12,000.00」級のラベルが
+// プロット幅を食い潰すのを防ぐ（JPY は億/万、他通貨は compact 表記）。
+// Asset Summary の fmtMoneyShort と同じ規則。
+function fmtMoneyShort(value, currency) {
+  const n = Number(value);
+  if (maskAmounts || !isFinite(n)) return fmtMoney(value, currency);
+  const sign = n < 0 ? "−" : "";
+  const abs = Math.abs(n);
+  if (currency === "JPY") {
+    if (abs >= 100_000_000) {
+      const oku = abs / 100_000_000;
+      return sign + "¥" + (oku >= 10 ? Math.round(oku).toLocaleString() : oku.toFixed(1)) + "億";
+    }
+    if (abs >= 10_000) return sign + "¥" + Math.round(abs / 10_000).toLocaleString() + "万";
+    return fmtMoney(value, currency);
+  }
+  if (abs >= 10_000) {
+    return sign + (CURRENCY_SYMBOL[currency] || "") +
+      abs.toLocaleString(undefined, { notation: "compact", maximumFractionDigits: 1 });
+  }
+  return fmtMoney(value, currency);
+}
+
+// 狭い画面の縦軸用: 桁の大きい数量を「144万」「1.4M」に畳む（fmtMoneyShort の数量版）
+function fmtAmountShort(value) {
+  const n = Number(value);
+  if (maskAmounts || !isFinite(n) || Math.abs(n) < 10_000) return fmtAmount(value);
+  return n.toLocaleString(undefined, { notation: "compact", maximumFractionDigits: 1 });
 }
 
 function fmtDate(iso) {
@@ -767,7 +812,9 @@ function setChartActive(idx) {
 
 // ---- 推移グラフ ----
 
-function renderHistoryChart(canvasId, points, currency, existingChart) {
+// opts.metric: "value"（評価額・既定）| "balance"（保有数量）| "price"（価格）。
+// balance と price は 1 資産のグラフ（資産詳細）だけ
+function renderHistoryChart(canvasId, points, currency, existingChart, opts = {}) {
   const canvas = document.getElementById(canvasId);
   if (!canvas) return null;
   if (existingChart) existingChart.destroy();
@@ -782,9 +829,26 @@ function renderHistoryChart(canvasId, points, currency, existingChart) {
   canvas.style.display = "";
   if (emptyEl) emptyEl.classList.add("hidden");
 
+  const isBalance = opts.metric === "balance";
+  const isPrice = opts.metric === "price";
   const labels = points.map((p) => p.t);
-  const values = points.map((p) => Number(p.value));
+  const values = points.map((p) => Number(isBalance ? p.balance : isPrice ? p.price : p.value));
   const balances = points.map((p) => (p.balance != null ? p.balance : null));
+
+  // 狭い描画域（スマホ縦持ちなど）では日付を "MM-DD" に短縮し、本数も減らす。
+  // フル表記のままだと "2026-08-17" が隣とくっついて読めない。完全な日付は
+  // ツールチップで見られる。非表示中は clientWidth が 0 になるので画面幅で代用。
+  // （Asset Summary の推移グラフと同じ規則）
+  const wrapW = canvas.parentElement ? canvas.parentElement.clientWidth : 0;
+  const narrow = (wrapW > 0 ? wrapW : window.innerWidth) < 480;
+  // 縦軸の目盛りは狭い画面で短縮し、ツールチップは常に完全な表記にする
+  const fmtTick = (v) => {
+    if (isBalance) return narrow ? fmtAmountShort(v) : fmtAmount(v);
+    if (isPrice) return fmtPrice(v, currency);
+    return narrow ? fmtMoneyShort(v, currency) : fmtMoney(v, currency);
+  };
+  const fmtTip = (v) =>
+    (isBalance ? fmtAmount(v) : isPrice ? fmtPrice(v, currency) : fmtMoney(v, currency));
 
   const th = chartTheme();
   return new Chart(canvas, {
@@ -804,6 +868,9 @@ function renderHistoryChart(canvasId, points, currency, existingChart) {
         },
         fill: true,
         tension: 0.3,
+        // 保有数量は取引のあった日に段差で変わる。曲線でつなぐと取引の前から
+        // 増減し始めたように見え、0 を割り込むこともあるので階段で描く。
+        stepped: isBalance,
         pointRadius: 0,
         pointHoverRadius: 4,
         borderWidth: 2,
@@ -815,15 +882,27 @@ function renderHistoryChart(canvasId, points, currency, existingChart) {
       interaction: { mode: "index", intersect: false },
       scales: {
         x: {
-          ticks: { color: th.tick, font: { size: 11 }, maxTicksLimit: 8, maxRotation: 0 },
+          ticks: {
+            color: th.tick,
+            font: { size: 11 },
+            maxTicksLimit: narrow ? 4 : 8,
+            maxRotation: 0,
+            callback(v) {
+              const label = String(this.getLabelForValue(v));
+              return narrow ? label.replace(/^\d{4}-/, "") : label;
+            },
+          },
           grid: { color: th.grid },
           border: { display: false },
         },
         y: {
+          // 保有数量は 0 からの量として見せる（軸を切ると、少しの買い増しが
+          // 倍増のように見える）。評価額・価格は変動が見えるよう従来どおり自動
+          beginAtZero: isBalance,
           ticks: {
             color: th.tick,
             font: { size: 11 },
-            callback(v) { return fmtMoney(v, currency); },
+            callback(v) { return fmtTick(v); },
           },
           grid: { color: th.grid },
           border: { display: false },
@@ -840,8 +919,9 @@ function renderHistoryChart(canvasId, points, currency, existingChart) {
           padding: 10,
           callbacks: {
             title: ([item]) => item.label,
-            label: (item) => "  " + fmtMoney(item.parsed.y, currency),
+            label: (item) => "  " + fmtTip(item.parsed.y),
             afterLabel: (item) => {
+              if (isBalance || isPrice) return undefined;
               const bal = balances[item.dataIndex];
               return bal != null ? "  " + fmtAmount(bal) : undefined;
             },
@@ -859,16 +939,30 @@ function _setRangeActive(tabsId, range) {
     btn.classList.toggle("active", btn.dataset.range === range));
 }
 
-async function _fetchHistAndRender(scope, range, canvasId, loadingId, unpricedId, getRef, setRef) {
+// グラフ（canvasId）ごとの最新リクエスト番号。レンジや指標を続けて切り替えると、
+// 先に投げた遅いリクエスト（評価額は価格取得を挟む）が後から返ってきて、
+// 選択中とは違う内容でグラフを上書きしてしまう。最新以外の応答は捨てる。
+const _histReqSeq = {};
+
+// opts.metric: API に渡し、応答の metric で renderHistoryChart が描き分ける
+async function _fetchHistAndRender(scope, range, canvasId, loadingId, unpricedId, getRef, setRef, opts = {}) {
+  const seq = (_histReqSeq[canvasId] || 0) + 1;
+  _histReqSeq[canvasId] = seq;
+  const isStale = () => _histReqSeq[canvasId] !== seq;
+
   const currency = document.getElementById("currency").value;
   const loading = document.getElementById(loadingId);
   const unpricedEl = document.getElementById(unpricedId);
+  const metric = opts.metric || "value";
   if (loading) loading.classList.remove("hidden");
   try {
     const data = await fetchJSON(
-      `/api/portfolio-history?scope=${encodeURIComponent(scope)}&range=${range}&currency=${currency}`
+      `/api/portfolio-history?scope=${encodeURIComponent(scope)}&range=${range}&currency=${currency}&metric=${metric}`
     );
-    setRef(renderHistoryChart(canvasId, data.points, currency, getRef()));
+    if (isStale()) return;
+    // サーバーが実際に使った指標で描く（asset 以外のスコープでは value に丸められる）
+    setRef(renderHistoryChart(canvasId, data.points, currency, getRef(),
+      { metric: data.metric || "value" }));
     if (unpricedEl) {
       if (data.is_partial) {
         unpricedEl.textContent = t("label.historyPartial");
@@ -878,10 +972,11 @@ async function _fetchHistAndRender(scope, range, canvasId, loadingId, unpricedId
       }
     }
   } catch (e) {
+    if (isStale()) return;
     console.warn("[crypto-summary] portfolio history:", e);
     setRef(renderHistoryChart(canvasId, [], currency, getRef()));
   } finally {
-    if (loading) loading.classList.add("hidden");
+    if (loading && !isStale()) loading.classList.add("hidden");
   }
 }
 
@@ -909,16 +1004,49 @@ function loadAcctHistoryChart(name, range) {
   );
 }
 
-function loadAssetHistoryChart(symbol, range) {
+function loadAssetHistoryChart(symbol, range, metric) {
   if (symbol != null) _assetHistSymbol = symbol;
   if (range != null) _assetHistRange = range;
+  if (metric != null) _assetHistMetric = metric;
   if (!_assetHistSymbol) return;
   localStorage.setItem("cs_asset_range", _assetHistRange);
+  localStorage.setItem("cs_asset_metric", _assetHistMetric);
   _setRangeActive("asset-range-tabs", _assetHistRange);
+  _syncAssetMetric();
   return _fetchHistAndRender(
     `asset:${_assetHistSymbol}`, _assetHistRange,
     "asset-history-chart", "asset-history-loading", "asset-history-unpriced",
-    () => _assetHistChart, (c) => { _assetHistChart = c; }
+    () => _assetHistChart, (c) => { _assetHistChart = c; },
+    { metric: _assetHistMetric }
+  );
+}
+
+const _ASSET_METRIC_TITLE = {
+  price: "label.priceHistorySection",
+  value: "label.valueHistorySection",
+  balance: "label.quantityHistorySection",
+};
+
+/** data-i18n ごと差し替えて文言を入れる（言語切替の applyI18n で元に戻らないように）。 */
+function _setI18nText(el, key) {
+  if (!el) return;
+  el.setAttribute("data-i18n", key);
+  el.textContent = t(key);
+}
+
+// 資産詳細の推移グラフの 価格／評価額／保有数 トグル・見出し・空のときの文言を、
+// 選択中の指標に合わせる（読み込みを待たずに合わせる）。
+function _syncAssetMetric() {
+  document.querySelectorAll("#asset-metric-tabs [data-metric]").forEach((btn) => {
+    const on = btn.dataset.metric === _assetHistMetric;
+    btn.classList.toggle("active", on);
+    btn.setAttribute("aria-pressed", on ? "true" : "false");
+  });
+  _setI18nText(document.getElementById("asset-history-title"), _ASSET_METRIC_TITLE[_assetHistMetric]);
+  // 価格が無いのと取引が無いのは別の理由なので、空のときの文言も分ける
+  _setI18nText(
+    document.getElementById("asset-history-chart").parentElement.querySelector(".history-empty"),
+    _assetHistMetric === "price" ? "label.noPriceData" : "label.noTxData"
   );
 }
 
@@ -1298,6 +1426,64 @@ async function loadAssetDetail(symbol) {
 
 let _txAccountsLoaded = false;
 
+// 並び順（日時の古い順／新しい順）と表示（一覧／月ごと）。Asset Summary の取引一覧と
+// 同じ切替で、選んだものを覚える。並び順の既定は従来どおり新しい順
+let _txOrder = localStorage.getItem("cs_tx_order") === "asc" ? "asc" : "desc";
+let _txView = localStorage.getItem("cs_tx_view") === "month" ? "month" : "list";
+let _txListReq = 0;              // 読み込み中に切り替えたら、古い応答では描かない
+let _txMonthCtx = null;          // 開いた月を覚えている絞り込み（変わったら閉じる）
+const _txMonthOpen = new Set();  // 月ごとの表示で開いている月（"YYYY-MM"）
+
+function _syncTxViewBar() {
+  const pref = { order: _txOrder, view: _txView };
+  document.querySelectorAll("#tx-view-bar .range-tabs").forEach((box) => {
+    box.querySelectorAll(".range-tab").forEach((b) => {
+      const on = b.dataset.value === pref[box.dataset.name];
+      b.classList.toggle("active", on);
+      b.setAttribute("aria-pressed", String(on));
+    });
+  });
+}
+
+function _txFilterQuery(account, asset, since, until) {
+  let q = "";
+  if (account) q += `&account=${encodeURIComponent(account)}`;
+  if (asset) q += `&asset=${encodeURIComponent(asset)}`;
+  if (since) q += `&since=${encodeURIComponent(since)}`;
+  if (until) q += `&until=${encodeURIComponent(until)}`;
+  return q;
+}
+
+// 月の区切りに使うブラウザのタイムゾーン。日時は画面に現地時刻で出しているので、
+// 月も同じ現地時刻で切る（UTC で切ると月末の夜の取引が翌月の日付なのに前の月に入る）
+function _tzQuery() {
+  let q = `tz_offset=${-new Date().getTimezoneOffset()}`;
+  try {
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    if (tz) q += `&tz=${encodeURIComponent(tz)}`;
+  } catch (_) { /* 取れなければ tz_offset だけで区切る */ }
+  return q;
+}
+
+function _fmtMonth(ym) {
+  const m = /^(\d{4})-(\d{2})$/.exec(ym || "");
+  if (!m) return ym || "";
+  const y = Number(m[1]);
+  const mo = Number(m[2]);
+  return _lang === "en"
+    ? new Date(Date.UTC(y, mo - 1, 1)).toLocaleString("en-US", {
+      year: "numeric", month: "short", timeZone: "UTC",
+    })
+    : `${y}年${mo}月`;
+}
+
+// 符号付きの数量（月の増減）。金額マスク中は隠す
+function _fmtSignedAmount(value) {
+  if (maskAmounts) return "●●●●●";
+  const n = Number(value);
+  return (n > 0 ? "+" : n < 0 ? "-" : "") + fmtAmount(Math.abs(n));
+}
+
 async function _rebuildAccountFilter() {
   _txAccountsLoaded = false;
   const accSel = document.getElementById("tx-filter-account");
@@ -1351,6 +1537,7 @@ async function _updateAssetDropdown(account) {
 }
 
 async function loadTransactionsPage(account, asset, since, until, page = 1) {
+  const req = ++_txListReq;
   await _ensureAccountOptions();
   ensureExportFormats();
   await initTaxExportPanel();
@@ -1374,6 +1561,8 @@ async function loadTransactionsPage(account, asset, since, until, page = 1) {
 
   // 資産ドロップダウンを口座に合わせて更新してから選択値を設定
   await _updateAssetDropdown(account || null);
+  // 待つ間に次の読み込みが始まっていたら、そちらの描画を消さないよう何もしない
+  if (req !== _txListReq) return;
   if (asset) {
     if (![...selAsset.options].some((o) => o.value === asset)) {
       const opt = document.createElement("option");
@@ -1398,6 +1587,7 @@ async function loadTransactionsPage(account, asset, since, until, page = 1) {
   } else {
     banner.classList.add("hidden");
   }
+  _syncTxViewBar();
 
   const tbody = document.querySelector("#tx-table tbody");
   const loading = document.getElementById("tx-loading");
@@ -1406,90 +1596,185 @@ async function loadTransactionsPage(account, asset, since, until, page = 1) {
   loading.classList.remove("hidden");
   empty.classList.add("hidden");
 
+  const filters = _txFilterQuery(account, asset, since, until);
+  const reload = () => loadTransactionsPage(account, asset, since, until, page);
   try {
-    let url = `/api/transactions?page=${page}`;
-    if (account) url += `&account=${encodeURIComponent(account)}`;
-    if (asset) url += `&asset=${encodeURIComponent(asset)}`;
-    if (since) url += `&since=${encodeURIComponent(since)}`;
-    if (until) url += `&until=${encodeURIComponent(until)}`;
-
-    const data = await fetchJSON(url);
+    if (_txView === "month") {
+      await _renderTxMonths(req, { account, asset, since, until }, filters, reload);
+      return;
+    }
+    const data = await fetchJSON(`/api/transactions?page=${page}&order=${_txOrder}${filters}`);
+    if (req !== _txListReq) return;
     loading.classList.add("hidden");
 
     if (data.transactions.length === 0) {
       empty.classList.remove("hidden");
     } else {
-      data.transactions.forEach((tx) => {
-        const tr = document.createElement("tr");
-        const recv = tx.received_asset
-          ? `${fmtAmount(tx.received_amount)} ${escapeHtml(tx.received_asset)}`
-          : '<span class="muted">-</span>';
-        const sent = tx.sent_asset
-          ? `${fmtAmount(tx.sent_amount)} ${escapeHtml(tx.sent_asset)}`
-          : '<span class="muted">-</span>';
-        const fee = tx.fee_asset
-          ? `${fmtAmount(tx.fee_amount)} ${escapeHtml(tx.fee_asset)}`
-          : '<span class="muted">-</span>';
-        const hash = tx.tx_hash
-          ? `<span class="tx-hash" title="${escapeHtml(tx.tx_hash)}">${escapeHtml(tx.tx_hash)}</span>`
-          : "";
-
-        // 取引後残高 — 複数資産対応
-        const rb = tx.running_balances || {};
-        let balHtml = "";
-        const rbEntries = Object.entries(rb);
-        if (rbEntries.length === 0) {
-          balHtml = '<span class="muted">-</span>';
-        } else {
-          balHtml = '<div class="bal-cell">';
-          rbEntries.forEach(([sym, bal]) => {
-            balHtml += `<div class="bal-entry">
-              <span class="bal-asset">${escapeHtml(sym)}</span>
-              <span class="bal-vals">${fmtAmount(bal.global)}<span class="bal-acct"> (${fmtAmount(bal.account)})</span></span>
-            </div>`;
-          });
-          balHtml += "</div>";
-        }
-
-        const isManual = tx.id.startsWith("manual:");
-        const delBtn = `<button class="delete-btn" title="${t("btn.delete")}" data-txid="${escapeHtml(tx.id)}" data-txdesc="${escapeHtml(fmtDate(tx.timestamp) + " " + (tx.type_ja || tx.type))}">✕</button>`;
-
-        tr.innerHTML = `
-          <td style="white-space:nowrap">${fmtDate(tx.timestamp)}</td>
-          <td>${escapeHtml(tx.account)}</td>
-          <td><span class="tx-type tx-type-${escapeHtml(tx.type)}">${escapeHtml(_txTypeLabel(tx))}</span></td>
-          <td>${recv}</td>
-          <td>${sent}</td>
-          <td>${fee}</td>
-          <td class="num">${balHtml}</td>
-          <td style="white-space:nowrap">${tx.label ? '<span class="muted" style="font-size:12px">' + escapeHtml(tx.label) + '</span>' : ""}${hash}${delBtn}</td>
-        `;
-
-        tr.querySelector(".delete-btn").addEventListener("click", (e) => {
-          e.stopPropagation();
-          const btn = e.currentTarget;
-          showDeleteDialog(btn.dataset.txid, btn.dataset.txdesc, () => {
-            loadTransactionsPage(account, asset, since, until, page);
-          });
-        });
-
-        _appendDetailToggle(tr, [
-          { label: t("th.account"),      value: escapeHtml(tx.account) },
-          { label: t("th.sent"),         value: sent },
-          { label: t("th.fee"),          value: fee },
-          { label: t("th.afterBalance"), value: balHtml },
-        ]);
-
-        tbody.appendChild(tr);
-      });
+      data.transactions.forEach((tx) => tbody.appendChild(_txRow(tx, reload)));
     }
 
     renderTxPagination(data, account, asset, since, until);
   } catch (e) {
+    if (req !== _txListReq) return;
     loading.classList.add("hidden");
     tbody.innerHTML = `<tr><td colspan="8" class="muted">${t("status.error")}${escapeHtml(e.message)}</td></tr>`;
     document.getElementById("tx-pagination").innerHTML = "";
   }
+}
+
+/** 取引履歴の 1 行（一覧と月ごとで共通）。reload は削除のあとに描き直す関数。 */
+function _txRow(tx, reload) {
+  const tr = document.createElement("tr");
+  const recv = tx.received_asset
+    ? `${fmtAmount(tx.received_amount)} ${escapeHtml(tx.received_asset)}`
+    : '<span class="muted">-</span>';
+  const sent = tx.sent_asset
+    ? `${fmtAmount(tx.sent_amount)} ${escapeHtml(tx.sent_asset)}`
+    : '<span class="muted">-</span>';
+  const fee = tx.fee_asset
+    ? `${fmtAmount(tx.fee_amount)} ${escapeHtml(tx.fee_asset)}`
+    : '<span class="muted">-</span>';
+  const hash = tx.tx_hash
+    ? `<span class="tx-hash" title="${escapeHtml(tx.tx_hash)}">${escapeHtml(tx.tx_hash)}</span>`
+    : "";
+
+  // 取引後残高 — 複数資産対応
+  const rb = tx.running_balances || {};
+  let balHtml = "";
+  const rbEntries = Object.entries(rb);
+  if (rbEntries.length === 0) {
+    balHtml = '<span class="muted">-</span>';
+  } else {
+    balHtml = '<div class="bal-cell">';
+    rbEntries.forEach(([sym, bal]) => {
+      balHtml += `<div class="bal-entry">
+        <span class="bal-asset">${escapeHtml(sym)}</span>
+        <span class="bal-vals">${fmtAmount(bal.global)}<span class="bal-acct"> (${fmtAmount(bal.account)})</span></span>
+      </div>`;
+    });
+    balHtml += "</div>";
+  }
+
+  const isManual = tx.id.startsWith("manual:");
+  const delBtn = `<button class="delete-btn" title="${t("btn.delete")}" data-txid="${escapeHtml(tx.id)}" data-txdesc="${escapeHtml(fmtDate(tx.timestamp) + " " + (tx.type_ja || tx.type))}">✕</button>`;
+
+  tr.innerHTML = `
+    <td style="white-space:nowrap">${fmtDate(tx.timestamp)}</td>
+    <td>${escapeHtml(tx.account)}</td>
+    <td><span class="tx-type tx-type-${escapeHtml(tx.type)}">${escapeHtml(_txTypeLabel(tx))}</span></td>
+    <td>${recv}</td>
+    <td>${sent}</td>
+    <td>${fee}</td>
+    <td class="num">${balHtml}</td>
+    <td style="white-space:nowrap">${tx.label ? '<span class="muted" style="font-size:12px">' + escapeHtml(tx.label) + '</span>' : ""}${hash}${delBtn}</td>
+  `;
+
+  tr.querySelector(".delete-btn").addEventListener("click", (e) => {
+    e.stopPropagation();
+    const btn = e.currentTarget;
+    showDeleteDialog(btn.dataset.txid, btn.dataset.txdesc, reload);
+  });
+
+  _appendDetailToggle(tr, [
+    { label: t("th.account"),      value: escapeHtml(tx.account) },
+    { label: t("th.sent"),         value: sent },
+    { label: t("th.fee"),          value: fee },
+    { label: t("th.afterBalance"), value: balHtml },
+  ]);
+
+  return tr;
+}
+
+// 月ごとの表示: 月の見出しを並べ、見出しを押す（Enter・Space でも）とその月の取引を
+// 開閉する（Asset Summary の取引一覧と同じ）。AS は全件を読んで画面でまとめるが、CS は
+// 日次利息などで取引が多くなるので、見出しは API で集計し、行は開いた月だけ読む。
+async function _renderTxMonths(req, f, filters, reload) {
+  const tbody = document.querySelector("#tx-table tbody");
+  const loading = document.getElementById("tx-loading");
+  const empty = document.getElementById("tx-empty");
+  // 開いた月は絞り込みが変わるまで覚えておく（並び順を変えても開いたまま）
+  const ctx = JSON.stringify(f);
+  if (ctx !== _txMonthCtx) {
+    _txMonthOpen.clear();
+    _txMonthCtx = ctx;
+  }
+  const data = await fetchJSON(`/api/transactions/months?order=${_txOrder}&${_tzQuery()}${filters}`);
+  if (req !== _txListReq) return;
+  loading.classList.add("hidden");
+  if (!data.months.length) empty.classList.remove("hidden");
+
+  data.months.forEach((m) => {
+    const head = document.createElement("tr");
+    head.className = "tx-month-row";
+    head.tabIndex = 0;
+    head.title = t("tx.monthToggle");
+    const count = t(m.count === 1 ? "tx.monthCountOne" : "tx.monthCount", { n: m.count.toLocaleString() });
+    const types = m.types.map((ty) => `${_txTypeLabel(ty)} ${ty.count}`).join("・");
+    // 資産ごとの増減（単位の違う資産は足せないので分けて並べる）。資産で絞り込んで
+    // いればその資産だけ、無ければその月に動いた資産すべてで、入りきらなければ折り返す
+    const nets = (m.nets || []).map((n) =>
+      `<span class="tx-month-net ${changeClass(Number(n.net))}">${escapeHtml(_fmtSignedAmount(n.net))} ${escapeHtml(n.asset)}</span>`
+    ).join("");
+    head.innerHTML = `<td colspan="9"><div class="tx-month-cell">
+      <span class="tx-month-label"><span class="tx-month-chev" aria-hidden="true"></span>${escapeHtml(_fmtMonth(m.month))}</span>
+      <span>${escapeHtml(count)} <span class="tx-month-types">${escapeHtml(types)}</span></span>
+      ${nets ? `<span class="tx-month-nets">${nets}</span>` : ""}
+    </div></td>`;
+    tbody.appendChild(head);
+
+    let rows = null;     // この月の取引の行（初めて開いたときに読む）
+    let pending = null;  // 読み込み中・失敗の案内の行
+    const show = (on) => {
+      head.setAttribute("aria-expanded", String(on));
+      head.querySelector(".tx-month-chev").textContent = on ? "▾" : "▸";
+      if (pending) pending.classList.toggle("hidden", !on);
+      (rows || []).forEach((tr) => {
+        tr.classList.toggle("hidden", !on);
+        // スマホで開いた行の詳細も一緒に隠す
+        const detail = tr.nextElementSibling;
+        if (detail && detail.classList.contains("detail-row")) detail.classList.toggle("hidden", !on);
+      });
+    };
+    const load = async () => {
+      if (rows) return;
+      if (pending) pending.remove();
+      pending = document.createElement("tr");
+      pending.innerHTML = `<td colspan="9" class="loading">${t("label.loading")}</td>`;
+      head.after(pending);
+      try {
+        const got = await fetchJSON(
+          `/api/transactions?month=${m.month}&order=${_txOrder}&${_tzQuery()}${filters}`);
+        if (req !== _txListReq) return;
+        rows = got.transactions.map((tx) => _txRow(tx, reload));
+        pending.replaceWith(...rows);
+        pending = null;
+      } catch (e) {
+        if (req !== _txListReq) return;
+        pending.innerHTML = `<td colspan="9" class="muted">${t("status.error")}${escapeHtml(e.message)}</td>`;
+      }
+      show(_txMonthOpen.has(m.month));
+    };
+    const toggle = () => {
+      const on = !_txMonthOpen.has(m.month);
+      if (on) _txMonthOpen.add(m.month);
+      else _txMonthOpen.delete(m.month);
+      show(on);
+      if (on) load();
+    };
+    head.addEventListener("click", toggle);
+    head.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        toggle();
+      }
+    });
+    const open = _txMonthOpen.has(m.month);
+    show(open);
+    if (open) load();
+  });
+
+  // ページ送りはしない（件数だけ出す）
+  renderTxPagination({ total: data.total, total_pages: 1, page: 1 }, f.account, f.asset, f.since, f.until);
 }
 
 function renderTxPagination(data, account, asset, since, until) {
@@ -1570,6 +1855,24 @@ document.getElementById("tx-filter-asset").addEventListener("change", (e) => {
   const until = document.getElementById("tx-filter-until").value || null;
   navigateToTransactions({ account, asset, since, until, page: 1 });
 });
+
+// 並び順・表示の切替。選んだものを覚え、絞り込みはそのままに 1 ページ目から描き直す
+// （並び順が変わるとページ番号の指す取引も変わる）
+document.querySelectorAll("#tx-view-bar .range-tabs").forEach((box) =>
+  box.querySelectorAll(".range-tab").forEach((b) => b.addEventListener("click", () => {
+    const name = box.dataset.name;
+    const value = b.dataset.value;
+    if ((name === "order" ? _txOrder : _txView) === value) return;
+    if (name === "order") _txOrder = value;
+    else _txView = value;
+    localStorage.setItem(`cs_tx_${name}`, value);
+    _syncTxViewBar();
+    const { params } = parseHash();
+    navigateToTransactions({
+      account: params.account || null, asset: params.asset || null,
+      since: params.since || null, until: params.until || null, page: 1,
+    });
+  })));
 
 document.getElementById("tx-filter-since").addEventListener("change", (e) => {
   const since = e.target.value || null;
@@ -3498,6 +3801,9 @@ document.getElementById("acct-range-tabs").querySelectorAll(".range-tab").forEac
 
 document.getElementById("asset-range-tabs").querySelectorAll(".range-tab").forEach((btn) =>
   btn.addEventListener("click", () => loadAssetHistoryChart(null, btn.dataset.range)));
+
+document.getElementById("asset-metric-tabs").querySelectorAll("[data-metric]").forEach((btn) =>
+  btn.addEventListener("click", () => loadAssetHistoryChart(null, null, btn.dataset.metric)));
 
 // ---- 初期化 ----
 

@@ -603,6 +603,27 @@ html.light .tx-type-transfer { background: #d1fae5; color: #065f46; }
 .filter-date:hover { border-color: var(--accent); }
 .filter-date::-webkit-calendar-picker-indicator { filter: invert(.6); cursor: pointer; }
 
+/* 取引の一覧: 並び順（古い順／新しい順）・表示（一覧／月ごと）の切替（Asset Summary と同じ）。
+   CS は一覧の見出しが無いので、絞り込み行の右端に置く */
+.tx-view-bar { display: flex; flex-wrap: wrap; gap: 8px; }
+.tx-filters .tx-view-bar { margin-left: auto; padding-bottom: 4px; }
+/* 月ごと: 月の見出し行（押すとその月の取引を開閉する） */
+tr.tx-month-row td { background: var(--bg-elev); font-weight: 600; cursor: pointer; }
+tr.tx-month-row:hover td, tr.tx-month-row:focus-visible td { color: var(--accent); }
+tr.tx-month-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.tx-month-label { white-space: nowrap; }
+.tx-month-chev { display: inline-block; width: 1.2em; color: var(--text-dim); }
+.tx-month-types { font-weight: 400; color: var(--text-dim); margin-left: 6px; }
+/* 見出しは 1 つのセルにまとめる（スマホで列を畳む nth-child の規則に掛からないように） */
+.tx-month-cell { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 16px; }
+/* 資産ごとの増減。見出しの右側に並べ、入りきらなければ右寄せのまま折り返す */
+.tx-month-nets {
+  flex: 1 1 240px;
+  display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 2px 14px;
+  font-weight: 500;
+}
+.tx-month-net { font-variant-numeric: tabular-nums; white-space: nowrap; }
+
 /* ---- インポートページ ---- */
 .import-tabs {
   display: flex;
@@ -723,10 +744,18 @@ html.light .tx-type-transfer { background: #d1fae5; color: #065f46; }
   display: flex;
   align-items: center;
   justify-content: space-between;
+  /* 表示対象のタブが付く推移は、スマホ幅では見出しと同じ行に収まらない */
+  flex-wrap: wrap;
+  gap: 8px 12px;
   margin-bottom: 12px;
 }
 .history-header h2 { margin-bottom: 0; }
+/* 表示対象（価格・評価額・保有数）とレンジのタブ2組 */
+.history-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 12px; }
 .range-tabs { display: flex; gap: 2px; }
+/* 表示対象は「何を見るか」、レンジは「いつを見るか」。同じ見た目のボタンが
+   一列に並ぶと1組に見えるので、表示対象だけ枠で囲って別の組だと示す */
+.metric-tabs { border: 1px solid var(--border); border-radius: 8px; padding: 2px; }
 .range-tab {
   background: none;
   border: 1px solid transparent;
