@@ -167,3 +167,82 @@ def test_response_schema(app_client):
     if data["points"]:
         assert "t" in data["points"][0]
         assert "value" in data["points"][0]
+
+
+# ---------- 保有ゼロの日 ----------
+
+def _iso(days_ago):
+    return (date.today() - timedelta(days=days_ago)).isoformat()
+
+
+@pytest.fixture()
+def btc_only_prices(monkeypatch):
+    """BTC だけ 7〜1 日前の終値 50000 を返す CoinGecko モック。"""
+    import httpx
+
+    def fake_get(url, *a, **k):
+        class R:
+            status_code = 200
+            def raise_for_status(self): pass
+            def json(self):
+                if "market_chart" in url and "bitcoin" in url:
+                    return {"prices": [[_ms_for(d), 50000] for d in range(7, 0, -1)]}
+                return {"prices": []}
+        return R()
+
+    monkeypatch.setattr(httpx, "get", fake_get)
+
+
+def _client_with(tmp_path, txs):
+    db = tmp_path / "hist.db"
+    ledger = Ledger(str(db))
+    for tx in txs:
+        ledger.upsert(tx)
+    ledger.close()
+    return TestClient(create_app(str(db)))
+
+
+def test_emptied_account_drops_to_zero(tmp_path, btc_only_prices):
+    """全額出金した口座は、出金日以降の評価額が 0 になる。
+
+    保有がゼロの日は daily_balances に載らない。以前はそれを「前日と同じ」と
+    解釈して、出金済みの BTC を毎日評価し続けていた。
+    """
+    client = _client_with(tmp_path, [
+        _tx("in", "acct1", _recent(5), TxType.DEPOSIT, ra="BTC", rv=1),
+        _tx("out", "acct1", _recent(3), TxType.WITHDRAW, sa="BTC", sv=1),
+    ])
+    data = client.get("/api/portfolio-history?currency=USD&range=7d&scope=account:Acct1").json()
+    pts = {p["t"]: p["value"] for p in data["points"]}
+    assert Decimal(pts[_iso(4)]) == Decimal("50000")
+    assert [pts[_iso(d)] for d in (3, 2, 1, 0)] == ["0", "0", "0", "0"]
+
+
+def test_asset_fully_withdrawn_reports_zero_balance(tmp_path, btc_only_prices):
+    client = _client_with(tmp_path, [
+        _tx("in", "acct1", _recent(5), TxType.DEPOSIT, ra="BTC", rv=1),
+        _tx("out", "acct1", _recent(3), TxType.WITHDRAW, sa="BTC", sv=1),
+    ])
+    data = client.get("/api/portfolio-history?currency=USD&range=7d&scope=asset:BTC").json()
+    pts = {p["t"]: p for p in data["points"]}
+    assert Decimal(pts[_iso(4)]["balance"]) == Decimal("1")
+    assert pts[_iso(3)] == {"t": _iso(3), "value": "0", "balance": "0"}
+
+
+def test_asset_sold_out_is_zero_not_a_gap(tmp_path, btc_only_prices):
+    """売り切った日から買い戻すまでは 0 の点が並ぶ（点が欠けて前後が直結しない）。
+
+    売却代金の JPY が残るので、その日は daily_balances に載るが BTC は無い。
+    """
+    client = _client_with(tmp_path, [
+        _tx("buy", "ex", _recent(6), TxType.TRADE, ra="BTC", rv=1, sa="JPY", sv=5000000),
+        _tx("sell", "ex", _recent(4), TxType.TRADE, ra="JPY", rv=6000000, sa="BTC", sv=1),
+        _tx("rebuy", "ex", _recent(2), TxType.TRADE, ra="BTC", rv="0.5", sa="JPY", sv=3000000),
+    ])
+    data = client.get("/api/portfolio-history?currency=USD&range=7d&scope=asset:BTC").json()
+    pts = {p["t"]: p for p in data["points"]}
+    assert Decimal(pts[_iso(5)]["value"]) == Decimal("50000")
+    assert pts[_iso(4)]["value"] == "0" and pts[_iso(4)]["balance"] == "0"
+    assert pts[_iso(3)]["value"] == "0"
+    assert Decimal(pts[_iso(2)]["balance"]) == Decimal("0.5")
+    assert Decimal(pts[_iso(2)]["value"]) == Decimal("25000")

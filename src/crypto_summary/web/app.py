@@ -1983,24 +1983,27 @@ def _portfolio_history(
     unpriced: set[str] = set()
     points: list[dict] = []
 
-    d = effective_start
-    prev_snapshot: dict[str, Decimal] = {}
-    while d <= today:
-        iso = d.isoformat()
-        if iso in snapshots:
-            prev_snapshot = snapshots[iso]
-        elif not prev_snapshot:
-            d += timedelta(days=1)
+    for offset in range((today - effective_start).days + 1):
+        iso = (effective_start + timedelta(days=offset)).isoformat()
+        # daily_balances は保有が 1 つでもある日を必ず返す（取引の無い日も前日の
+        # 残高を引き継いで載る）。載っていない日は「何も持っていない日」なので、
+        # 前日の保有を引きずらず空として扱う（asset スコープではその資産だけを見る）。
+        holdings = {
+            a: b for a, b in snapshots.get(iso, {}).items()
+            if not asset_filter or a == asset_filter
+        }
+        if not holdings:
+            # 何も持っていない日の評価額は価格によらず 0 と判っている。点を落とすと
+            # 手放す前の点と次に持った日の点が直結し、保有が続いていたように見える。
+            point = {"t": iso, "value": "0"}
+            if asset_filter:
+                point["balance"] = "0"
+            points.append(point)
             continue
 
         total_value = Decimal("0")
         has_any_price = False
-        asset_balance = Decimal("0")  # asset スコープ用の保有数量
-        for asset, balance in prev_snapshot.items():
-            if asset_filter and asset != asset_filter:
-                continue
-            if asset_filter:
-                asset_balance += balance
+        for asset, balance in holdings.items():
             day_prices = price_hist.get(asset, {})
             price = day_prices.get(iso)
             if price is not None:
@@ -2012,10 +2015,8 @@ def _portfolio_history(
         if has_any_price:
             point = {"t": iso, "value": str(total_value)}
             if asset_filter:
-                point["balance"] = str(asset_balance)
+                point["balance"] = str(holdings.get(asset_filter, Decimal("0")))
             points.append(point)
-
-        d += timedelta(days=1)
 
     # CoinGecko ID がない資産（スパム・未対応トークン）は unpriced から除外する。
     # 残るのは「ID はあるが取得失敗」の資産のみ（一時的な取得不完全）。
