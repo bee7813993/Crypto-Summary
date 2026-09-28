@@ -246,3 +246,102 @@ def test_asset_sold_out_is_zero_not_a_gap(tmp_path, btc_only_prices):
     assert pts[_iso(3)]["value"] == "0"
     assert Decimal(pts[_iso(2)]["balance"]) == Decimal("0.5")
     assert Decimal(pts[_iso(2)]["value"]) == Decimal("25000")
+
+
+# ---------- metric=balance（保有数量の推移） ----------
+
+@pytest.fixture()
+def no_coingecko(monkeypatch):
+    """CoinGecko を叩いたら失敗させる（数量の推移は台帳だけで決まる）。"""
+    import httpx
+
+    def forbid(*a, **k):
+        raise AssertionError("metric=balance must not fetch prices")
+
+    monkeypatch.setattr(httpx, "get", forbid)
+
+
+def test_balance_metric_returns_quantity_for_every_day(tmp_path, no_coingecko):
+    client = _client_with(tmp_path, [
+        _tx("in1", "ex", _recent(5), TxType.DEPOSIT, ra="BTC", rv=1),
+        _tx("in2", "wallet", _recent(3), TxType.DEPOSIT, ra="BTC", rv="0.5"),
+        _tx("out", "ex", _recent(1), TxType.WITHDRAW, sa="BTC", sv="1.2", fa="BTC", fv="0.3"),
+    ])
+    data = client.get(
+        "/api/portfolio-history?currency=JPY&range=7d&scope=asset:BTC&metric=balance"
+    ).json()
+    assert data["metric"] == "balance"
+    assert data["unpriced"] == [] and data["is_partial"] is False
+    # 最初に持った日から今日まで 1 日も欠けず、数量だけが入る（評価額は付かない）
+    assert [p["t"] for p in data["points"]] == [_iso(d) for d in range(5, -1, -1)]
+    assert all(set(p) == {"t", "balance"} for p in data["points"])
+    assert [Decimal(p["balance"]) for p in data["points"]] == [
+        Decimal("1"), Decimal("1"), Decimal("1.5"), Decimal("1.5"), Decimal("0"), Decimal("0"),
+    ]
+
+
+def test_balance_metric_ignores_other_assets_in_the_same_trade(tmp_path, no_coingecko):
+    """売買の相手側（JPY）は数えない。売り切った後は 0。"""
+    client = _client_with(tmp_path, [
+        _tx("buy", "ex", _recent(3), TxType.TRADE, ra="BTC", rv="0.2", sa="JPY", sv=2000000),
+        _tx("sell", "ex", _recent(1), TxType.TRADE, ra="JPY", rv=2500000, sa="BTC", sv="0.2"),
+    ])
+    data = client.get(
+        "/api/portfolio-history?range=7d&scope=asset:btc&metric=balance"
+    ).json()
+    assert [Decimal(p["balance"]) for p in data["points"]] == [
+        Decimal("0.2"), Decimal("0.2"), Decimal("0"), Decimal("0"),
+    ]
+
+
+def test_balance_metric_works_without_price(tmp_path, no_coingecko):
+    """CoinGecko に無い資産でも数量の推移は出る（評価額だと点が 1 つも出ない）。"""
+    client = _client_with(tmp_path, [
+        _tx("in", "wallet", _recent(2), TxType.DEPOSIT, ra="NOPRICE", rv=42),
+    ])
+    data = client.get(
+        "/api/portfolio-history?range=7d&scope=asset:NOPRICE&metric=balance"
+    ).json()
+    assert [(p["t"], p["balance"]) for p in data["points"]] == [
+        (_iso(2), "42"), (_iso(1), "42"), (_iso(0), "42"),
+    ]
+
+
+def test_balance_metric_respects_excluded_labels(tmp_path, no_coingecko):
+    """表示設定で除外中の日次利息は数量にも含めない（残高・評価額と同じ扱い）。"""
+    interest = CanonicalTx(
+        id="int", source="pbr", timestamp=_recent(1), type=TxType.REWARD,
+        received_asset="BTC", received_amount=Decimal("0.01"), label="daily_interest", raw={},
+    )
+    client = _client_with(tmp_path, [
+        _tx("in", "pbr", _recent(2), TxType.DEPOSIT, ra="BTC", rv=1),
+        interest,
+    ])
+    url = "/api/portfolio-history?range=7d&scope=asset:BTC&metric=balance"
+    assert client.get(url).json()["points"][-1]["balance"] == "1.01"
+
+    client.put("/api/prefs", json={"prefs": {"include_daily_interest": False}})
+    assert client.get(url).json()["points"][-1]["balance"] == "1"
+
+
+def test_balance_metric_needs_asset_scope(app_client):
+    """単位の違う資産は足せないので、asset 以外のスコープでは評価額に丸める。"""
+    for scope in ("total", "account:Bybit1"):
+        data = app_client.get(
+            f"/api/portfolio-history?currency=USD&range=90d&scope={scope}&metric=balance"
+        ).json()
+        assert data["metric"] == "value"
+        assert data["points"] and all("value" in p for p in data["points"])
+
+
+def test_unknown_metric_falls_back_to_value(app_client):
+    data = app_client.get(
+        "/api/portfolio-history?currency=USD&range=90d&scope=asset:BTC&metric=bogus"
+    ).json()
+    assert data["metric"] == "value"
+    assert all("value" in p for p in data["points"])
+
+
+def test_value_is_the_default_metric(app_client):
+    data = app_client.get("/api/portfolio-history?currency=USD&range=90d&scope=asset:BTC").json()
+    assert data["metric"] == "value"

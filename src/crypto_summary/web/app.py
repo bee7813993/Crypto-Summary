@@ -1923,11 +1923,15 @@ def _portfolio_history(
     currency: str,
     range_str: str,
     scope: str,
+    metric: str = "value",
 ) -> dict:
-    """ポートフォリオ価値の日次時系列を返す。
+    """ポートフォリオの日次時系列を返す。
 
     scope: "total" | "account:<表示名>" | "asset:<シンボル>"
     range_str: "7d" | "30d" | "90d" | "1y" | "all"
+    metric: "value"（評価額）| "balance"（保有数量）。数量は単位の違う資産を
+      足し合わせられないので balance は asset スコープでだけ受け付け、
+      それ以外（不正な値を含む）は value に丸める。
     """
     # NOTE: scope の解釈は _scope_filters に切り出してある（残高APIと共通）
     currency = currency.upper()
@@ -1942,6 +1946,8 @@ def _portfolio_history(
     range_start = (today - timedelta(days=days)) if days is not None else None
 
     source_filter, asset_filter = _scope_filters(db_path, scope)
+    if metric != "balance" or not asset_filter:
+        metric = "value"
 
     ledger = Ledger(db_path)
     try:
@@ -1961,6 +1967,7 @@ def _portfolio_history(
             "currency": currency,
             "range": range_str,
             "scope": scope,
+            "metric": metric,
             "points": [],
             "unpriced": [],
             "warnings": [],
@@ -1970,6 +1977,37 @@ def _portfolio_history(
     # 日付範囲の確定（all の場合は最初のスナップショット日から today まで）
     first_snap_date = date.fromisoformat(min(snapshots))
     effective_start = max(range_start, first_snap_date) if range_start else first_snap_date
+    days_in_range = [
+        (effective_start + timedelta(days=i)).isoformat()
+        for i in range((today - effective_start).days + 1)
+    ]
+
+    def holdings_on(iso: str) -> dict[str, Decimal]:
+        # daily_balances は保有が 1 つでもある日を必ず返す（取引の無い日も前日の
+        # 残高を引き継いで載る）。載っていない日は「何も持っていない日」なので、
+        # 前日の保有を引きずらず空として扱う（asset スコープではその資産だけを見る）。
+        return {
+            a: b for a, b in snapshots.get(iso, {}).items()
+            if not asset_filter or a == asset_filter
+        }
+
+    if metric == "balance":
+        # 数量は台帳だけで決まる。価格を引かないので CoinGecko を叩かず、
+        # 価格の無い資産でも日が欠けない（評価額のように点が落ちない）。
+        return {
+            "currency": currency,
+            "range": range_str,
+            "scope": scope,
+            "metric": metric,
+            "points": [
+                {"t": iso, "balance": str(holdings_on(iso).get(asset_filter, Decimal("0")))}
+                for iso in days_in_range
+            ],
+            "unpriced": [],
+            "is_partial": False,
+            "warnings": [],
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+        }
 
     all_assets = assets_in_range(snapshots)
     if asset_filter:
@@ -1983,15 +2021,8 @@ def _portfolio_history(
     unpriced: set[str] = set()
     points: list[dict] = []
 
-    for offset in range((today - effective_start).days + 1):
-        iso = (effective_start + timedelta(days=offset)).isoformat()
-        # daily_balances は保有が 1 つでもある日を必ず返す（取引の無い日も前日の
-        # 残高を引き継いで載る）。載っていない日は「何も持っていない日」なので、
-        # 前日の保有を引きずらず空として扱う（asset スコープではその資産だけを見る）。
-        holdings = {
-            a: b for a, b in snapshots.get(iso, {}).items()
-            if not asset_filter or a == asset_filter
-        }
+    for iso in days_in_range:
+        holdings = holdings_on(iso)
         if not holdings:
             # 何も持っていない日の評価額は価格によらず 0 と判っている。点を落とすと
             # 手放す前の点と次に持った日の点が直結し、保有が続いていたように見える。
@@ -2027,6 +2058,7 @@ def _portfolio_history(
         "currency": currency,
         "range": range_str,
         "scope": scope,
+        "metric": metric,
         "points": points,
         "unpriced": unpriced_supported,
         "is_partial": is_partial,
@@ -2486,9 +2518,10 @@ def create_app(
         currency: str = Query("USD"),
         range: str = Query("90d"),
         scope: str = Query("total"),
+        metric: str = Query("value", description="value（評価額）| balance（保有数量。asset スコープのみ）"),
         db: str = Depends(get_db_path_read),
     ) -> dict:
-        return _portfolio_history(db, currency, range, scope)
+        return _portfolio_history(db, currency, range, scope, metric)
 
     @app.get("/api/balances")
     def balances(

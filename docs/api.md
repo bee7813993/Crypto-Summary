@@ -268,18 +268,23 @@ CS 側はこの棄却をしません（ポリシーは利用側に委ねます�
 
 ## 8. `GET /api/portfolio-history`
 
-評価額の日次時系列。
+評価額（または 1 資産の保有数量）の日次時系列。
 
 **クエリ**
 - `currency`
 - `range`: `7d` | `30d` | `90d` | `1y` | `all`（不正な値は `90d` に丸め）
 - `scope`: `total` | `account:<表示名>` | `asset:<シンボル>`
+- `metric`: `value`（既定。評価額）| `balance`（保有数量。後述）。
+  数量は単位の違う資産を足せないため、`balance` は `scope=asset:<シンボル>` の
+  ときだけ有効です。それ以外のスコープや不正な値は `value` に丸めます
+  （応答の `metric` に実際に使われた値が入ります）
 
 ```jsonc
 {
   "currency": "USD",
   "range": "90d",
   "scope": "total",
+  "metric": "value",
   "points": [
     { "t": "2026-08-12", "value": "44500" }
     // scope=asset:<SYM> のときは "balance" も付く
@@ -308,6 +313,32 @@ CS 側はこの棄却をしません（ポリシーは利用側に委ねます�
 前日比だけが欲しい場合は、このエンドポイントを資産ごとに叩かず
 **`/api/summary` の `prev_value` を使ってください**（リクエスト 1 本で済みます）。
 
+### `metric=balance`（1 資産の保有数量の推移）
+
+```jsonc
+{
+  "currency": "USD",
+  "range": "90d",
+  "scope": "asset:BTC",
+  "metric": "balance",
+  "points": [
+    { "t": "2026-08-12", "balance": "0.3" }
+  ],
+  "unpriced": [],
+  "is_partial": false,
+  "warnings": [],
+  "generated_at": "..."
+}
+```
+
+- 価格を引かない（CoinGecko を叩かない）ので速く、**価格の無い資産でも出せます**。
+- 最初に保有した日（それより前から持っていれば `range` の開始日）から今日まで、
+  **1 日も欠けずに並びます**。値は `/api/balances` と同じく
+  その日の終わり（UTC）時点の累積残高で、手放した日以降は `"0"` です。
+- 点には `value` が付きません。`unpriced` は常に `[]`、`is_partial` は常に `false` です。
+- 古い CS は `metric` を知らず評価額を返します。応答に `metric` が無ければ
+  `balance` は使えないものとして扱ってください。
+
 ---
 
 ## 9. `GET /api/balances`
@@ -335,8 +366,10 @@ CS 側はこの棄却をしません（ポリシーは利用側に委ねます�
 - ダスト（極小残高）は落とします。その日に残高が無かった資産は載りません。
 - `as_of` が `YYYY-MM-DD` として読めなければ 422。
 
-評価額の推移が欲しいなら `/api/portfolio-history`、**数量の推移**が欲しいならこちらです。
-2 つの日付で叩いて引き算すれば、価格変動と切り分けた「持ち高の増減」が出せます。
+評価額の推移が欲しいなら `/api/portfolio-history`、ある日の**全資産の数量**が欲しいなら
+こちらです。2 つの日付で叩いて引き算すれば、価格変動と切り分けた「持ち高の増減」が
+出せます。1 資産の数量を日次で並べたいだけなら、`/api/portfolio-history` の
+`metric=balance` が 1 本で返します。
 
 ---
 
