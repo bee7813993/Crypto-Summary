@@ -769,8 +769,7 @@ function setChartActive(idx) {
 
 // ---- 推移グラフ ----
 
-// opts.metric: "value"（評価額・既定）| "balance"（保有数量）
-// opts.unit:   保有数量に添える単位（資産シンボル）。1 資産のグラフでだけ渡す
+// opts.metric: "value"（評価額・既定）| "balance"（保有数量。1 資産のグラフだけ）
 function renderHistoryChart(canvasId, points, currency, existingChart, opts = {}) {
   const canvas = document.getElementById(canvasId);
   if (!canvas) return null;
@@ -787,7 +786,7 @@ function renderHistoryChart(canvasId, points, currency, existingChart, opts = {}
   if (emptyEl) emptyEl.classList.add("hidden");
 
   const isBalance = opts.metric === "balance";
-  const fmtQty = (v) => fmtAmount(v) + (opts.unit ? " " + opts.unit : "");
+  const fmtY = (v) => (isBalance ? fmtAmount(v) : fmtMoney(v, currency));
   const labels = points.map((p) => p.t);
   const values = points.map((p) => Number(isBalance ? p.balance : p.value));
   const balances = points.map((p) => (p.balance != null ? p.balance : null));
@@ -829,10 +828,13 @@ function renderHistoryChart(canvasId, points, currency, existingChart, opts = {}
           border: { display: false },
         },
         y: {
+          // 保有数量は 0 からの量として見せる（軸を切ると、少しの買い増しが
+          // 倍増のように見える）。評価額は変動が見えるよう従来どおり自動
+          beginAtZero: isBalance,
           ticks: {
             color: th.tick,
             font: { size: 11 },
-            callback(v) { return isBalance ? fmtAmount(v) : fmtMoney(v, currency); },
+            callback(v) { return fmtY(v); },
           },
           grid: { color: th.grid },
           border: { display: false },
@@ -849,13 +851,11 @@ function renderHistoryChart(canvasId, points, currency, existingChart, opts = {}
           padding: 10,
           callbacks: {
             title: ([item]) => item.label,
-            label: (item) => "  " + (isBalance
-              ? fmtQty(balances[item.dataIndex])
-              : fmtMoney(item.parsed.y, currency)),
+            label: (item) => "  " + fmtY(item.parsed.y),
             afterLabel: (item) => {
               if (isBalance) return undefined;
               const bal = balances[item.dataIndex];
-              return bal != null ? "  " + fmtQty(bal) : undefined;
+              return bal != null ? "  " + fmtAmount(bal) : undefined;
             },
           },
         },
@@ -876,7 +876,7 @@ function _setRangeActive(tabsId, range) {
 // 選択中とは違う内容でグラフを上書きしてしまう。最新以外の応答は捨てる。
 const _histReqSeq = {};
 
-// opts: renderHistoryChart に渡す { metric, unit }（metric は API にも渡す）
+// opts.metric: API に渡し、応答の metric で renderHistoryChart が描き分ける
 async function _fetchHistAndRender(scope, range, canvasId, loadingId, unpricedId, getRef, setRef, opts = {}) {
   const seq = (_histReqSeq[canvasId] || 0) + 1;
   _histReqSeq[canvasId] = seq;
@@ -894,7 +894,7 @@ async function _fetchHistAndRender(scope, range, canvasId, loadingId, unpricedId
     if (isStale()) return;
     // サーバーが実際に使った指標で描く（asset 以外のスコープでは value に丸められる）
     setRef(renderHistoryChart(canvasId, data.points, currency, getRef(),
-      { ...opts, metric: data.metric || "value" }));
+      { metric: data.metric || "value" }));
     if (unpricedEl) {
       if (data.is_partial) {
         unpricedEl.textContent = t("label.historyPartial");
@@ -949,7 +949,7 @@ function loadAssetHistoryChart(symbol, range, metric) {
     `asset:${_assetHistSymbol}`, _assetHistRange,
     "asset-history-chart", "asset-history-loading", "asset-history-unpriced",
     () => _assetHistChart, (c) => { _assetHistChart = c; },
-    { metric: _assetHistMetric, unit: _assetHistSymbol }
+    { metric: _assetHistMetric }
   );
 }
 
@@ -962,7 +962,7 @@ function _syncAssetMetric() {
   });
   // data-i18n ごと差し替え、言語切替（applyI18n）後も見出しが指標に追従するようにする
   const title = document.getElementById("asset-history-title");
-  const key = _assetHistMetric === "balance" ? "label.balanceHistorySection" : "label.valueHistorySection";
+  const key = _assetHistMetric === "balance" ? "label.quantityHistorySection" : "label.valueHistorySection";
   title.setAttribute("data-i18n", key);
   title.textContent = t(key);
 }

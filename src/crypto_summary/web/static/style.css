@@ -723,14 +723,18 @@ html.light .tx-type-transfer { background: #d1fae5; color: #065f46; }
   display: flex;
   align-items: center;
   justify-content: space-between;
+  /* 表示対象のタブが付く推移は、スマホ幅では見出しと同じ行に収まらない */
   flex-wrap: wrap;
   gap: 8px 12px;
   margin-bottom: 12px;
 }
 .history-header h2 { margin-bottom: 0; }
-/* 狭い画面で次の行へ折り返しても右寄せのままにする */
-.history-header .range-tabs { margin-left: auto; }
+/* 表示対象（評価額・保有数）とレンジのタブ2組 */
+.history-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 12px; }
 .range-tabs { display: flex; gap: 2px; }
+/* 表示対象は「何を見るか」、レンジは「いつを見るか」。同じ見た目のボタンが
+   一列に並ぶと1組に見えるので、表示対象だけ枠で囲って別の組だと示す */
+.metric-tabs { border: 1px solid var(--border); border-radius: 8px; padding: 2px; }
 .range-tab {
   background: none;
   border: 1px solid transparent;
@@ -744,29 +748,6 @@ html.light .tx-type-transfer { background: #d1fae5; color: #065f46; }
 }
 .range-tab:hover { color: var(--text); border-color: var(--border); }
 .range-tab.active { background: var(--accent); border-color: var(--accent); color: #fff; }
-
-/* 評価額／保有数 の切替（資産詳細）。レンジタブと並ぶので枠で囲い、別の操作に見せる */
-.history-title { display: flex; align-items: center; gap: 10px; }
-.metric-tabs {
-  display: flex;
-  gap: 2px;
-  padding: 2px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-}
-.metric-tab {
-  background: none;
-  border: 1px solid transparent;
-  color: var(--text-dim);
-  font-size: 12px;
-  font-weight: 500;
-  padding: 3px 9px;
-  border-radius: 6px;
-  cursor: pointer;
-  line-height: 1.2;
-}
-.metric-tab:hover { color: var(--text); border-color: transparent; }
-.metric-tab.active { background: var(--border); color: var(--text); }
 .history-chart-wrap {
   position: relative;
   height: 180px;
