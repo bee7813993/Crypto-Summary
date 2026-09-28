@@ -9,13 +9,16 @@ import base64
 import hashlib
 import json
 import os
+import re
 import secrets
 import tempfile
 import uuid
-from datetime import date, datetime, timedelta, timezone
+from collections import Counter
+from datetime import date, datetime, timedelta, timezone, tzinfo
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, Response
@@ -627,6 +630,34 @@ def _parse_date(s: str | None) -> datetime | None:
         return None
 
 
+def _client_tz(name: str | None, offset_minutes: int | None = None) -> tzinfo:
+    """ブラウザのタイムゾーン。IANA 名が解決できなければ UTC からの分数、それも無ければ UTC。
+
+    日時は UTC で保存し、画面はブラウザの現地時刻で出している。月ごとの区切りも
+    現地時刻で切らないと、月末の夜の取引が画面に出る日付と違う月にまとまる
+    （日本時間の 10/1 05:00 は UTC では 9/30）。
+    """
+    if name:
+        try:
+            return ZoneInfo(name)
+        except (ZoneInfoNotFoundError, ValueError, OSError):
+            pass
+    if offset_minutes is not None and abs(offset_minutes) <= 14 * 60:
+        return timezone(timedelta(minutes=offset_minutes))
+    return timezone.utc
+
+
+def _month_bounds(month: str, tz: tzinfo) -> tuple[datetime, datetime] | None:
+    """現地の "YYYY-MM" を UTC の半開区間 [月初, 翌月初) にする。読めなければ None。"""
+    m = re.fullmatch(r"(\d{4})-(\d{2})", month)
+    if not m or not 1 <= int(m[2]) <= 12:
+        return None
+    y, mo = int(m[1]), int(m[2])
+    start = datetime(y, mo, 1, tzinfo=tz)
+    end = datetime(y + mo // 12, mo % 12 + 1, 1, tzinfo=tz)
+    return start.astimezone(timezone.utc), end.astimezone(timezone.utc)
+
+
 def _transactions(
     db_path: str,
     account: str | None,
@@ -634,12 +665,27 @@ def _transactions(
     since_str: str | None,
     until_str: str | None,
     page: int,
+    order: str = "desc",
+    month: str | None = None,
+    tz: tzinfo = timezone.utc,
 ) -> dict:
-    """取引履歴ページを返す。account は表示名（グループ名）で受け取る。"""
+    """取引履歴ページを返す。account は表示名（グループ名）で受け取る。
+
+    order: "desc"（新しい順・既定）| "asc"（古い順）。ページ送りもこの順で進む。
+    month: 現地（tz）の "YYYY-MM"。指定するとその月の取引を全件返す（月ごとの
+      表示で開いた月の行。ページ送りはしない）。
+    """
     groups = _load_groups(db_path)
     source_ids = _resolve_source_ids(account, db_path, groups)
     since = _parse_date(since_str)
     until = _parse_date(until_str)
+    before = None
+    if month:
+        bounds = _month_bounds(month, tz)
+        if bounds is None:
+            raise HTTPException(status_code=422, detail="month は YYYY-MM で指定してください")
+        since = max(since, bounds[0]) if since else bounds[0]
+        before = bounds[1]
 
     ledger = Ledger(db_path)
     try:
@@ -650,14 +696,17 @@ def _transactions(
         )
         # 表示用: 全フィルタ適用。除外中のラベルも行としては表示する
         # （「取り込んだのに消えた」と見えないようにするため）。
-        offset = (max(page, 1) - 1) * _TX_PAGE_SIZE
+        page_size = 10_000_000 if month else _TX_PAGE_SIZE
+        offset = 0 if month else (max(page, 1) - 1) * _TX_PAGE_SIZE
         txs, total = ledger.transactions(
             source=source_ids,
             asset=asset,
             since=since,
             until=until,
-            limit=_TX_PAGE_SIZE,
+            before=before,
+            limit=page_size,
             offset=offset,
+            descending=order != "asc",
         )
     finally:
         ledger.close()
@@ -685,13 +734,84 @@ def _transactions(
             "running_balances": row_balances,
         })
 
-    total_pages = max(1, (total + _TX_PAGE_SIZE - 1) // _TX_PAGE_SIZE)
+    total_pages = 1 if month else max(1, (total + _TX_PAGE_SIZE - 1) // _TX_PAGE_SIZE)
     return {
         "transactions": rows,
         "total": total,
-        "page": max(page, 1),
+        "page": 1 if month else max(page, 1),
         "total_pages": total_pages,
         "page_size": _TX_PAGE_SIZE,
+        "order": "asc" if order == "asc" else "desc",
+        "month": month,
+        "filter_account": account,
+        "filter_asset": asset,
+    }
+
+
+def _transaction_months(
+    db_path: str,
+    account: str | None,
+    asset: str | None,
+    since_str: str | None,
+    until_str: str | None,
+    order: str = "desc",
+    tz: tzinfo = timezone.utc,
+) -> dict:
+    """取引履歴の月ごとの見出し（件数・種類ごとの件数・資産の増減）を返す。
+
+    絞り込みは /api/transactions と同じ。月は現地（tz）で区切る。取引の行は
+    返さない（開いた月だけ /api/transactions?month= で読む）ので、取引が多くても軽い。
+    net はその月の資産の増減（受取 − 送付 − 手数料）で、単位の違う資産は足せない
+    ため資産で絞り込んでいるときだけ出す。除外中のラベルも行としては出すので数える。
+    """
+    groups = _load_groups(db_path)
+    source_ids = _resolve_source_ids(account, db_path, groups)
+    ledger = Ledger(db_path)
+    try:
+        rows = ledger.timeline(
+            source=source_ids,
+            asset=asset,
+            since=_parse_date(since_str),
+            until=_parse_date(until_str),
+        )
+    finally:
+        ledger.close()
+
+    months: dict[str, dict] = {}
+    for ts, tx_type, ra, rv, sa, sv, fa, fv in rows:
+        when = datetime.fromisoformat(ts)
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=timezone.utc)
+        m = months.setdefault(
+            when.astimezone(tz).strftime("%Y-%m"),
+            {"count": 0, "types": Counter(), "net": Decimal(0)},
+        )
+        m["count"] += 1
+        m["types"][tx_type] += 1
+        if asset:
+            if ra == asset and rv:
+                m["net"] += Decimal(rv)
+            if sa == asset and sv:
+                m["net"] -= Decimal(sv)
+            if fa == asset and fv:
+                m["net"] -= Decimal(fv)
+
+    return {
+        "months": [
+            {
+                "month": ym,
+                "count": months[ym]["count"],
+                # 多い種類から
+                "types": [
+                    {"type": t, "type_ja": _TX_TYPE_JA.get(t, t), "count": n}
+                    for t, n in sorted(months[ym]["types"].items(), key=lambda kv: (-kv[1], kv[0]))
+                ],
+                "net": str(months[ym]["net"]) if asset else None,
+            }
+            for ym in sorted(months, reverse=order != "asc")
+        ],
+        "total": len(rows),
+        "order": "asc" if order == "asc" else "desc",
         "filter_account": account,
         "filter_asset": asset,
     }
@@ -2272,9 +2392,32 @@ def create_app(
         since: str | None = Query(None),
         until: str | None = Query(None),
         page: int = Query(1),
+        order: str = Query("desc", pattern="^(asc|desc)$"),
+        month: str | None = Query(None, description="現地の YYYY-MM。その月を全件返す"),
+        tz: str | None = Query(None, description="ブラウザの IANA タイムゾーン（月の区切り用）"),
+        tz_offset: int | None = Query(None, description="tz が解決できないときの UTC からの分数"),
         db: str = Depends(get_db_path),
     ) -> dict:
-        return _transactions(db, account, asset, since, until, page)
+        return _transactions(
+            db, account, asset, since, until, page,
+            order=order, month=month, tz=_client_tz(tz, tz_offset),
+        )
+
+    @app.get("/api/transactions/months")
+    def transaction_months_api(
+        account: str | None = Query(None),
+        asset: str | None = Query(None),
+        since: str | None = Query(None),
+        until: str | None = Query(None),
+        order: str = Query("desc", pattern="^(asc|desc)$"),
+        tz: str | None = Query(None),
+        tz_offset: int | None = Query(None),
+        db: str = Depends(get_db_path),
+    ) -> dict:
+        """取引履歴の月ごとの見出し（取引の行は含まない）。"""
+        return _transaction_months(
+            db, account, asset, since, until, order=order, tz=_client_tz(tz, tz_offset),
+        )
 
     @app.post("/api/transactions")
     def add_transaction(body: dict[str, Any], db: str = Depends(get_db_path)) -> dict:
