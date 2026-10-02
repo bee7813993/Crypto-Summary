@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from datetime import timezone
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from ..core.models import CanonicalTx
+
+if TYPE_CHECKING:
+    from ..core.ledger import Ledger
 
 
 def require_columns(
@@ -69,6 +74,8 @@ class CsvSourceAdapter(ABC):
         self.source_id = source_id
         self.skipped: int = 0
         self.skip_reasons: dict[str, int] = {}
+        # reconcile() で置き換えた（台帳から消した）既存の取引の件数
+        self.replaced: int = 0
 
     def _reset_skips(self) -> None:
         """load() の冒頭で呼ぶ。同一インスタンスの再利用でも件数が累積しない。"""
@@ -83,3 +90,30 @@ class CsvSourceAdapter(ABC):
     @abstractmethod
     def load(self, path: Path) -> list[CanonicalTx]:
         ...
+
+    def reconcile(self, txs: list[CanonicalTx], ledger: Ledger) -> list[CanonicalTx]:
+        """台帳へ入れる直前に、既に入っている取引と突き合わせる。
+
+        load() と違って台帳を読むので、取り込み処理からのみ呼ぶ。
+
+        既定では、取り込み先の口座に SUMM の取引レポートを取り込んであれば、
+        レポートが覆う期間の行を飛ばす（その期間は SUMM を正とする。同じ出来事を
+        二重に入れないため）。同じ出来事が別の CSV にも載る取引所（Bybit の
+        入出金など）は、これを呼んだうえで既存の取引にまとめる処理を足す。
+        """
+        # summ_report はこのモジュールを読み込むため、ここで遅延 import する
+        from .summ_report import summ_coverage
+
+        coverage = summ_coverage(ledger, self.source_id)
+        if coverage is None:
+            return txs
+        start, end = coverage
+        reason = f"SUMM の取引レポートがある期間（{start:%Y-%m-%d}〜{end:%Y-%m-%d}）"
+        kept: list[CanonicalTx] = []
+        for t in txs:
+            ts = t.timestamp if t.timestamp.tzinfo else t.timestamp.replace(tzinfo=timezone.utc)
+            if start <= ts <= end:
+                self._skip(reason)
+            else:
+                kept.append(t)
+        return kept

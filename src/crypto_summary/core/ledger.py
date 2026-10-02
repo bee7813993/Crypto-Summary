@@ -182,22 +182,27 @@ class Ledger:
 
     @staticmethod
     def _window_clause(
-        sources: list[str], keep_manual: bool
+        sources: list[str], keep_manual: bool, keep_prefixes: tuple[str, ...] = (),
     ) -> tuple[str, list]:
         """期間 + ソース指定の WHERE 句と、その前段のパラメータを返す。
 
         timestamp は ISO 文字列で保存されているため、同じ書式のパラメータとの
         文字列比較で範囲指定できる（同一オフセット表記の行が対象）。
+        keep_prefixes に挙げた接頭辞で始まる id の行は対象から外す。
         """
         placeholders = ",".join("?" for _ in sources)
-        clause = (
-            f"source IN ({placeholders}) AND timestamp >= ? AND timestamp < ?"
-        )
+        clause = f"source IN ({placeholders})"
+        params = list(sources)
         if keep_manual:
             # Web の手動入力は任意のタイムゾーンを持ちうる（文字列比較が効かない）。
             # 外部ツール由来の洗い替えで巻き込まないよう常に残す。
             clause += " AND id NOT LIKE 'manual:%'"
-        return clause, list(sources)
+        for prefix in keep_prefixes:
+            clause += " AND id NOT LIKE ?"
+            params.append(prefix + "%")
+        # 期間の 2 つは呼び出し側がパラメータの末尾に足すので、句も最後に置く
+        clause += " AND timestamp >= ? AND timestamp < ?"
+        return clause, params
 
     def count_in_window(
         self, sources: list[str], start: datetime, end_exclusive: datetime,
@@ -213,6 +218,23 @@ class Ledger:
             params + [start.isoformat(), end_exclusive.isoformat()],
         ).fetchall()
         return {src: cnt for src, cnt in rows}
+
+    def id_prefix_time_range(
+        self, source: str, prefix: str
+    ) -> tuple[datetime, datetime] | None:
+        """id が prefix で始まる取引の (最古, 最新) の時刻。無ければ None。
+
+        特定の取り込み経路の取引（id に接頭辞を付けて区別しているもの）が
+        どの期間を覆っているかを調べるのに使う。
+        """
+        lo, hi = self._conn.execute(
+            "SELECT MIN(timestamp), MAX(timestamp) FROM transactions "
+            "WHERE source=? AND id LIKE ?",
+            (source, prefix + "%"),
+        ).fetchone()
+        if lo is None:
+            return None
+        return datetime.fromisoformat(lo), datetime.fromisoformat(hi)
 
     def years_with_source(self, sources: list[str]) -> set[int]:
         """指定ソースの取引が存在する年の集合を返す。
@@ -238,16 +260,18 @@ class Ledger:
 
     def delete_by_source_window(
         self, sources: list[str], start: datetime, end_exclusive: datetime,
-        *, keep_manual: bool = True, commit: bool = True,
+        *, keep_manual: bool = True, keep_prefixes: tuple[str, ...] = (),
+        commit: bool = True,
     ) -> int:
         """指定期間 [start, end_exclusive) の取引を削除する。削除件数を返す。
 
         exports / batch_txs の紐付けも併せて消す。import_batches のレコード自体は
         残す（他期間の取引を含むバッチの履歴を失わないため）。
+        keep_prefixes に挙げた接頭辞で始まる id の取引は消さない。
         """
         if not sources:
             return 0
-        clause, params = self._window_clause(sources, keep_manual)
+        clause, params = self._window_clause(sources, keep_manual, keep_prefixes)
         params = params + [start.isoformat(), end_exclusive.isoformat()]
         sel = f"SELECT id FROM transactions WHERE {clause}"
         self._conn.execute(f"DELETE FROM exports WHERE tx_id IN ({sel})", params)
