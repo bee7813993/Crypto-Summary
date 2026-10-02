@@ -898,6 +898,7 @@ _EXCHANGE_LABELS: dict[str, str] = {
     "pbr_crawl": "PBR Lending（クローラー同期）",
     "binance": "Binance（スポット）",
     "bybit": "Bybit（自動判別: 資金調達アカウント/UTA/入出金履歴）",
+    "summ": "SUMM（取引レポート・ソースIDの口座の分）",
     "universal": "汎用CSV",
 }
 
@@ -905,7 +906,7 @@ _EXCHANGE_LABELS: dict[str, str] = {
 _IMPORT_EXCHANGE_ORDER: list[str] = [
     "nexo_auto", "nexo_savings", "nexo_futures", "nexo", "nexo_spot", "nexo_dnw",
     "bitflyer", "bitflyer_collateral", "bitflyer_conversion",
-    "gmo", "bitlend", "pbr", "binance", "bybit", "universal",
+    "gmo", "bitlend", "pbr", "binance", "bybit", "summ", "universal",
 ]
 
 # UI のインポート選択肢には出さないが、内部・既存バッチ・CLI 用に登録は残す取引所。
@@ -961,20 +962,27 @@ def _import_csv(db_path: str, body: dict[str, Any]) -> dict:
         if tmp_path is not None:
             tmp_path.unlink(missing_ok=True)
 
-    # 「読めたが記録対象外として落とした」件数（アダプタが対応していれば）。
-    # 0件になった理由が見えないと「入れたのに反映されない」に見えるため必ず返す。
-    skipped = getattr(adapter, "skipped", 0)
-    skip_reasons = dict(getattr(adapter, "skip_reasons", {}) or {})
+    def _skips() -> dict:
+        # 「読めたが記録対象外として落とした」件数（アダプタが対応していれば）。
+        # 0件になった理由が見えないと「入れたのに反映されない」に見えるため必ず返す。
+        return {"skipped": getattr(adapter, "skipped", 0),
+                "skip_reasons": dict(getattr(adapter, "skip_reasons", {}) or {})}
 
     if not txs:
         return {"ok": True, "imported": 0, "parsed": 0, "source": source_id,
-                "skipped": skipped, "skip_reasons": skip_reasons,
-                "message": "取引が見つかりませんでした"}
+                **_skips(), "message": "取引が見つかりませんでした"}
 
     ledger = Ledger(db_path)
     try:
-        # 別の CSV にも載る取引（Bybit の入出金など）を既存の取引にまとめる
+        # 台帳の既存の取引と突き合わせる。SUMM のレポートがある期間の行を飛ばす、
+        # 別の CSV にも載る Bybit の入出金をまとめる、SUMM のレポートが覆う期間の
+        # 既存の取引を置き換える、など（アダプタごと）。
         txs = adapter.reconcile(txs, ledger)
+        replaced = getattr(adapter, "replaced", 0)
+        if not txs:
+            return {"ok": True, "imported": 0, "parsed": 0, "replaced": replaced,
+                    "source": source_id, **_skips(),
+                    "message": "取り込む取引はありませんでした"}
         before = ledger.count(source_id)
         ledger.upsert_many(txs)
         after = ledger.count(source_id)
@@ -995,8 +1003,8 @@ def _import_csv(db_path: str, body: dict[str, Any]) -> dict:
         "ok": True,
         "imported": after - before,
         "parsed": len(txs),
-        "skipped": skipped,
-        "skip_reasons": skip_reasons,
+        "replaced": replaced,
+        **_skips(),
         "source": source_id,
         "batch_id": batch_id,
     }

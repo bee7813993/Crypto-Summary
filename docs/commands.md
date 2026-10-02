@@ -225,6 +225,7 @@ crypto-summary sources
 | `gmo` | GMOコイン取引履歴 |
 | `binance` | Binanceスポット履歴 |
 | `bybit` | Bybit（資金調達アカウント履歴／UTA 取引ログ／入出金履歴を自動判定） |
+| `summ` | SUMM の取引レポート（`--source-id` と同じ名前の口座の分。その期間は SUMM を正とする） |
 | `nexo_auto` | Nexo（取引明細／先物取引履歴を自動判定） |
 | `nexo_savings` | Nexo 貯蓄口座（nexo_transactions_*.csv） |
 | `nexo_futures` | Nexo 先物取引（nexo_futures_transactions*.csv・実現損益ベース） |
@@ -254,6 +255,20 @@ crypto-summary import --file assetHistory_withdrawDepositHistory_XXXX_20260101_2
 - Earn（Easy Earn など）の申込・解約は記録しない。運用中の元本も保有として数え続ける
 - 知らない種別は推測で分類せず、スキップして理由別の件数を表示する
 - API で取得した取引とは突き合わせないので、CSV に切り替えるなら同じ口座の API 分は消しておく
+
+SUMM の取引レポート（日本語版）は `summ` で取り込む。取引所の CSV で取れない過去の分を補う用途。
+
+```bash
+crypto-summary import --file Summ_取引レポート.csv --exchange summ --source-id bybit
+```
+
+- `--source-id` と同じ名前の「アカウント」の行だけを取り込む（送金の相手側の口座の行は入れない）。
+  口座が複数あるレポートで名前が合わないと、レポートの口座の一覧を出して止まる
+- 時刻はレポートのタイムゾーン（日本語版は Asia/Tokyo）から UTC に直す
+- 同じ取引ID の足をまとめる（購入＋売却＋手数料 → TRADE、送金出金＋手数料 → WITHDRAW）
+- 「無視」に分類した取引は取り込まない。SUMM 内で重複した送金は 1 回にする
+- その口座のレポートが覆う期間（最初〜最後の取引の前後 1 時間）は SUMM を正とする。
+  取り込むとその期間の既存の取引（手動追加以外）を置き換え、後から取り込む CSV もその期間の行を飛ばす
 
 PBR Lending は `pbr` を指定すればヘッダーから形式を自動判定する。
 役割は固定で日付による分岐は無い:

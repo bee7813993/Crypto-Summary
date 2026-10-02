@@ -3354,6 +3354,9 @@ document.getElementById("import-csv-btn").addEventListener("click", async () => 
       result.textContent += " " + t("status.importSkipped", { skipped: d.skipped });
       console.info("import skip reasons:", d.skip_reasons);
     }
+    if (d.replaced) {
+      result.textContent += " " + t("status.importReplaced", { replaced: d.replaced });
+    }
     result.classList.remove("hidden");
     fileInput.value = "";
     loadImportAccountsTable();

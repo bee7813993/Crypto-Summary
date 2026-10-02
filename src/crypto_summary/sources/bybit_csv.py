@@ -409,6 +409,7 @@ class BybitCsvSource(CsvSourceAdapter):
         )
 
     def reconcile(self, txs: list[CanonicalTx], ledger: Ledger) -> list[CanonicalTx]:
+        txs = super().reconcile(txs, ledger)  # SUMM のレポートがある期間を飛ばす
         existing = [
             *ledger.all(source=self.source_id, tx_type=TxType.DEPOSIT.value, limit=None),
             *ledger.all(source=self.source_id, tx_type=TxType.WITHDRAW.value, limit=None),
