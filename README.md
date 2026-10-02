@@ -100,6 +100,7 @@ crypto-summary web --lan
 | `bitflyer_conversion` | bitFlyer 両替履歴 |
 | `gmo` | GMOコイン取引履歴 |
 | `binance` | Binance スポット履歴 |
+| `bybit` | Bybit（資金調達アカウント履歴／UTA 取引ログ／入出金履歴を自動判定）|
 | `nexo_auto` | Nexo（取引明細／先物取引履歴を自動判定）|
 | `nexo_savings` | Nexo 貯蓄口座 |
 | `nexo_futures` | Nexo 先物取引（実現損益・資金調達料・手数料を記録） |
@@ -107,6 +108,29 @@ crypto-summary web --lan
 | `bitlend` | BitLending 貸出履歴 |
 | `pbr` | PBR Lending（入出金履歴／貸出日次レポートを自動判定）|
 | `pbr_crawl` | PBR Lending クローラーの正規化 JSON（取り込みは `sync-pbr`）|
+
+#### Bybit の取り込み方
+
+Bybit の API は直近の履歴しか返さない（約定は 7 日、入出金は 30 日ずつ）ため、
+過去の取引は「データのエクスポート」で書き出した CSV から取り込む。
+`bybit` を選べば次の 3 種類をヘッダーから判定するので、**3 種類とも同じ口座に**取り込む。
+
+| ファイル | 内容 |
+|---|---|
+| `AssetChangeDetails_fund_*.csv` | 資金調達アカウントの残高変動（入出金・振替・Earn・両替）|
+| `AssetChangeDetails_uta_*.csv` | 統合取引アカウント（UTA）の取引ログ（現物・先物の約定、資金調達料、振替）|
+| `assetHistory_withdrawDepositHistory_*.csv` | 入出金履歴（Tx ID 付き）|
+
+- 資金調達アカウント⇔UTA の振替は両側に「振替」として残り、同じ口座の中で相殺される。
+  片方の CSV だけでも、そのアカウントの残高列どおりの増減になる
+  （資金調達アカウントは、下記の Earn の元本の出入りを除く）
+- 入出金は資金調達アカウント履歴と入出金履歴の両方に載るが、取り込み時に突き合わせて
+  1 件にまとめる（どちらを先に入れても、入れ直しても重複しない）。金額は資金調達側
+  （実際に残高から引かれた額）、Tx ID は入出金履歴側を使う
+- 先物・無期限は実現損益ベース（決済損益・資金調達料・手数料）、現物の約定は売買として記録する
+- Earn（Easy Earn など）の申込・解約は記録しない。運用中の元本も保有として数え続け、利息は報酬になる
+- 知らない種別は推測で分類せずスキップする（件数は取り込み結果に出る）
+- API で取得した取引とは突き合わせないので、CSV に切り替えるなら同じ口座の API 分は消しておく
 
 #### PBR Lending の取り込み方
 
@@ -212,7 +236,8 @@ Crypto-Summary を HTTPS で公開している場合、`http://` のビューア
 
 ### 取引所（API 直接取得）
 
-- **bitFlyer** / **Bybit** — `crypto-summary fetch` で取得（読み取り専用キー）
+- **bitFlyer** / **Bybit** — `crypto-summary fetch` で取得（読み取り専用キー）。
+  Bybit は直近分しか取れないため、過去分は CSV（`bybit`）で取り込む
 
 ### ブロックチェーン（API 直接取得）
 

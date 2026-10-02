@@ -19,8 +19,9 @@ Type マッピング（CanonicalTx → SUMM）:
   REWARD    → staking（label に stak）/ interest（lend・interest・利息）/ income
   FEE       → fee   : Base=手数料資産
   TRANSFER  → send（送付あり）/ receive（受取のみ）
-             ただし term_deposit_lock/unlock, dual_investment_lock/unlock は
-             取引所内部移動のためスキップ（課税イベントではない）
+             ただし term_deposit_lock/unlock, dual_investment_lock/unlock,
+             account_transfer（Bybit の口座内振替）は取引所内部移動のため
+             スキップ（課税イベントではない）
 """
 from __future__ import annotations
 
@@ -46,11 +47,13 @@ _FIAT = {"JPY", "USD", "EUR", "GBP", "AUD", "CAD", "CHF"}
 
 # TRANSFER のうち取引所内部サブウォレット間移動は Summ に出力しない。
 # Nexo 定期預金のロック/アンロックは同一口座内の移動に過ぎず課税イベントではない。
+# Bybit の資金調達アカウント⇔UTA の振替（account_transfer）も同じ口座の中の移動。
 _INTERNAL_TRANSFER_LABELS = {
     "term_deposit_lock",
     "term_deposit_unlock",
     "dual_investment_lock",
     "dual_investment_unlock",
+    "account_transfer",
 }
 
 

@@ -897,6 +897,7 @@ _EXCHANGE_LABELS: dict[str, str] = {
     "pbr_transfers": "PBR Lending（入出金履歴）",
     "pbr_crawl": "PBR Lending（クローラー同期）",
     "binance": "Binance（スポット）",
+    "bybit": "Bybit（自動判別: 資金調達アカウント/UTA/入出金履歴）",
     "universal": "汎用CSV",
 }
 
@@ -904,7 +905,7 @@ _EXCHANGE_LABELS: dict[str, str] = {
 _IMPORT_EXCHANGE_ORDER: list[str] = [
     "nexo_auto", "nexo_savings", "nexo_futures", "nexo", "nexo_spot", "nexo_dnw",
     "bitflyer", "bitflyer_collateral", "bitflyer_conversion",
-    "gmo", "bitlend", "pbr", "binance", "universal",
+    "gmo", "bitlend", "pbr", "binance", "bybit", "universal",
 ]
 
 # UI のインポート選択肢には出さないが、内部・既存バッチ・CLI 用に登録は残す取引所。
@@ -972,6 +973,8 @@ def _import_csv(db_path: str, body: dict[str, Any]) -> dict:
 
     ledger = Ledger(db_path)
     try:
+        # 別の CSV にも載る取引（Bybit の入出金など）を既存の取引にまとめる
+        txs = adapter.reconcile(txs, ledger)
         before = ledger.count(source_id)
         ledger.upsert_many(txs)
         after = ledger.count(source_id)

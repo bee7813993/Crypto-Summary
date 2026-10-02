@@ -77,8 +77,11 @@ def import_cmd(ctx: click.Context, filepath: Path, exchange: str, source_id: str
 
     if not txs:
         console.print("[yellow]No transactions found in file.[/yellow]")
+        _print_skips(source)
         return
 
+    # 別の CSV にも載る取引（Bybit の入出金など）を既存の取引にまとめる
+    txs = source.reconcile(txs, ledger)
     before = ledger.count(sid)
     ledger.upsert_many(txs)
     after = ledger.count(sid)
@@ -99,6 +102,17 @@ def import_cmd(ctx: click.Context, filepath: Path, exchange: str, source_id: str
         f"{len(txs) - new} already existed (skipped)  |  "
         f"latest: {latest_ts.strftime('%Y-%m-%d %H:%M')} UTC"
     )
+    _print_skips(source)
+
+
+def _print_skips(source) -> None:
+    """アダプタが記録対象外として落とした行の件数を理由別に表示する。"""
+    reasons = getattr(source, "skip_reasons", None) or {}
+    if not reasons:
+        return
+    console.print(f"[yellow]{sum(reasons.values())} 行は記録対象外としてスキップ:[/yellow]")
+    for reason, n in sorted(reasons.items(), key=lambda kv: -kv[1]):
+        console.print(f"  {n:>5}  {reason}")
 
 
 # ---------------------------------------------------------------------------
@@ -585,6 +599,7 @@ def sources() -> None:
 
     _DESC = {
         "binance":              "Binance スポット取引履歴",
+        "bybit":                "Bybit（資金調達アカウント履歴・UTA 取引ログ・入出金履歴を自動判定）",
         "bitlend":              "BitLending 貸出履歴",
         "pbr":                  "PBR Lending（日次レポート・入出金履歴を自動判定）",
         "pbr_lending":          "PBR Lending 貸出日次レポート",

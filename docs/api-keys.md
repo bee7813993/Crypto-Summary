@@ -228,6 +228,9 @@ BYBIT_API_KEY=your_api_key
 BYBIT_API_SECRET=your_api_secret
 ```
 
+> Bybit の API は直近の履歴しか返さない（約定は 7 日、入出金は 30 日）。
+> 過去の取引は CSV（取引所 `bybit`）で取り込む。手順は README の「Bybit の取り込み方」を参照。
+
 ### キーを暗号化保存する場合（任意）
 
 `.env` に平文で置く代わりに、口座ごとに暗号化して保存できます。

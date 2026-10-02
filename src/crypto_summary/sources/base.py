@@ -2,8 +2,12 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from ..core.models import CanonicalTx
+
+if TYPE_CHECKING:
+    from ..core.ledger import Ledger
 
 
 def require_columns(
@@ -83,3 +87,12 @@ class CsvSourceAdapter(ABC):
     @abstractmethod
     def load(self, path: Path) -> list[CanonicalTx]:
         ...
+
+    def reconcile(self, txs: list[CanonicalTx], ledger: Ledger) -> list[CanonicalTx]:
+        """台帳へ入れる直前に、既に入っている取引と突き合わせる（既定は何もしない）。
+
+        同じ出来事が別の CSV にも載る取引所（Bybit の入出金など）で、
+        後から取り込む側を既存の取引にまとめて二重計上を防ぐのに使う。
+        load() と違って台帳を読むので、取り込み処理からのみ呼ぶ。
+        """
+        return txs

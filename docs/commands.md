@@ -224,6 +224,7 @@ crypto-summary sources
 | `bitflyer_conversion` | ConversionHistory.csv（両替） |
 | `gmo` | GMOコイン取引履歴 |
 | `binance` | Binanceスポット履歴 |
+| `bybit` | Bybit（資金調達アカウント履歴／UTA 取引ログ／入出金履歴を自動判定） |
 | `nexo_auto` | Nexo（取引明細／先物取引履歴を自動判定） |
 | `nexo_savings` | Nexo 貯蓄口座（nexo_transactions_*.csv） |
 | `nexo_futures` | Nexo 先物取引（nexo_futures_transactions*.csv・実現損益ベース） |
@@ -234,6 +235,25 @@ crypto-summary sources
 | `pbr_transfers` | PBR Lending 入出金履歴（形式を明示したい場合）|
 | `pbr_lending` | PBR Lending 貸出日次レポート（形式を明示したい場合）|
 | `pbr_crawl` | PBR Lending クローラーの正規化 JSON（取り込みは `sync-pbr` を使う）|
+
+Bybit は `bybit` を指定すれば次の 3 種類をヘッダーから判定する。
+API は直近の履歴しか返さないので、過去の取引はこちらで取り込む。
+
+```bash
+crypto-summary import --file AssetChangeDetails_fund_XXXX_20260101_20261001_0.csv --exchange bybit
+crypto-summary import --file AssetChangeDetails_uta_XXXX_20260101_20261001_0.csv --exchange bybit
+crypto-summary import --file assetHistory_withdrawDepositHistory_XXXX_20260101_20261001_0.csv --exchange bybit
+```
+
+- 3 種類とも同じ `--source-id` に取り込む（省略時はすべて `bybit`）
+- 資金調達アカウント⇔UTA の振替は両側に TRANSFER として記録し、同じ口座の中で相殺される
+- 入出金は資金調達アカウント履歴と入出金履歴の両方に載るが、取り込み時に台帳と
+  突き合わせて 1 件にまとめる（どちらを先に入れても、入れ直しても重複しない）。
+  金額は資金調達側（実際に残高から引かれた額）、Tx ID は入出金履歴側を使う
+- 先物・無期限は実現損益ベース（決済損益・資金調達料・手数料）。現物の約定は TRADE
+- Earn（Easy Earn など）の申込・解約は記録しない。運用中の元本も保有として数え続ける
+- 知らない種別は推測で分類せず、スキップして理由別の件数を表示する
+- API で取得した取引とは突き合わせないので、CSV に切り替えるなら同じ口座の API 分は消しておく
 
 PBR Lending は `pbr` を指定すればヘッダーから形式を自動判定する。
 役割は固定で日付による分岐は無い:

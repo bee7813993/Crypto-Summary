@@ -164,9 +164,11 @@ from .nexo import (                                        # noqa: E402
 from .nexo_futures import NexoFuturesCsvSource             # noqa: E402
 from .nexo_savings import NexoSavingsCsvSource             # noqa: E402
 from .nexo_auto import NexoAutoCsvSource                   # noqa: E402
+from .bybit_csv import BybitCsvSource                      # noqa: E402
 
 EXCHANGE_SOURCES: dict[str, type[CsvSourceAdapter]] = {
     "binance":       BinanceCsvSource,
+    "bybit":         BybitCsvSource,
     "bitlend":         BitLendCsvSource,
     "pbr":             PbrAutoCsvSource,
     "pbr_lending":     PbrLendingCsvSource,
