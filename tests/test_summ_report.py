@@ -288,6 +288,46 @@ def test_result_does_not_depend_on_import_order(tmp_path):
     assert state(("summ", "universal")) == state(("universal", "summ"))
 
 
+def test_reimport_replaces_rows_fixed_in_summ(tmp_path):
+    """SUMM で分類を直したレポートを入れ直すと、古い形の取引は残らない。
+
+    購入 → 入金（送金元とつなげた）に直すと id が変わるため、前の取り込み分を
+    消さないと SOL が二重になる。
+    """
+    ledger = Ledger(tmp_path / "t.db")
+    _import(ledger, tmp_path, "summ", _REPORT, "a.csv")
+    gmo_hash = "4Gmo" + "y" * 84
+    fixed = _REPORT.replace(
+        "Solana (SOL),2026-02-20 10:49:42,購入,19000,20.508,389652,Unknown,Bybit,Bybit,228000001,,",
+        f"Solana (SOL),2026-02-20 10:49:42,入金,19000,20.508,389652,GMO Coin,Bybit,Bybit,{gmo_hash},,",
+    )
+    assert fixed != _REPORT
+    summ = _import(ledger, tmp_path, "summ", fixed, "b.csv")
+
+    sol_in = [t for t in ledger.all(source="bybit", tx_type="deposit", limit=None)
+              if t.received_asset == "SOL"]
+    assert [(t.received_amount, t.label, t.tx_hash) for t in sol_in] == [
+        (Decimal("20.508"), None, gmo_hash)]
+    assert summ.replaced == 1
+    _, expected = _load(tmp_path, content=fixed)
+    assert sorted(t.id for t in ledger.all(source="bybit", limit=None)) == sorted(
+        t.id for t in expected)
+    ledger.close()
+
+
+def test_narrower_report_keeps_summ_rows_outside_it(tmp_path):
+    """期間の狭いレポートを入れても、その期間の外の SUMM の取引は消さない。"""
+    ledger = Ledger(tmp_path / "t.db")
+    _import(ledger, tmp_path, "summ", _REPORT, "a.csv")
+    before = sorted(t.id for t in ledger.all(source="bybit", limit=None))
+    only_2021 = _PREAMBLE + _HEADER + "".join(
+        line + "\n" for line in _ROWS.splitlines() if line.split(",")[1].startswith("2021"))
+    summ = _import(ledger, tmp_path, "summ", only_2021, "b.csv")
+    assert summ.replaced == 0
+    assert sorted(t.id for t in ledger.all(source="bybit", limit=None)) == before
+    ledger.close()
+
+
 def test_bybit_csv_inside_summ_period_is_skipped(tmp_path):
     """Bybit の CSV も SUMM の期間の行は飛ばす（入出金のまとめより前に）。"""
     from tests.test_bybit_csv import _DW

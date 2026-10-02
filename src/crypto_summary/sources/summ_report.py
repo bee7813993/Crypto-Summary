@@ -29,6 +29,8 @@ CSV にしたもの）から、指定した口座の取引を取り込む。取�
   その期間に入るものを置き換える（手動で追加した取引は残す）。後から取り込む
   他の CSV も、その期間の行は飛ばす（CsvSourceAdapter.reconcile）。同じ出来事を
   取引所の CSV と SUMM の両方から入れて二重計上しないため。
+  SUMM で直したレポートを取り込み直したときは、以前の SUMM の取引のうち
+  新しいレポートの期間にあって新しいレポートに無いものも消す。
 
 SUMM 由来の取引の id は "summ:" で始まる。台帳からその口座でレポートが覆う
 期間を引くのに使う（Web の手動入力の "manual:" と同じ考え方）。
@@ -213,15 +215,32 @@ class SummReportCsvSource(CsvSourceAdapter):
         return txs
 
     def reconcile(self, txs: list[CanonicalTx], ledger: Ledger) -> list[CanonicalTx]:
-        """レポートが覆う期間の、同じ口座の SUMM 由来でない取引を置き換える。"""
+        """レポートが覆う期間の、同じ口座の既存の取引を置き換える。
+
+        - SUMM 由来でない取引（Bybit の CSV など）: 以前の SUMM の取り込み分も
+          合わせた期間のものを消す
+        - 以前に取り込んだ SUMM の取引: このレポートの期間にあって、このレポートに
+          無いものを消す。SUMM で分類を直した取引（購入 → 入金など）は id が
+          変わるため、消さないと古い形の取引が残って二重になる
+        """
         if not txs:
             return txs
         lo = min(t.timestamp for t in txs)
         hi = max(t.timestamp for t in txs)
+        new_ids = {t.id for t in txs}
+        stale = [
+            t.id
+            for t in ledger.all(source=self.source_id, since=lo - COVERAGE_MARGIN,
+                                until=hi + COVERAGE_MARGIN, limit=None)
+            if t.id.startswith(SUMM_ID_PREFIX) and t.id not in new_ids
+        ]
+        for tx_id in stale:
+            ledger.delete_by_id(tx_id)
+
         prior = ledger.id_prefix_time_range(self.source_id, SUMM_ID_PREFIX)
         if prior is not None:
             lo, hi = min(lo, prior[0]), max(hi, prior[1])
-        self.replaced = ledger.delete_by_source_window(
+        self.replaced = len(stale) + ledger.delete_by_source_window(
             [self.source_id],
             lo - COVERAGE_MARGIN,
             hi + COVERAGE_MARGIN + timedelta(microseconds=1),
