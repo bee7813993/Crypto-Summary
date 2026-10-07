@@ -320,6 +320,35 @@ def test_status_when_configured(client, crawl_dir, monkeypatch):
     assert d["up_to_date"] is False   # まだ取り込んでいない
 
 
+def test_status_survives_failed_currency_objects(client, crawl_dir, monkeypatch):
+    """クローラーが失敗通貨を理由付きで書いても状態取得を 500 にしない。
+
+    500 になると画面は状態を null 扱いにし、クローラータブと同期カードを
+    丸ごと隠してしまう（2026-10-06 に発生）。
+    """
+    _configure(monkeypatch, crawl_dir, client)
+    monkeypatch.setenv(_VIEWER_ENV, "http://127.0.0.1:4174")
+    _write_settled(crawl_dir / MARKER_NAME, json.dumps({
+        **_MARKER, "phase": "partial",
+        "failedCurrencies": [{"currency": "USDC",
+                              "reason": "ページを読み込めませんでした"}],
+    }, ensure_ascii=False))
+
+    r = client.get("/api/sync/pbr/status")
+
+    assert r.status_code == 200
+    d = r.json()
+    assert d["configured"] is True
+    assert d["viewer_url"] == "http://127.0.0.1:4174"
+    assert d["blocked"] is True            # 自動取り込みは止める
+    assert d["crawl"]["failed_currencies"] == ["USDC"]
+    assert any("ページを読み込めませんでした" in w for w in d["crawl"]["warnings"])
+
+    r = client.post("/api/sync/pbr", json={})
+    assert r.status_code == 409
+    assert "USDC" in r.json()["detail"]
+
+
 def test_viewer_url_from_env(client, crawl_dir, monkeypatch):
     _configure(monkeypatch, crawl_dir, client)
     monkeypatch.setenv(_VIEWER_ENV, "http://127.0.0.1:4174")

@@ -188,6 +188,53 @@ def test_read_crawl_status_partial_is_unhealthy(crawl_dir):
     assert any("ETH" in w for w in status["warnings"])
 
 
+# クローラー側（PBRLending-History-Check 246b734 以降）は失敗した通貨を
+# 理由付きのオブジェクトで書く。旧形式は通貨名の文字列だった。
+_FAILED_OBJECTS = [
+    {"currency": "USDC",
+     "reason": "ページを読み込めませんでした（「USDC」が見つかりません）"},
+    {"currency": "XRP",
+     "reason": "ページを読み込めませんでした（「XRP」が見つかりません）"},
+]
+
+
+def test_read_crawl_status_accepts_failed_currency_objects(crawl_dir):
+    _write_marker(crawl_dir, phase="partial", failedCurrencies=_FAILED_OBJECTS)
+    status = read_crawl_status(crawl_dir)
+    assert status["healthy"] is False
+    assert status["blocked"] is True
+    # 画面・CLI 向けには従来どおり通貨名の文字列で返す
+    assert status["failed_currencies"] == ["USDC", "XRP"]
+    joined = "\n".join(status["warnings"])
+    assert "「USDC」が見つかりません" in joined   # 理由も見せる
+    assert "「XRP」が見つかりません" in joined
+    # partial は「CSV は作れたが一部の通貨を読めなかった」。クロール自体は
+    # 終わっているので「完了していません」とは言わない。
+    assert "完了していません" not in joined
+
+
+def test_failed_currency_object_without_name_keeps_it_unhealthy(crawl_dir):
+    """形の崩れた項目を読み飛ばして「失敗なし＝正常」と誤判定しない。"""
+    _write_marker(crawl_dir, phase="partial", failedCurrencies=[{"reason": "x"}])
+    status = read_crawl_status(crawl_dir)
+    assert status["healthy"] is False
+    assert len(status["failed_currencies"]) == 1
+
+
+def test_partial_without_failed_currencies_still_warns(crawl_dir):
+    _write_marker(crawl_dir, phase="partial", failedCurrencies=[])
+    status = read_crawl_status(crawl_dir)
+    assert status["healthy"] is False
+    assert any("partial" in w for w in status["warnings"])
+
+
+def test_unfinished_phase_still_says_not_complete(crawl_dir):
+    _write_marker(crawl_dir, phase="crawl")
+    status = read_crawl_status(crawl_dir)
+    assert status["healthy"] is False
+    assert any("完了していません" in w for w in status["warnings"])
+
+
 def test_settling_blocks_auto_sync_but_not_manual(crawl_dir, db_path):
     """ファイル同期で届いた直後は自動取り込みを見送る（手動は実行できる）。"""
     now = time.time()
@@ -547,6 +594,18 @@ def test_unhealthy_crawl_is_refused(crawl_dir, db_path):
 
     assert exc.value.code == "unhealthy"
     assert _sources(db_path) == {"pbr": 1}   # 何も消えていない
+
+
+def test_failed_currency_objects_are_refused_then_forceable(crawl_dir, db_path):
+    _write_marker(crawl_dir, phase="partial", failedCurrencies=_FAILED_OBJECTS)
+    with pytest.raises(PbrSyncError) as exc:
+        sync_pbr_crawl(db_path, crawl_dir)
+    assert exc.value.code == "unhealthy"
+    assert "USDC" in exc.value.message and "XRP" in exc.value.message
+
+    result = sync_pbr_crawl(db_path, crawl_dir, force=True)
+    assert result["forced"] is True
+    assert any("「USDC」が見つかりません" in w for w in result["sync_warnings"])
 
 
 def test_force_overrides_health_check(crawl_dir, db_path):
