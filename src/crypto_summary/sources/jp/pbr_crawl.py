@@ -624,6 +624,29 @@ def _parse_iso(value: str | None) -> datetime | None:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
+def _failed_currency_entries(raw) -> list[tuple[str, str | None]]:
+    """last_crawl.json の failedCurrencies を (通貨, 理由) の並びにする。
+
+    旧形式は通貨名の文字列、クローラーの 2026-08 以降は
+    {"currency": ..., "reason": ...} のオブジェクト。どちらも受け付ける。
+    形の崩れた項目も捨てない（捨てると「失敗なし＝正常」と誤判定するため）。
+    """
+    if not raw:
+        return []
+    if isinstance(raw, (str, dict)):
+        raw = [raw]
+    entries: list[tuple[str, str | None]] = []
+    for item in raw:
+        if isinstance(item, dict):
+            currency = str(item.get("currency") or "").strip() or "?"
+            reason = str(item.get("reason") or "").strip() or None
+        else:
+            currency = str(item).strip() or "?"
+            reason = None
+        entries.append((currency, reason))
+    return entries
+
+
 def read_crawl_status(crawl_dir: str | Path) -> dict:
     """クロール結果の状態を読む（同期はしない）。
 
@@ -634,6 +657,7 @@ def read_crawl_status(crawl_dir: str | Path) -> dict:
     artifact = directory / ARTIFACT_NAME
     marker = directory / MARKER_NAME
     warnings: list[str] = []
+    failed: list[tuple[str, str | None]] = []
 
     viewer_files = [
         name for name in (VIEWER_TRANSFERS_NAME, VIEWER_LEDGER_NAME)
@@ -685,8 +709,9 @@ def read_crawl_status(crawl_dir: str | Path) -> dict:
         if isinstance(marker_data, dict):
             status["run_id"] = marker_data.get("runId")
             status["phase"] = marker_data.get("phase")
-            status["failed_currencies"] = list(
-                marker_data.get("failedCurrencies") or [])
+            failed = _failed_currency_entries(marker_data.get("failedCurrencies"))
+            # 画面・CLI 向けには通貨名の文字列で返す（理由は warnings に載せる）
+            status["failed_currencies"] = [currency for currency, _ in failed]
             status["started_at"] = marker_data.get("startedAt")
             status["finished_at"] = marker_data.get("finishedAt")
 
@@ -697,13 +722,20 @@ def read_crawl_status(crawl_dir: str | Path) -> dict:
         and not status["failed_currencies"]
     )
 
-    if status["phase"] and status["phase"] != "done":
+    # "partial" はクローラー側の「CSV は作れたが一部の通貨を読めなかった」。
+    # クロール自体は終わっているので、失敗した通貨の警告で理由を伝える。
+    if status["phase"] == "partial":
+        if not failed:
+            warnings.append("一部の通貨を取得できませんでした（phase=partial）")
+    elif status["phase"] and status["phase"] != "done":
         warnings.append(f"クロールが完了していません（phase={status['phase']}）")
-    if status["failed_currencies"]:
+    if failed:
         warnings.append(
             "取得に失敗した通貨があります: "
             + ", ".join(status["failed_currencies"])
         )
+        warnings.extend(f"{currency}: {reason}" for currency, reason in failed
+                        if reason)
 
     # マーカーの方が新しい = クロール中にファイルがまだ書き換わっていない可能性。
     finished = _parse_iso(status["finished_at"])
