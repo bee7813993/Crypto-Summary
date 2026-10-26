@@ -366,7 +366,7 @@ document.getElementById("mask-toggle").addEventListener("click", () => {
 
 // ---- ページナビゲーション ----
 
-const PAGES = ["dashboard", "accounts", "assets", "transactions", "import", "pbr-viewer", "admin"];
+const PAGES = ["dashboard", "accounts", "assets", "transactions", "import", "admin"];
 
 // ---- ハッシュルーター ----
 // URL ハッシュに状態を全て持たせ、リロード・ブックマーク・進む/戻るで復元可能にする。
@@ -435,8 +435,6 @@ function router() {
     );
   } else if (page === "import") {
     loadImportPage();
-  } else if (page === "pbr-viewer") {
-    showPbrViewer();
   } else if (page === "admin") {
     loadAdminPage();
   }
@@ -2403,7 +2401,6 @@ async function loadImportPage() {
 
 let _pbrStatus = null;           // 直近に取得した /api/sync/pbr/status
 let _pbrSyncing = false;
-let _pbrViewerLoaded = false;
 
 // 状態を取得し、ナビ（クローラータブ）と同期カードの表示を更新する。
 async function loadPbrSyncStatus() {
@@ -2412,20 +2409,23 @@ async function loadPbrSyncStatus() {
   } catch (e) {
     _pbrStatus = null;
   }
-  _renderPbrNav();
+  _renderPbrViewerLink();
   _renderPbrSyncCard();
   _renderPrefsVisibility();
   loadSyncthing();
   return _pbrStatus;
 }
 
-function _renderPbrNav() {
-  const nav = document.getElementById("nav-pbr-viewer");
-  if (!nav) return;
-  const show = !!(_pbrStatus && _pbrStatus.configured && _pbrStatus.viewer_url);
-  nav.classList.toggle("hidden", !show);
+// クローラー画面（PBR_VIEWER_URL）へのリンク。クロールの実行と公式 CSV の
+// 手動インポートは別アプリの画面で行うので、PBR パネルから新しいタブで開く。
+// URL が無い構成（クラウドなど。クロールは手元の役目）では行ごと出さない。
+function _renderPbrViewerLink() {
+  const row = document.getElementById("pbr-viewer-row");
   const link = document.getElementById("pbr-viewer-link");
-  if (show && link) link.href = _pbrStatus.viewer_url;
+  if (!row || !link) return;
+  const show = !!(_pbrStatus && _pbrStatus.configured && _pbrStatus.viewer_url);
+  row.classList.toggle("hidden", !show);
+  if (show) link.href = _pbrStatus.viewer_url;
 }
 
 // クロール日時と最終同期を 1 行ずつ表示する。
@@ -3128,17 +3128,6 @@ document.getElementById("pbr-purge-btn")?.addEventListener("click", () => {
   _pbrPurgeYear = year;
   _openDeleteDialog(t("pbr.purgeConfirmTitle"), t("pbr.purgeConfirmBody", { year }));
 });
-
-// クローラー画面タブ: 初回表示時にだけ iframe を読み込む。
-function showPbrViewer() {
-  const frame = document.getElementById("pbr-viewer-frame");
-  const url = (_pbrStatus && _pbrStatus.viewer_url) || null;
-  if (!frame || !url) return;
-  if (!_pbrViewerLoaded) {
-    frame.src = url;
-    _pbrViewerLoaded = true;
-  }
-}
 
 // ---- 集計の表示設定 -------------------------------------------------------
 

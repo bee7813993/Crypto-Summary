@@ -91,8 +91,7 @@ services:
       - SYNCTHING_API_KEY=${SYNCTHING_API_KEY:-}
       # クローラーのビューアは手元にあるので、利用者のブラウザから見える URL。
       # 手元で見るだけなら既定 (http://127.0.0.1:4173) のままでよい。
-      # ただしこのアプリを https で公開している場合、http の iframe は
-      # mixed content でブロックされる（「新しいタブで開く」は使える）。
+      # リンクは新しいタブで開くので、このアプリが https でも http のビューアでよい。
       - PBR_VIEWER_URL=${PBR_VIEWER_URL:-}
     restart: unless-stopped
 

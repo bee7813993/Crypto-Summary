@@ -100,9 +100,6 @@
         <a class="nav-link" data-page="import" href="#import">
           <span class="nav-icon">↑</span><span data-i18n="nav.import">インポート</span>
         </a>
-        <a class="nav-link hidden" id="nav-pbr-viewer" data-page="pbr-viewer" href="#pbr-viewer">
-          <span class="nav-icon">◧</span><span data-i18n="nav.pbrViewer">PBR クローラー</span>
-        </a>
         <a class="nav-link hidden" id="nav-admin" data-page="admin" href="#admin">
           <span class="nav-icon">⚙</span><span data-i18n="nav.admin">管理者設定</span>
         </a>
@@ -790,6 +787,10 @@
           <p class="card-hint" data-i18n="pbr.hint">ローカルのクローラーが取得した当年データを取り込みます。対象期間を毎回まるごと入れ替えるため、何度実行しても重複しません。</p>
 
           <div id="pbr-sync-status" class="settings-hint"></div>
+          <p id="pbr-viewer-row" class="settings-hint hidden" style="margin:6px 0">
+            <span data-i18n="pbr.viewerLinkLabel">クロールの実行と公式 CSV の手動インポートはクローラー画面で行います:</span>
+            <a id="pbr-viewer-link" href="#" target="_blank" rel="noopener" data-i18n="pbr.viewerOpen">クローラー画面を開く ↗</a>
+          </p>
 
           <details id="pbr-source-details" class="hidden" style="margin:12px 0">
             <summary style="cursor:pointer;font-size:13px;color:#8b949e" data-i18n="pbr.sourceTitle">取り込み元ファイル</summary>
@@ -917,20 +918,6 @@
           </div>
           <p class="settings-hint hidden" id="prefs-empty" data-i18n="prefs.none">切り替えられる設定はありません。</p>
           <div id="prefs-result" class="settings-result hidden"></div>
-        </section>
-      </div>
-
-      <!-- PBR クローラー画面（別アプリのビューアを埋め込む） -->
-      <div id="page-pbr-viewer" class="page hidden">
-        <h1 class="page-title" data-i18n="nav.pbrViewer">PBR クローラー</h1>
-        <section class="card import-section">
-          <p class="card-hint">
-            <span data-i18n="pbr.viewerHint">クロールの実行と取得結果の確認は、この画面（PBRLending-History-Check のビューア）で行います。取得後、インポート画面の「PBR Lending クローラー同期」で台帳へ取り込まれます。</span>
-            <a id="pbr-viewer-link" href="#" target="_blank" rel="noopener" data-i18n="pbr.viewerOpen">新しいタブで開く ↗</a>
-          </p>
-          <p class="settings-hint" data-i18n="pbr.viewerOffline">画面が表示されない場合は、クローラー側のビューアが起動しているか確認してください（npm run viewer / docker compose up）。</p>
-          <iframe id="pbr-viewer-frame" title="PBRLending-History-Check"
-            style="width:100%;height:calc(100vh - 260px);min-height:480px;border:1px solid #30363d;border-radius:6px;background:#fff"></iframe>
         </section>
       </div>
 
