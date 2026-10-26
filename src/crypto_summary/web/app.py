@@ -8,12 +8,14 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import logging
 import os
 import re
 import secrets
 import tempfile
 import uuid
 from collections import Counter
+from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta, timezone, tzinfo
 from decimal import Decimal
 from pathlib import Path
@@ -29,7 +31,9 @@ from ..core.models import CanonicalTx, TxType
 from ..core.portfolio import assets_in_range, balances_as_of, daily_balances
 from ..core.price_history import fetch_price_history
 from ..core.prices import COINGECKO_IDS, SUPPORTED_CURRENCIES, _coingecko_api_key, fetch_coin_icons, fetch_prices
+from ..core import inbox as cs_inbox
 from ..core import syncthing
+from ..core.importer import FileImportError, import_file
 from ..core.secrets import SecretStore, SecretStoreError
 from ..sinks.cryptact_csv import to_cryptact_csv_string
 from ..sinks.koinly_csv import to_koinly_csv_string
@@ -948,7 +952,9 @@ def _import_csv(db_path: str, body: dict[str, Any]) -> dict:
     # source_id はインポート先の識別子（任意。未指定なら取引所名）。
     source_id = (body.get("account") or "").strip() or exchange
 
-    adapter = EXCHANGE_SOURCES[exchange](source_id)
+    # 取り込み本体は取り込みフォルダと共通（core/importer.py）。
+    # 「読めたが記録対象外として落とした」件数も必ず返す — 0 件になった理由が
+    # 見えないと「入れたのに反映されない」に見えるため。
     suffix = Path(filename).suffix or ".csv"
     tmp_path: Path | None = None
     try:
@@ -956,59 +962,16 @@ def _import_csv(db_path: str, body: dict[str, Any]) -> dict:
             tmp.write(raw)
             tmp_path = Path(tmp.name)
         try:
-            txs = adapter.load(tmp_path)
-        except Exception as e:  # noqa: BLE001 - パースエラーをユーザーに返す
-            raise HTTPException(status_code=422, detail=f"CSV の解析に失敗しました: {e}")
+            result = import_file(
+                db_path, exchange, source_id, tmp_path,
+                filename=filename, origin="upload",
+            )
+        except FileImportError as e:
+            raise HTTPException(status_code=422, detail=str(e))
     finally:
         if tmp_path is not None:
             tmp_path.unlink(missing_ok=True)
-
-    def _skips() -> dict:
-        # 「読めたが記録対象外として落とした」件数（アダプタが対応していれば）。
-        # 0件になった理由が見えないと「入れたのに反映されない」に見えるため必ず返す。
-        return {"skipped": getattr(adapter, "skipped", 0),
-                "skip_reasons": dict(getattr(adapter, "skip_reasons", {}) or {})}
-
-    if not txs:
-        return {"ok": True, "imported": 0, "parsed": 0, "source": source_id,
-                **_skips(), "message": "取引が見つかりませんでした"}
-
-    ledger = Ledger(db_path)
-    try:
-        # 台帳の既存の取引と突き合わせる。SUMM のレポートがある期間の行を飛ばす、
-        # 別の CSV にも載る Bybit の入出金をまとめる、SUMM のレポートが覆う期間の
-        # 既存の取引を置き換える、など（アダプタごと）。
-        txs = adapter.reconcile(txs, ledger)
-        replaced = getattr(adapter, "replaced", 0)
-        if not txs:
-            return {"ok": True, "imported": 0, "parsed": 0, "replaced": replaced,
-                    "source": source_id, **_skips(),
-                    "message": "取り込む取引はありませんでした"}
-        before = ledger.count(source_id)
-        ledger.upsert_many(txs)
-        after = ledger.count(source_id)
-
-        latest_ts = max(t.timestamp for t in txs)
-        cursor = ledger.get_cursor(source_id)
-        if cursor is None or latest_ts > cursor:
-            ledger.set_cursor(source_id, latest_ts)
-
-        batch_id = f"batch:{uuid.uuid4().hex[:12]}"
-        ledger.record_import_batch(
-            batch_id, source_id, exchange, filename, [t.id for t in txs]
-        )
-    finally:
-        ledger.close()
-
-    return {
-        "ok": True,
-        "imported": after - before,
-        "parsed": len(txs),
-        "replaced": replaced,
-        **_skips(),
-        "source": source_id,
-        "batch_id": batch_id,
-    }
+    return result.as_dict()
 
 
 def _list_import_batches(db_path: str) -> dict:
@@ -1990,12 +1953,28 @@ _PBR_ERROR_STATUS = {
 }
 
 
-def _pbr_sync_run(db_path: str, body: dict[str, Any]) -> dict:
-    """クロール結果を取り込む（対象期間を洗い替える）。"""
+def _pbr_sync_run(db_path: str, body: dict[str, Any],
+                  root: Path | None = None) -> dict:
+    """クロール結果を取り込む（対象期間を洗い替える）。
+
+    取り込みフォルダのフォルダ単位経路（sync_unit）を通すので、画面の一覧と
+    記録が食い違わない。対象は従来の PBR_CRAWL_DIR、無ければ入口内の pbr_crawl/。
+    """
     force = bool(body.get("force"))
     dry_run = bool(body.get("dry_run"))
+    directory = resolve_crawl_dir()
+    if directory is not None:
+        key, legacy = _PBR_LEGACY_KEY, [(PBR_SOURCE_ID, directory, _PBR_CRAWL_ENV)]
+    elif root is not None and (root / PBR_SOURCE_ID).is_dir():
+        key, legacy = _PBR_INBOX_KEY, []
+    else:
+        raise HTTPException(
+            status_code=_PBR_ERROR_STATUS["not_configured"],
+            detail=f"クロール出力ディレクトリが未設定です（環境変数 {_PBR_CRAWL_ENV}）。",
+        )
     try:
-        return sync_pbr_crawl(db_path, None, force=force, dry_run=dry_run)
+        return cs_inbox.sync_unit(
+            db_path, root, key, force=force, dry_run=dry_run, legacy_folders=legacy)
     except PbrSyncError as e:
         status = _PBR_ERROR_STATUS.get(e.code, 422)
         detail = e.message
@@ -2054,6 +2033,161 @@ def _pbr_syncthing_dismiss(body: dict[str, Any]) -> dict:
             detail=e.message,
         )
     return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# 取り込みフォルダ（inbox）
+#
+# IMPORT_DIR/<exchange>/<file> に置かれた取引履歴ファイルを台帳へ反映する。
+# マルチユーザーでは IMPORT_DIR/<入口名>/ が利用者ごとの入口。走査はサーバー内の
+# ポーラ（InboxPoller）が定期的に行い、画面の「今すぐ確認」と CLI からも呼べる。
+# 設計: docs/inbox-design.md
+# ---------------------------------------------------------------------------
+
+_SYNCTHING_INBOX_PATH_ENV = "SYNCTHING_INBOX_PATH"
+
+#: 従来の PBR クローラー連携のフォルダ単位キー（inbox_files.path）
+_PBR_LEGACY_KEY = f"{PBR_SOURCE_ID}/@{_PBR_CRAWL_ENV}"
+_PBR_INBOX_KEY = f"{PBR_SOURCE_ID}/"
+
+
+def _legacy_folders(db_path: str) -> list:
+    """入口の外にあるフォルダ単位: 従来の PBR_CRAWL_DIR。
+
+    サーバー共通の設定なので、連携を使う利用者（pbr_sync_enabled または使った実績）
+    にだけ付ける。全員に付けると同じクロール結果が全員の台帳に入ってしまう。
+    """
+    directory = resolve_crawl_dir()
+    if directory is None or not _pbr_enabled(db_path):
+        return []
+    return [(PBR_SOURCE_ID, directory, _PBR_CRAWL_ENV)]
+
+
+def _inbox_status(
+    db_path: str, root: Path | None, *, name: str | None, multi_user: bool,
+    poller: "cs_inbox.InboxPoller | None", legacy: list | None = None,
+) -> dict:
+    """取り込みフォルダの状態。未設定でもエラーにしない（UI が表示を落とす）。
+
+    入口（IMPORT_DIR）が無くても、従来の PBR_CRAWL_DIR があればその 1 行は返す。
+    """
+    legacy = legacy or []
+    base = {
+        "configured": root is not None,
+        "legacy_configured": bool(legacy),
+        "multi_user": multi_user,
+        "inbox_name": name,
+        "exchanges": cs_inbox.exchange_keys(),
+        "folder_exchanges": cs_inbox.folder_exchange_keys(),
+        "exchange_labels": {
+            k: _EXCHANGE_LABELS.get(k, k)
+            for k in (*cs_inbox.exchange_keys(), *cs_inbox.folder_exchange_keys())
+        },
+        "settle_seconds": cs_inbox.SETTLE_SECONDS,
+        "max_file_mb": cs_inbox.MAX_FILE_BYTES // (1024 * 1024),
+        "poller": poller.info() if poller is not None else None,
+    }
+    if root is None and not legacy:
+        return {**base, "root": None, "files": [], "counts": {}}
+    mkdir_error: str | None = None
+    if root is not None:
+        try:
+            root.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            mkdir_error = f"{root}: {e.strerror or e}"
+    st = cs_inbox.status(db_path, root, legacy_folders=legacy)
+    return {**base, **st, "mkdir_error": mkdir_error}
+
+
+def _inbox_sync(db_path: str, root: Path | None, body: dict[str, Any],
+                legacy: list | None = None) -> dict:
+    """今すぐ走査する。
+
+    body.paths を渡すとそのファイルは内容が同じでも入れ直す。
+    body.force はフォルダ単位（PBR クローラー）のブロック状態を無視して取り込む。
+    """
+    legacy = legacy or []
+    if root is None and not legacy:
+        raise HTTPException(
+            status_code=422,
+            detail=f"取り込みフォルダが未設定です（環境変数 {cs_inbox.IMPORT_DIR_ENV}）。",
+        )
+    paths = body.get("paths") or ([body["path"]] if body.get("path") else [])
+    return cs_inbox.sync_inbox(
+        db_path, root, dry_run=bool(body.get("dry_run")),
+        retry={str(p) for p in paths}, force=bool(body.get("force")),
+        legacy_folders=legacy,
+    )
+
+
+def _inbox_retry(db_path: str, root: Path | None, body: dict[str, Any],
+                 legacy: list | None = None) -> dict:
+    path = (body.get("path") or "").strip()
+    if not path:
+        raise HTTPException(status_code=422, detail="path を指定してください")
+    report = _inbox_sync(db_path, root, {"paths": [path], "force": body.get("force")}, legacy)
+    error = next((e for e in report["errors"] if e["path"] == path), None)
+    blocked = next((b for b in report["blocked"] if b["path"] == path), None)
+    return {
+        "ok": error is None and blocked is None,
+        "path": path,
+        "imported": path in report["imported"] or path in report["replaced"],
+        "error": (error or blocked or {}).get("message"),
+        "blocked": blocked is not None,
+        "report": report,
+    }
+
+
+def _inbox_forget(db_path: str, root: Path | None, body: dict[str, Any]) -> dict:
+    path = (body.get("path") or "").strip()
+    if not path:
+        raise HTTPException(status_code=422, detail="path を指定してください")
+    result = cs_inbox.forget_file(db_path, path, root)
+    if not result.get("ok"):
+        raise HTTPException(status_code=404, detail=result.get("message") or "見つかりません")
+    return result
+
+
+def _inbox_syncthing_path(root: Path, name: str | None) -> str:
+    """Syncthing から見た入口のパス。マウント位置が違う構成だけ env で上書きする。"""
+    override = (os.environ.get(_SYNCTHING_INBOX_PATH_ENV) or "").strip()
+    if override:
+        return str(Path(override) / name) if name else override
+    return str(root)
+
+
+def _inbox_syncthing_overview(root: Path | None, name: str | None) -> dict:
+    if root is None:
+        return {"configured": False, "reachable": False,
+                "error": f"{cs_inbox.IMPORT_DIR_ENV} が未設定です。"}
+    return syncthing.overview(
+        _inbox_syncthing_path(root, name), "receiveonly",
+        folder_id=syncthing.inbox_folder_id(name),
+    )
+
+
+def _inbox_syncthing_pair(root: Path | None, name: str | None, body: dict[str, Any]) -> dict:
+    if root is None:
+        raise HTTPException(
+            status_code=422, detail=f"{cs_inbox.IMPORT_DIR_ENV} が未設定です。")
+    device_id = (body.get("device_id") or "").strip()
+    if not device_id:
+        raise HTTPException(status_code=422, detail="デバイス ID を入力してください")
+    peer = (body.get("name") or "inbox-sender").strip()
+    try:
+        # 受信側なので除外設定は入れない（送る側が何を送るかを決める）。
+        result = syncthing.pair(
+            device_id, peer, path=_inbox_syncthing_path(root, name),
+            folder_type="receiveonly",
+            folder_id=syncthing.inbox_folder_id(name),
+            label=syncthing.inbox_folder_label(name),
+        )
+    except syncthing.SyncthingError as e:
+        raise HTTPException(
+            status_code=422 if e.code == "invalid_device_id" else 502,
+            detail=e.message,
+        )
+    return {"ok": True, **result}
 
 
 def _pbr_purge(db_path: str, body: dict[str, Any]) -> dict:
@@ -2368,11 +2502,33 @@ def create_app(
     # から導くため。
     _apply_server_config(_base_dir)
 
+    # 取り込みフォルダのポーラ。IMPORT_DIR が設定され、間隔が 0 でないときだけ
+    # サーバーの起動時に走り出す（テストの TestClient は with で使わない限り
+    # 起動イベントが走らないので、スレッドも立たない）。
+    _inbox_state: dict[str, Any] = {"poller": None}
+
+    @asynccontextmanager
+    async def _lifespan(_app: FastAPI):
+        poller = _inbox_state.get("poller")
+        if (poller is not None and cs_inbox.poll_seconds() > 0
+                and (cs_inbox.resolve_import_dir() is not None
+                     or resolve_crawl_dir() is not None)):
+            poller.interval = cs_inbox.poll_seconds()
+            if not poller.start():
+                logging.getLogger("crypto_summary.inbox").info(
+                    "inbox poller not started: %s", poller.reason)
+        try:
+            yield
+        finally:
+            if poller is not None:
+                poller.stop()
+
     app = FastAPI(
         title="Crypto-Summary",
         docs_url="/api/docs",
         # サブパス配信の接頭辞（例: /crypto）。空ならルート直下。
         root_path=cs_auth.root_path(),
+        lifespan=_lifespan,
     )
 
     def _admin_emails() -> set[str]:
@@ -2421,6 +2577,50 @@ def create_app(
         def system_store_path() -> str:
             return _system_db
 
+        # 取り込みフォルダ: 利用者ごとの入口 IMPORT_DIR/<入口名>/。
+        # 入口名は初めて状態を見たときにメールのローカル部から決まる。
+        _inbox_registry = cs_inbox.InboxRegistry(_data_dir_path)
+
+        def inbox_ctx(user: dict = Depends(require_user)) -> dict:
+            import_dir = cs_inbox.resolve_import_dir()
+            name = (_inbox_registry.ensure(user["sub"], user.get("email"))
+                    if import_dir is not None else _inbox_registry.name_for(user["sub"]))
+            db = str(_data_dir_path / f"{user['sub']}.db")
+            return {
+                "db": db,
+                "root": (import_dir / name) if (import_dir is not None and name) else None,
+                "name": name,
+                "user": user,
+                "legacy": _legacy_folders(db),
+            }
+
+        def inbox_roots() -> list[tuple]:
+            """ポーラが見る入口。入口名のある利用者と、従来の PBR 連携を使う利用者。"""
+            import_dir = cs_inbox.resolve_import_dir()
+            names = {e["sub"]: e["name"] for e in _inbox_registry.entries()}
+            out: list[tuple] = []
+            for db_file in sorted(_data_dir_path.glob("*.db")):
+                sub = db_file.stem
+                if not cs_auth._SUB_RE.match(sub):
+                    continue
+                name = names.get(sub)
+                root = (import_dir / name) if (import_dir is not None and name) else None
+                legacy = _legacy_folders(str(db_file))
+                if root is not None or legacy:
+                    out.append((str(db_file), root, legacy))
+            return out
+
+        def inbox_root_for_admin(inbox_name: str | None, admin: dict) -> tuple[Path | None, str | None]:
+            """管理者が Syncthing を設定する入口。未指定なら管理者自身の入口。"""
+            import_dir = cs_inbox.resolve_import_dir()
+            if import_dir is None:
+                return None, None
+            name = (inbox_name or "").strip() or _inbox_registry.ensure(
+                admin["sub"], admin.get("email"))
+            if _inbox_registry.resolve(name) is None:
+                raise HTTPException(status_code=404, detail=f"入口「{name}」はありません")
+            return import_dir / name, name
+
         def is_admin_user(user: dict | None) -> bool:
             admins = _admin_emails()
             return bool(user and admins and user.get("email", "").lower() in admins)
@@ -2449,6 +2649,29 @@ def create_app(
 
         def require_admin() -> dict:  # type: ignore[misc]
             return {"email": ""}
+
+        _inbox_registry = None
+
+        def inbox_ctx() -> dict:  # type: ignore[misc]
+            return {"db": _fixed_db, "root": cs_inbox.resolve_import_dir(),
+                    "name": None, "user": None, "legacy": _legacy_folders(_fixed_db)}
+
+        def inbox_roots() -> list[tuple]:
+            import_dir = cs_inbox.resolve_import_dir()
+            legacy = _legacy_folders(_fixed_db)
+            if import_dir is None and not legacy:
+                return []
+            return [(_fixed_db, import_dir, legacy)]
+
+        def inbox_root_for_admin(inbox_name: str | None, admin: dict) -> tuple[Path | None, str | None]:
+            return cs_inbox.resolve_import_dir(), None
+
+    _inbox_poller = cs_inbox.InboxPoller(
+        inbox_roots, cs_inbox.poll_seconds() or cs_inbox.DEFAULT_POLL_SECONDS,
+        lock_path=Path(_base_dir) / ".inbox.lock",
+    )
+    _inbox_state["poller"] = _inbox_poller
+    app.state.inbox_poller = _inbox_poller
 
     # ------------------------------------------------------------------
     # API ルート（すべて get_db_path 依存で db パスを取得する）
@@ -2620,13 +2843,74 @@ def create_app(
     def sync_all(db: str = Depends(get_db_path)) -> dict:
         return _sync_all(db, system_db=system_store_path())
 
+    # ---- 取り込みフォルダ ----
+
+    @app.get("/api/inbox/status")
+    def inbox_status(ctx: dict = Depends(inbox_ctx)) -> dict:
+        return _inbox_status(ctx["db"], ctx["root"], name=ctx["name"],
+                             multi_user=multi_user, poller=_inbox_poller,
+                             legacy=ctx["legacy"])
+
+    @app.post("/api/inbox/sync")
+    def inbox_sync(body: dict[str, Any], ctx: dict = Depends(inbox_ctx)) -> dict:
+        return _inbox_sync(ctx["db"], ctx["root"], body, ctx["legacy"])
+
+    @app.post("/api/inbox/files/retry")
+    def inbox_retry(body: dict[str, Any], ctx: dict = Depends(inbox_ctx)) -> dict:
+        return _inbox_retry(ctx["db"], ctx["root"], body, ctx["legacy"])
+
+    @app.post("/api/inbox/files/forget")
+    def inbox_forget(body: dict[str, Any], ctx: dict = Depends(inbox_ctx)) -> dict:
+        return _inbox_forget(ctx["db"], ctx["root"], body)
+
+    @app.put("/api/inbox/name")
+    def inbox_rename(body: dict[str, Any], ctx: dict = Depends(inbox_ctx)) -> dict:
+        if _inbox_registry is None or ctx["user"] is None:
+            raise HTTPException(status_code=422, detail="シングルユーザーでは入口名はありません")
+        try:
+            name = _inbox_registry.rename(
+                ctx["user"]["sub"], body.get("name") or "", ctx["user"].get("email"))
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e))
+        import_dir = cs_inbox.resolve_import_dir()
+        return {"ok": True, "inbox_name": name,
+                "root": str(import_dir / name) if import_dir else None}
+
+    @app.get("/api/admin/inbox")
+    def admin_inbox(admin: dict = Depends(require_admin)) -> dict:
+        import_dir = cs_inbox.resolve_import_dir()
+        return {
+            "import_dir": str(import_dir) if import_dir else None,
+            "poll_seconds": cs_inbox.poll_seconds(),
+            "poller": _inbox_poller.info(),
+            "inboxes": _inbox_registry.entries() if _inbox_registry else [],
+        }
+
+    @app.get("/api/inbox/syncthing")
+    def inbox_syncthing(inbox: str | None = Query(None),
+                        admin: dict = Depends(require_admin)) -> dict:
+        root, name = inbox_root_for_admin(inbox, admin)
+        return _inbox_syncthing_overview(root, name)
+
+    @app.post("/api/inbox/syncthing/pair")
+    def inbox_syncthing_pair(body: dict[str, Any],
+                             admin: dict = Depends(require_admin)) -> dict:
+        root, name = inbox_root_for_admin(body.get("inbox"), admin)
+        return _inbox_syncthing_pair(root, name, body)
+
+    @app.post("/api/inbox/syncthing/dismiss")
+    def inbox_syncthing_dismiss(body: dict[str, Any],
+                                admin: dict = Depends(require_admin)) -> dict:
+        return _pbr_syncthing_dismiss(body)
+
     @app.get("/api/sync/pbr/status")
     def pbr_sync_status(db: str = Depends(get_db_path)) -> dict:
         return _pbr_sync_status(db)
 
+    # 互換エイリアス: 取り込みフォルダのフォルダ単位経路を通して同期する。
     @app.post("/api/sync/pbr")
-    def pbr_sync(body: dict[str, Any], db: str = Depends(get_db_path)) -> dict:
-        return _pbr_sync_run(db, body)
+    def pbr_sync(body: dict[str, Any], ctx: dict = Depends(inbox_ctx)) -> dict:
+        return _pbr_sync_run(ctx["db"], body, ctx["root"])
 
     @app.post("/api/sync/pbr/purge")
     def pbr_sync_purge(body: dict[str, Any], db: str = Depends(get_db_path)) -> dict:

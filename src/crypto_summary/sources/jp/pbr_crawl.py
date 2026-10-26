@@ -1063,6 +1063,49 @@ def sync_pbr_crawl(
     return result
 
 
+# ---- 取り込みフォルダ（core/inbox.py）向けのフォルダ単位アダプタ ----
+
+class PbrCrawlFolderAdapter:
+    """取り込みフォルダの「フォルダ単位」取引所として PBR クローラーを扱う。
+
+    クロール結果・マーカー・ビューア手動インポートの 4 ファイルはまとめて 1 回で
+    評価する必要がある（ビューア側のどの期間を読むかがクロール結果に依存する）ので、
+    1 ファイル = 1 バッチの一般規則には乗せず、このアダプタがフォルダ全体を 1 単位として
+    inspect（状態・署名・ブロック判定）→ sync（期間の洗い替え）する。
+    ヘルスチェック・残高照合・年次パージ・最終同期の記録（pbr_sync.json）は
+    従来どおりこのモジュールに閉じる。
+    """
+
+    exchange = SOURCE_ID
+    source = SOURCE_ID
+    label = "PBR Lending（クローラー同期）"
+    format_version = SYNC_FORMAT_VERSION
+    error_class = PbrSyncError
+
+    def inspect(self, directory: Path) -> dict:
+        st = read_crawl_status(directory)
+        return {
+            "has_data": st["has_data"],
+            "signature": st["signature"],
+            # 自動取り込みを止める条件（クロール異常終了 / 整定中）。force で上書き可。
+            "blocked": st["blocked"],
+            "settling": st["settling"],
+            "healthy": st["healthy"],
+            "warnings": list(st["warnings"]),
+            "detail": st,
+        }
+
+    def sync(self, db_path: str | Path, directory: Path, *,
+             force: bool = False, dry_run: bool = False) -> dict:
+        return sync_pbr_crawl(db_path, directory, force=force, dry_run=dry_run)
+
+    def last_state(self, db_path: str | Path) -> dict:
+        return load_sync_state(db_path)
+
+
+FOLDER_ADAPTER = PbrCrawlFolderAdapter()
+
+
 def purge_pbr_crawl_year(db_path: str | Path, year: int) -> dict:
     """指定年のクロール由来データだけを削除する（年次の公式 CSV へ移行する時）。
 

@@ -38,6 +38,19 @@ FOLDER_PATH_ENV = "SYNCTHING_FOLDER_PATH"
 FOLDER_ID = "pbr-lending-outputs"
 FOLDER_LABEL = "PBR Lending outputs"
 
+#: 取り込みフォルダ（inbox）用。シングルユーザーは固定 ID、マルチユーザーは
+#: 利用者の入口名ごとに 1 フォルダ（cs-inbox-<name>）。受信のみ・除外設定なし。
+INBOX_FOLDER_ID = "crypto-summary-inbox"
+INBOX_FOLDER_LABEL = "Crypto-Summary inbox"
+
+
+def inbox_folder_id(inbox_name: str | None) -> str:
+    return f"cs-inbox-{inbox_name}" if inbox_name else INBOX_FOLDER_ID
+
+
+def inbox_folder_label(inbox_name: str | None) -> str:
+    return f"{INBOX_FOLDER_LABEL} ({inbox_name})" if inbox_name else INBOX_FOLDER_LABEL
+
 #: 取り込みに使うファイルだけを同期する除外設定（送信側に入れる）。
 #: captures/ は生のスクレイピング結果で容量が大きく、取り込みには使わない。
 SEND_IGNORE_PATTERNS: tuple[str, ...] = (
@@ -144,17 +157,17 @@ def connections() -> dict:
     return dict(_request("GET", "/rest/system/connections") or {})
 
 
-def folder_status() -> dict:
+def folder_status(folder_id: str = FOLDER_ID) -> dict:
     """同期フォルダの状態。デバイスが繋がっていても、フォルダが空振りして
     いることがある（典型はパスの指定違い）ので、件数まで見えるようにする。"""
     return dict(_request(
-        "GET", "/rest/db/status", params={"folder": FOLDER_ID}) or {})
+        "GET", "/rest/db/status", params={"folder": folder_id}) or {})
 
 
-def folder_errors() -> list[dict]:
+def folder_errors(folder_id: str = FOLDER_ID) -> list[dict]:
     """同期フォルダのエラー一覧（無ければ空）。"""
     data = _request(
-        "GET", "/rest/folder/errors", params={"folder": FOLDER_ID}) or {}
+        "GET", "/rest/folder/errors", params={"folder": folder_id}) or {}
     return list(data.get("errors") or [])
 
 
@@ -204,7 +217,10 @@ def add_device(device_id: str, name: str) -> dict:
     return device
 
 
-def ensure_folder(path: str, folder_type: str, share_with: list[str]) -> dict:
+def ensure_folder(
+    path: str, folder_type: str, share_with: list[str], *,
+    folder_id: str = FOLDER_ID, label: str = FOLDER_LABEL,
+) -> dict:
     """同期フォルダを用意し、相手と共有する。
 
     folder_type: "sendonly"（クローラー側）/ "receiveonly"（アプリ側）
@@ -214,19 +230,19 @@ def ensure_folder(path: str, folder_type: str, share_with: list[str]) -> dict:
     wanted = [{"deviceID": normalize_device_id(d)} for d in share_with]
 
     for folder in folders():
-        if folder.get("id") != FOLDER_ID:
+        if folder.get("id") != folder_id:
             continue
         have = {d.get("deviceID") for d in folder.get("devices") or []}
         added = [d for d in wanted if d["deviceID"] not in have]
         if added:
             folder["devices"] = list(folder.get("devices") or []) + added
-            _request("PUT", f"/rest/config/folders/{FOLDER_ID}", json=folder)
+            _request("PUT", f"/rest/config/folders/{folder_id}", json=folder)
         return folder
 
     folder = _default("folder")
     folder.update({
-        "id": FOLDER_ID,
-        "label": FOLDER_LABEL,
+        "id": folder_id,
+        "label": label,
         "path": path,
         "type": folder_type,
         # 自分自身も devices に含める必要がある
@@ -236,10 +252,10 @@ def ensure_folder(path: str, folder_type: str, share_with: list[str]) -> dict:
     return folder
 
 
-def set_ignores(patterns: list[str]) -> None:
+def set_ignores(patterns: list[str], *, folder_id: str = FOLDER_ID) -> None:
     """同期フォルダの除外設定を書く（送信側で使う）。"""
     _request(
-        "POST", "/rest/db/ignores", params={"folder": FOLDER_ID},
+        "POST", "/rest/db/ignores", params={"folder": folder_id},
         json={"ignore": list(patterns)},
     )
 
@@ -259,6 +275,7 @@ def dismiss_pending_device(device_id: str) -> None:
 def pair(
     device_id: str, name: str, *, path: str, folder_type: str,
     ignores: list[str] | None = None,
+    folder_id: str = FOLDER_ID, label: str = FOLDER_LABEL,
 ) -> dict:
     """相手を登録し、同期フォルダを用意して共有する。
 
@@ -267,18 +284,21 @@ def pair(
     """
     device_id = normalize_device_id(device_id)
     add_device(device_id, name)
-    folder = ensure_folder(path, folder_type, [device_id])
+    folder = ensure_folder(path, folder_type, [device_id],
+                           folder_id=folder_id, label=label)
     if ignores:
-        set_ignores(ignores)
+        set_ignores(ignores, folder_id=folder_id)
     return {
         "device_id": device_id,
-        "folder_id": FOLDER_ID,
+        "folder_id": folder_id,
         "folder_path": folder.get("path"),
         "folder_type": folder.get("type"),
     }
 
 
-def overview(path: str, folder_type: str) -> dict:
+def overview(
+    path: str, folder_type: str, *, folder_id: str = FOLDER_ID,
+) -> dict:
     """画面表示用の状態をまとめて返す。
 
     未設定・未接続でも例外にせず、状態として返す（画面が壊れないように）。
@@ -308,12 +328,12 @@ def overview(path: str, folder_type: str) -> dict:
         {"device_id": did, "name": info.get("name") or "", "time": info.get("time")}
         for did, info in (pending_devices() or {}).items()
     ]
-    folder = next((f for f in folders() if f.get("id") == FOLDER_ID), None)
+    folder = next((f for f in folders() if f.get("id") == folder_id), None)
 
     status: dict = {}
     if folder is not None:
         try:
-            raw = folder_status()
+            raw = folder_status(folder_id)
             status = {
                 "state": raw.get("state"),
                 "global_files": raw.get("globalFiles", 0),
@@ -322,7 +342,7 @@ def overview(path: str, folder_type: str) -> dict:
                 "global_bytes": raw.get("globalBytes", 0),
                 "errors": raw.get("errors", 0) or raw.get("pullErrors", 0),
                 "messages": [
-                    e.get("error") for e in folder_errors() if e.get("error")
+                    e.get("error") for e in folder_errors(folder_id) if e.get("error")
                 ][:3],
             }
         except SyncthingError:
@@ -346,7 +366,7 @@ def overview(path: str, folder_type: str) -> dict:
         "my_device_id": me,
         "devices": known,
         "pending_devices": pending,
-        "folder_id": FOLDER_ID,
+        "folder_id": folder_id,
         "folder": None if folder is None else {
             "path": folder.get("path"),
             "type": folder.get("type"),

@@ -28,6 +28,9 @@ services:
       # 同期で届くファイル。ボリュームを分けているのは、同期サイドカーに
       # 台帳を触らせないため（読むだけなので :ro）。
       - pbr-outputs:/data/pbr-outputs:ro
+      # 取り込みフォルダ。手元から同期ツールで取引履歴ファイルを置く先。
+      # マルチユーザーでは /data/inbox/<入口名>/<取引所>/ に分かれる。
+      - cs-inbox:/data/inbox:ro
     environment:
       # --- 必須 ---
       # 公開 URL。OAuth のリダイレクト URI の組み立てと、全エントリが https の
@@ -69,6 +72,12 @@ services:
       - HELIUS_API_KEY=${HELIUS_API_KEY:-}
       - APTOS_API_KEY=${APTOS_API_KEY:-}
 
+      # --- 取り込みフォルダ ---
+      # IMPORT_DIR/<取引所>/<ファイル> に置かれた取引履歴を、INBOX_POLL_SECONDS ごとに
+      # 走査して取り込む（docs/inbox-design.md）。
+      - IMPORT_DIR=/data/inbox
+      - INBOX_POLL_SECONDS=${INBOX_POLL_SECONDS:-30}
+
       # --- PBR Lending 連携 ---
       # ファイル同期でクローラーの outputs を運び込む先。
       # 手元のクローラー側 outputs ディレクトリと同期させる。
@@ -107,6 +116,8 @@ services:
       # 同期フォルダ。app と同じパスに見せることで、アプリが作る
       # フォルダ設定のパスがそのまま通る（SYNCTHING_FOLDER_PATH 不要）。
       - pbr-outputs:/data/pbr-outputs
+      # 取り込みフォルダ（同じく app と同じパスに見せる。SYNCTHING_INBOX_PATH 不要）。
+      - cs-inbox:/data/inbox
     ports:
       # 同期の待受。ここだけは外から到達できる必要がある（NAT 越えは
       # Syncthing のリレー／穴あけが面倒を見る）。
@@ -121,4 +132,5 @@ services:
 volumes:
   cs-data:
   pbr-outputs:
+  cs-inbox:
   syncthing-config:

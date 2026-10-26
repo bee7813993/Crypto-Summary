@@ -235,7 +235,7 @@ crypto-summary sources
 | `pbr` | PBR Lending（入出金履歴／貸出日次レポートを自動判定）|
 | `pbr_transfers` | PBR Lending 入出金履歴（形式を明示したい場合）|
 | `pbr_lending` | PBR Lending 貸出日次レポート（形式を明示したい場合）|
-| `pbr_crawl` | PBR Lending クローラーの正規化 JSON（取り込みは `sync-pbr` を使う）|
+| `pbr_crawl` | PBR Lending クローラーの正規化 JSON（取り込みは `sync-pbr` を使う。取り込みフォルダでは扱わない）|
 
 Bybit は `bybit` を指定すれば次の 3 種類をヘッダーから判定する。
 API は直近の履歴しか返さないので、過去の取引はこちらで取り込む。
@@ -291,7 +291,41 @@ PBR Lending は `pbr` を指定すればヘッダーから形式を自動判定�
 
 ---
 
+## inbox — 取り込みフォルダ
+
+`IMPORT_DIR/<取引所>/<ファイル>` に置かれた取引履歴を台帳へ反映する。
+Web サーバーが動いていれば自動で走査する（既定 30 秒ごと）ので、CLI は
+サーバーを動かしていない運用、cron、状態の確認用。設計: `docs/inbox-design.md`
+
+```bash
+crypto-summary inbox status [--dir DIR]
+crypto-summary inbox sync   [--dir DIR] [--dry-run] [--retry PATH ...] [--watch] [--interval SEC]
+crypto-summary inbox forget PATH [--dir DIR] [-y]
+```
+
+- `--dir` を省略すると環境変数 `IMPORT_DIR` を使う
+- `sync` は必要なファイルだけ取り込む: 新規は取り込み、同じ内容は何もしない、
+  内容が変わっていれば旧バッチを消して入れ直す。消えたファイルのデータは残す
+- `--retry PATH` は内容が同じでも入れ直す（エラーの再試行、「データを削除」した後の入れ直し）。
+  PATH は入口からの相対パス（例 `bybit/2025-01.csv`）
+- `--watch` で常駐して繰り返す（`--interval` 省略時は `INBOX_POLL_SECONDS`、既定 30）
+- `forget` はそのファイル由来の取引を削除する。ファイルがまだフォルダにあれば
+  「削除済み」として記録し、次の走査で入れ直さない
+
+```bash
+# 置く
+mkdir -p /data/inbox/bybit && cp ~/Downloads/bybit-2025-01.csv /data/inbox/bybit/
+# 予定を見る → 取り込む → 状態を見る
+crypto-summary inbox sync --dry-run
+crypto-summary inbox sync
+crypto-summary inbox status
+```
+
 ## sync-pbr — PBR Lending クローラー同期
+
+> `crypto-summary inbox sync` でも同じ処理が走る（`PBR_CRAWL_DIR` が設定されていれば
+> 取り込みフォルダの「フォルダ単位の取引所」として扱う）。このコマンドは PBR 部分だけを
+> プレビュー付きで実行する互換経路で、結果は取り込みフォルダの一覧にも記録される。
 
 ```
 crypto-summary sync-pbr [--crawl-dir DIR] [--force] [--dry-run]

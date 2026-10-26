@@ -724,9 +724,69 @@
           </div>
         </section>
 
-        <!-- PBR Lending クローラー同期 -->
-        <section class="card import-section hidden" id="pbr-sync-section">
-          <h2 data-i18n="pbr.title">PBR Lending クローラー同期</h2>
+        <!-- 取り込みフォルダ（置くだけで取り込む） -->
+        <section class="card import-section hidden" id="inbox-section">
+          <h2 data-i18n="inbox.title">📥 取り込みフォルダ</h2>
+          <p class="card-hint" data-i18n="inbox.hint">取引所のフォルダに取引履歴ファイルを置くと、自動で台帳へ取り込みます。同じファイルを置き直しても二重にならず、内容が変わっていれば入れ直します。消したファイルのデータは残ります。</p>
+          <div id="inbox-main">
+
+          <div class="import-note" style="margin-bottom:12px">
+            <div id="inbox-root-line"></div>
+            <div id="inbox-name-row" class="hidden" style="margin-top:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+              <label class="settings-label" style="margin:0" data-i18n="inbox.nameLabel">入口名</label>
+              <input id="inbox-name-input" class="settings-input" type="text" spellcheck="false"
+                style="max-width:200px;font-family:monospace" />
+              <button id="inbox-name-save" class="tx-link-btn" data-i18n="btn.save">保存</button>
+              <span class="settings-hint" style="margin:0" data-i18n="inbox.nameHint">同期ツールの宛先フォルダ名になります（英小文字・数字・- _）。変えると前の名前のフォルダは見なくなります。</span>
+            </div>
+            <details style="margin-top:8px">
+              <summary style="cursor:pointer;font-size:13px;color:#8b949e" data-i18n="inbox.howTitle">置き方</summary>
+              <div class="settings-hint" style="margin-top:6px">
+                <span data-i18n="inbox.how1">取引所ごとのフォルダ（下の名前）を作り、その中にエクスポートした CSV / JSON を置きます。</span><br>
+                <span data-i18n="inbox.how2">同じ取引所の別口座は、さらに 1 段下にフォルダを切ります（例: bybit/sub1/）。その名前がソース ID になります。</span><br>
+                <span data-i18n="inbox.how3">置いてから 30 秒ほど待ってから取り込みます（同期ツールが書き終わるのを待つため）。</span><br>
+                <span data-i18n="inbox.how4">PBR Lending クローラーの出力は、従来どおり下の「PBR Lending クローラー同期」で取り込みます。</span>
+              </div>
+              <div id="inbox-exchange-list" class="settings-hint" style="margin-top:6px"></div>
+            </details>
+          </div>
+
+          <div id="inbox-status-line" class="settings-hint"></div>
+          <div id="inbox-warnings" class="settings-hint"></div>
+
+          <div class="table-wrap">
+            <table id="inbox-files-table">
+              <thead>
+                <tr>
+                  <th data-i18n="inbox.thStatus">状態</th>
+                  <th data-i18n="th.file">ファイル</th>
+                  <th data-i18n="th.exchange">取引所</th>
+                  <th data-i18n="th.account">口座</th>
+                  <th class="num" data-i18n="th.txCount">取引数</th>
+                  <th data-i18n="inbox.thImportedAt">取り込み日時</th>
+                  <th data-i18n="th.action">操作</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+
+          <details id="inbox-st-details" class="hidden" style="margin:12px 0">
+            <summary style="cursor:pointer;font-size:13px;color:#8b949e" data-i18n="st.title">ファイル同期の相手を登録（Syncthing）</summary>
+            <p class="settings-hint" style="margin:8px 0 0" data-i18n="inbox.stHint">この取り込みフォルダを受信先にする同期フォルダを用意します。送る側は、取引所ごとのフォルダ構成のまま送ってください。</p>
+            <div id="inbox-st-body" style="margin-top:8px"></div>
+            <div id="inbox-st-result" class="settings-result hidden"></div>
+          </details>
+
+          <div class="settings-actions">
+            <button id="inbox-sync-btn" class="settings-save-btn" data-i18n="btn.inboxSync">⟳ 今すぐ確認</button>
+          </div>
+          <div id="inbox-sync-result" class="settings-result hidden"></div>
+          </div>
+
+          <!-- PBR Lending クローラー同期（フォルダ単位の取引所パネル） -->
+        <div id="pbr-sync-section" class="import-note hidden" style="margin-top:14px">
+          <h3 style="margin:0 0 6px;font-size:14px" data-i18n="pbr.title">PBR Lending クローラー同期</h3>
           <p class="card-hint" data-i18n="pbr.hint">ローカルのクローラーが取得した当年データを取り込みます。対象期間を毎回まるごと入れ替えるため、何度実行しても重複しません。</p>
 
           <div id="pbr-sync-status" class="settings-hint"></div>
@@ -811,6 +871,7 @@
               <tbody></tbody>
             </table>
           </div>
+        </div>
         </section>
 
         <!-- インポート履歴（CSV単位の削除） -->

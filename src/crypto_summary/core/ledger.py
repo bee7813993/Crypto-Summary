@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 
@@ -48,7 +48,30 @@ CREATE TABLE IF NOT EXISTS batch_txs (
     tx_id    TEXT NOT NULL,
     PRIMARY KEY (batch_id, tx_id)
 );
+CREATE TABLE IF NOT EXISTS inbox_files (
+    path         TEXT PRIMARY KEY,
+    exchange     TEXT NOT NULL,
+    source       TEXT NOT NULL,
+    sha256       TEXT,
+    size         INTEGER,
+    mtime        TEXT,
+    status       TEXT NOT NULL,
+    message      TEXT,
+    batch_id     TEXT,
+    first_seen   TEXT NOT NULL,
+    imported_at  TEXT,
+    result_json  TEXT
+);
 """
+
+# 後から足した列。既存の DB には CREATE TABLE IF NOT EXISTS では入らないので、
+# 起動時に無ければ ALTER TABLE で補う（列名 → 追加 SQL）。
+_MIGRATIONS: tuple[tuple[str, str, str], ...] = (
+    # import_batches.origin: どこから来た取り込みか（upload = 画面のアップロード /
+    # inbox = 取り込みフォルダ / sync = クローラー同期など）。既存行は upload とみなす。
+    ("import_batches", "origin",
+     "ALTER TABLE import_batches ADD COLUMN origin TEXT NOT NULL DEFAULT 'upload'"),
+)
 
 # UI から残高・集計への算入を切り替えられるラベル。
 # 取引自体は常に台帳へ記録し、表示側で含める／含めないを選ぶ。
@@ -79,7 +102,15 @@ class Ledger:
         self._conn.execute("PRAGMA busy_timeout=30000")
         self._conn.execute("PRAGMA synchronous=NORMAL")
         self._conn.executescript(_SCHEMA)
+        self._migrate()
         self._conn.commit()
+
+    def _migrate(self) -> None:
+        """後から足した列を既存 DB に補う（冪等）。"""
+        for table, column, sql in _MIGRATIONS:
+            cols = {r[1] for r in self._conn.execute(f"PRAGMA table_info({table})")}
+            if column not in cols:
+                self._conn.execute(sql)
 
     # ------------------------------------------------------------------
     # Write
@@ -358,8 +389,10 @@ class Ledger:
             )
             inserted = self.count(source) - before
             self._conn.execute(
-                "INSERT INTO import_batches VALUES (?,?,?,?,?,?)",
-                (batch_id, source, exchange, filename, now, len(txs)),
+                "INSERT INTO import_batches "
+                "(id, source, exchange, filename, imported_at, tx_count, origin) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (batch_id, source, exchange, filename, now, len(txs), "sync"),
             )
             self._conn.executemany(
                 "INSERT OR IGNORE INTO batch_txs VALUES (?,?)",
@@ -385,17 +418,19 @@ class Ledger:
 
     def record_import_batch(
         self, batch_id: str, source: str, exchange: str,
-        filename: str | None, tx_ids: list[str],
+        filename: str | None, tx_ids: list[str], *, origin: str = "upload",
     ) -> None:
         """1回のCSV取り込みを1バッチとして記録する。
 
         tx_ids にはそのCSVから生成された全取引IDを渡す（既存・新規問わず）。
         後で delete_import_batch(batch_id) するとこのバッチ由来の取引を削除できる。
+        origin は取り込みの経路（upload / inbox / sync）。
         """
         self._conn.execute(
-            "INSERT INTO import_batches VALUES (?,?,?,?,?,?)",
+            "INSERT INTO import_batches (id, source, exchange, filename, imported_at, tx_count, origin) "
+            "VALUES (?,?,?,?,?,?,?)",
             (batch_id, source, exchange, filename,
-             datetime.utcnow().isoformat(), len(tx_ids)),
+             datetime.utcnow().isoformat(), len(tx_ids), origin),
         )
         self._conn.executemany(
             "INSERT OR IGNORE INTO batch_txs VALUES (?,?)",
@@ -409,11 +444,11 @@ class Ledger:
         existing_count は ledger に現存する取引数（個別削除後の現状）。
         """
         rows = self._conn.execute(
-            "SELECT id, source, exchange, filename, imported_at, tx_count "
+            "SELECT id, source, exchange, filename, imported_at, tx_count, origin "
             "FROM import_batches ORDER BY imported_at DESC"
         ).fetchall()
         result: list[dict] = []
-        for bid, source, exchange, filename, imported_at, tx_count in rows:
+        for bid, source, exchange, filename, imported_at, tx_count, origin in rows:
             existing, first_ts, last_ts = self._conn.execute(
                 "SELECT COUNT(*), MIN(t.timestamp), MAX(t.timestamp) FROM batch_txs bt "
                 "JOIN transactions t ON bt.tx_id = t.id "
@@ -430,8 +465,59 @@ class Ledger:
                 "existing_count": existing,
                 "first_ts": first_ts,
                 "last_ts": last_ts,
+                "origin": origin or "upload",
             })
         return result
+
+    def has_import_batch(self, batch_id: str) -> bool:
+        row = self._conn.execute(
+            "SELECT 1 FROM import_batches WHERE id=?", (batch_id,)
+        ).fetchone()
+        return row is not None
+
+    # ------------------------------------------------------------------
+    # 取り込みフォルダ（inbox）のファイル状態
+    # ------------------------------------------------------------------
+
+    _INBOX_COLS = (
+        "path", "exchange", "source", "sha256", "size", "mtime", "status",
+        "message", "batch_id", "first_seen", "imported_at", "result_json",
+    )
+
+    def inbox_files(self) -> list[dict]:
+        """取り込みフォルダで見たファイルの状態一覧（パス順）。"""
+        rows = self._conn.execute(
+            f"SELECT {', '.join(self._INBOX_COLS)} FROM inbox_files ORDER BY path"
+        ).fetchall()
+        return [dict(zip(self._INBOX_COLS, r)) for r in rows]
+
+    def inbox_file(self, path: str) -> dict | None:
+        row = self._conn.execute(
+            f"SELECT {', '.join(self._INBOX_COLS)} FROM inbox_files WHERE path=?",
+            (path,),
+        ).fetchone()
+        return dict(zip(self._INBOX_COLS, row)) if row else None
+
+    def inbox_upsert_file(self, row: dict) -> None:
+        """ファイル状態を保存する（path で上書き）。first_seen は初回の値を保つ。"""
+        existing = self.inbox_file(row["path"])
+        merged = {c: None for c in self._INBOX_COLS}
+        if existing:
+            merged.update(existing)
+        merged.update({k: v for k, v in row.items() if k in self._INBOX_COLS})
+        if not merged.get("first_seen"):
+            merged["first_seen"] = datetime.now(timezone.utc).isoformat()
+        self._conn.execute(
+            f"INSERT OR REPLACE INTO inbox_files ({', '.join(self._INBOX_COLS)}) "
+            f"VALUES ({', '.join('?' for _ in self._INBOX_COLS)})",
+            tuple(merged[c] for c in self._INBOX_COLS),
+        )
+        self._conn.commit()
+
+    def inbox_delete_file(self, path: str) -> bool:
+        cur = self._conn.execute("DELETE FROM inbox_files WHERE path=?", (path,))
+        self._conn.commit()
+        return cur.rowcount > 0
 
     def delete_import_batch(self, batch_id: str) -> int:
         """バッチ由来の取引を削除する（他バッチと共有する取引は残す）。削除件数を返す。"""
