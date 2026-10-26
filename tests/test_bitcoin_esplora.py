@@ -261,9 +261,149 @@ def test_xprv_rejected():
 def test_esplora_url_env(monkeypatch):
     monkeypatch.delenv(es.ESPLORA_URL_ENV, raising=False)
     assert es.esplora_url() == es.DEFAULT_ESPLORA_URL
+    assert EsploraSource("btc", MINE).hosts == list(es.DEFAULT_ESPLORA_URLS)
     monkeypatch.setenv(es.ESPLORA_URL_ENV, "https://blockstream.info/api/ ")
     assert es.esplora_url() == "https://blockstream.info/api"
-    assert EsploraSource("btc", MINE).base_url == "https://blockstream.info/api"
+    src = EsploraSource("btc", MINE)
+    assert src.base_url == "https://blockstream.info/api"
+    assert src.hosts == ["https://blockstream.info/api"]  # 1 つだけならフォールバック無し
+    monkeypatch.setenv(es.ESPLORA_URL_ENV, " http://umbrel.local:3006/api , https://mempool.space/api/")
+    assert EsploraSource("btc", MINE).hosts == ["http://umbrel.local:3006/api", "https://mempool.space/api"]
+
+
+# ---- ホスト切り替え（HTTP 層をモック） ----
+
+class _Resp:
+    def __init__(self, status, body=None, headers=None):
+        self.status_code = status
+        self._body = body if body is not None else []
+        self.headers = headers or {}
+        self.text = ""
+
+    def json(self):
+        return self._body
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise RuntimeError(f"HTTP {self.status_code}")
+
+
+@pytest.fixture
+def http(monkeypatch):
+    """httpx.get と time.sleep を差し替え、(URL → 応答) の表とスリープ記録を返す。"""
+    calls: list[str] = []
+    sleeps: list[float] = []
+    table: dict[str, list] = {}
+
+    def fake_get(url, timeout=None):
+        calls.append(url)
+        host = url.split("/api", 1)[0] + "/api"
+        queue = table.get(host)
+        if not queue:
+            return _Resp(200, [])
+        item = queue.pop(0) if len(queue) > 1 else queue[0]
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    monkeypatch.setattr(es.httpx, "get", fake_get)
+    monkeypatch.setattr(es.time, "sleep", lambda s: sleeps.append(s))
+    return {"calls": calls, "sleeps": sleeps, "table": table}
+
+
+MEMPOOL = "https://mempool.space/api"
+BLOCKSTREAM = "https://blockstream.info/api"
+
+
+def test_persistent_429_switches_to_fallback_host(http, monkeypatch):
+    """主ホストが 429 を返し続けたら Blockstream に切り替え、その後も戻らない。"""
+    monkeypatch.delenv(es.ESPLORA_URL_ENV, raising=False)
+    tx = _tx("t1", [(OTHER, 1000)], [(MINE, 1000)])
+    http["table"][MEMPOOL] = [_Resp(429)]
+    http["table"][BLOCKSTREAM] = [_Resp(200, [tx])]
+    src = EsploraSource("btc", MINE)
+    txs = src.fetch_all()
+    assert [t.tx_hash for t in txs] == ["t1"]
+    assert src.base_url == BLOCKSTREAM
+    mempool_calls = [c for c in http["calls"] if c.startswith(MEMPOOL)]
+    assert len(mempool_calls) == es._MAX_RETRIES
+    assert len(src.warnings) == 1
+    assert "mempool.space" in src.warnings[0] and "blockstream.info" in src.warnings[0]
+
+
+def test_switch_sticks_for_rest_of_sync(http, monkeypatch):
+    """切り替え後のページングも同じ txid でフォールバック先から続く。"""
+    monkeypatch.delenv(es.ESPLORA_URL_ENV, raising=False)
+    page1 = [_tx(f"t{i:03d}", [(OTHER, 1000)], [(MINE, 1000)]) for i in range(25)]
+    page2 = [_tx("t025", [(OTHER, 1000)], [(MINE, 1000)])]
+    http["table"][MEMPOOL] = [_Resp(503)]
+    http["table"][BLOCKSTREAM] = [_Resp(200, page1), _Resp(200, page2)]
+    src = EsploraSource("btc", MINE)
+    assert len(src.fetch_all()) == 26
+    after_switch = [c for c in http["calls"][es._MAX_RETRIES:]]
+    assert all(c.startswith(BLOCKSTREAM) for c in after_switch)
+    assert after_switch[-1].endswith("/txs/chain/t024")
+    assert len(src.warnings) == 1  # 切り替えの警告は 1 回だけ
+
+
+def test_connection_error_also_falls_back(http, monkeypatch):
+    monkeypatch.delenv(es.ESPLORA_URL_ENV, raising=False)
+    http["table"][MEMPOOL] = [es.httpx.ConnectError("boom")]
+    http["table"][BLOCKSTREAM] = [_Resp(200, [])]
+    src = EsploraSource("btc", MINE)
+    assert src.fetch_all() == []
+    assert src.base_url == BLOCKSTREAM
+
+
+def test_all_hosts_failing_raises_with_both_named(http, monkeypatch):
+    monkeypatch.delenv(es.ESPLORA_URL_ENV, raising=False)
+    http["table"][MEMPOOL] = [_Resp(429)]
+    http["table"][BLOCKSTREAM] = [_Resp(502)]
+    with pytest.raises(RuntimeError) as ei:
+        EsploraSource("btc", MINE).fetch_all()
+    msg = str(ei.value)
+    assert "mempool.space" in msg and "blockstream.info" in msg
+    assert "BITCOIN_ESPLORA_URL" in msg
+
+
+def test_bad_request_does_not_fall_back(http, monkeypatch):
+    """400（アドレス不正）はどのホストでも同じなので切り替えない。"""
+    monkeypatch.delenv(es.ESPLORA_URL_ENV, raising=False)
+    http["table"][MEMPOOL] = [_Resp(400)]
+    http["table"][BLOCKSTREAM] = [_Resp(200, [])]
+    with pytest.raises(RuntimeError, match="受け付けません"):
+        EsploraSource("btc", MINE).fetch_all()
+    assert all(c.startswith(MEMPOOL) for c in http["calls"])
+
+
+def test_custom_single_host_has_no_fallback(http, monkeypatch):
+    monkeypatch.setenv(es.ESPLORA_URL_ENV, "http://umbrel.local:3006/api")
+    http["table"]["http://umbrel.local:3006/api"] = [_Resp(429)]
+    with pytest.raises(RuntimeError):
+        EsploraSource("btc", MINE).fetch_all()
+    assert all(c.startswith("http://umbrel.local:3006/api") for c in http["calls"])
+    assert len(http["calls"]) == es._MAX_RETRIES
+
+
+def test_retry_after_header_is_respected(http, monkeypatch):
+    monkeypatch.setenv(es.ESPLORA_URL_ENV, MEMPOOL)
+    http["table"][MEMPOOL] = [_Resp(429, headers={"retry-after": "7"}), _Resp(200, [])]
+    EsploraSource("btc", MINE).fetch_all()
+    assert 7.0 in http["sleeps"]
+
+
+def test_transient_429_recovers_on_same_host(http, monkeypatch):
+    """1 回 429 → 次で 200 なら切り替えない（警告も出ない）。"""
+    monkeypatch.delenv(es.ESPLORA_URL_ENV, raising=False)
+    http["table"][MEMPOOL] = [_Resp(429), _Resp(200, [])]
+    src = EsploraSource("btc", MINE)
+    src.fetch_all()
+    assert src.base_url == MEMPOOL
+    assert src.warnings == []
+
+
+def test_rate_limit_interval_is_conservative():
+    assert es._RATE_LIMIT_SLEEP >= 0.25
 
 
 def test_tx_ids_stable_and_distinct():

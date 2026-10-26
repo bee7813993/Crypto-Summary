@@ -105,7 +105,7 @@ cp .env.example .env
 | EVM ウォレット取得 | `ETHERSCAN_API_KEY` | EVM ウォレットを使うなら（Web 登録なら不要） | Etherscan |
 | Solana ウォレット取得 | `HELIUS_API_KEY` | Solana ウォレットを使うなら（Web 登録なら不要） | Helius |
 | Aptos ウォレット取得 | `APTOS_API_KEY` | 任意（未設定でも同期できるがレート制限が厳しい） | Aptos Build |
-| Bitcoin ウォレット取得 | `BITCOIN_ESPLORA_URL` | 不要（既定 mempool.space。自前ノードに向けるときだけ） | — |
+| Bitcoin ウォレット取得 | `BITCOIN_ESPLORA_URL` | 不要（既定 mempool.space → blockstream.info の順。自前ノードに向けるときだけ、カンマ区切りで複数可） | — |
 | bitFlyer API 取得 | `BITFLYER_API_KEY` / `BITFLYER_API_SECRET` | bitFlyer を使うなら（Web 登録なら不要） | bitFlyer |
 | Bybit API 取得 | `BYBIT_API_KEY` / `BYBIT_API_SECRET` | Bybit を使うなら（Web 登録なら不要） | Bybit |
 | 価格取得の高速化 | `COINGECKO_API_KEY` | 任意（推奨） | CoinGecko |

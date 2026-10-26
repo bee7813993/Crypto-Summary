@@ -286,7 +286,8 @@ def fetch_wallet_cmd(
     Aptos（Aptos Indexer GraphQL）/ Bitcoin（Esplora 互換 API）に対応。
     APIキーはいずれも読み取り専用で出金権限は不要。
     Aptos のみキーは任意（未設定だと匿名レート制限がかかる）。
-    Bitcoin はキー不要（既定 mempool.space。BITCOIN_ESPLORA_URL で差し替え可）。
+    Bitcoin はキー不要（既定 mempool.space、駄目なら blockstream.info。
+    BITCOIN_ESPLORA_URL で自前ノードに差し替え可）。
     Self-custody ウォレットは xpub / ypub / zpub を渡すと全アドレスを追跡する。
 
     \b

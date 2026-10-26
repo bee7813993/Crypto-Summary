@@ -1721,8 +1721,8 @@ def _sync_wallet(db_path: str, source_id: str, system_db: str | None = None) -> 
     elif chain == "bitcoin":
         from ..sources.bitcoin.esplora import EsploraSource
 
-        # Esplora 互換 API（既定 mempool.space）。API キー不要・匿名の読み取りのみ。
-        # 自前ノードに向けたいときは環境変数 BITCOIN_ESPLORA_URL で差し替える。
+        # Esplora 互換 API（既定 mempool.space、続けて弾かれたら blockstream.info）。
+        # API キー不要・匿名の読み取りのみ。自前ノードは環境変数 BITCOIN_ESPLORA_URL。
         try:
             adapter = EsploraSource(source_id, address)
         except ValueError as e:

@@ -269,7 +269,8 @@ Crypto-Summary を HTTPS で公開している場合、`http://` のビューア
 - **EVM 5チェーン**（Ethereum / Arbitrum / Polygon / Base / Optimism）— Etherscan V2 API
 - **Solana** — Helius API
 - **Aptos** — Aptos Indexer GraphQL（APT / Aptos ネイティブ USDC など Coin・Fungible Asset 両対応）
-- **Bitcoin** — Esplora 互換 API（既定 mempool.space、API キー不要）。
+- **Bitcoin** — Esplora 互換 API（既定 mempool.space、障害・レート制限時は blockstream.info へ自動切替、API キー不要。
+  自前ノードは `BITCOIN_ESPLORA_URL` で指定）。
   単一アドレス（1… / 3… / bc1q… / bc1p…）のほか、Self-custody ウォレットの
   **拡張公開鍵（xpub / ypub / zpub）** を登録すると受取・おつりの全アドレスを
   gap limit 20 で追跡する。Sparrow / Bitcoin Core のディスクリプタ
