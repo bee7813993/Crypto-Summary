@@ -728,6 +728,7 @@
         <section class="card import-section hidden" id="inbox-section">
           <h2 data-i18n="inbox.title">📥 取り込みフォルダ</h2>
           <p class="card-hint" data-i18n="inbox.hint">取引所のフォルダに取引履歴ファイルを置くと、自動で台帳へ取り込みます。同じファイルを置き直しても二重にならず、内容が変わっていれば入れ直します。消したファイルのデータは残ります。</p>
+          <div id="inbox-main">
 
           <div class="import-note" style="margin-bottom:12px">
             <div id="inbox-root-line"></div>
@@ -781,11 +782,11 @@
             <button id="inbox-sync-btn" class="settings-save-btn" data-i18n="btn.inboxSync">⟳ 今すぐ確認</button>
           </div>
           <div id="inbox-sync-result" class="settings-result hidden"></div>
-        </section>
+          </div>
 
-        <!-- PBR Lending クローラー同期 -->
-        <section class="card import-section hidden" id="pbr-sync-section">
-          <h2 data-i18n="pbr.title">PBR Lending クローラー同期</h2>
+          <!-- PBR Lending クローラー同期（フォルダ単位の取引所パネル） -->
+        <div id="pbr-sync-section" class="import-note hidden" style="margin-top:14px">
+          <h3 style="margin:0 0 6px;font-size:14px" data-i18n="pbr.title">PBR Lending クローラー同期</h3>
           <p class="card-hint" data-i18n="pbr.hint">ローカルのクローラーが取得した当年データを取り込みます。対象期間を毎回まるごと入れ替えるため、何度実行しても重複しません。</p>
 
           <div id="pbr-sync-status" class="settings-hint"></div>
@@ -870,6 +871,7 @@
               <tbody></tbody>
             </table>
           </div>
+        </div>
         </section>
 
         <!-- インポート履歴（CSV単位の削除） -->

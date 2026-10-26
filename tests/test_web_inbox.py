@@ -265,3 +265,127 @@ def test_multi_user_unconfigured_keeps_name_only(mu, monkeypatch):
     d = c.get("/api/inbox/status").json()
     assert d["configured"] is False and d["inbox_name"] == "alice-smith"
     assert mu["app"].state.inbox_poller.run_once() == {}
+
+
+# ---- フォルダ単位（PBR クローラー）との統合 ----
+
+import json  # noqa: E402
+
+from crypto_summary.sources.jp.pbr_crawl import (  # noqa: E402
+    ARTIFACT_NAME,
+    ENV_VAR as PBR_ENV,
+    MARKER_NAME,
+    SOURCE_ID as PBR_SOURCE,
+)
+
+_PBR_ARTIFACT = {
+    "start_date": "2026-01-01", "end_date": "2026-03-05", "currencies": ["BTC"],
+    "daily_ranges": [{"date_from": "2026-03-03", "date_to": "2026-03-05",
+                      "currency": "BTC", "daily_expected_interest": "0.00001"}],
+    "wallet_events": [], "transfer_events": [], "balance_snapshots": [], "warnings": [],
+}
+_PBR_MARKER = {"runId": "2026-03-05T10:00:00.000Z", "phase": "done",
+               "failedCurrencies": [], "finishedAt": "2026-03-05T10:03:00.000Z"}
+PBR_LEGACY_KEY = f"{PBR_SOURCE}/@{PBR_ENV}"
+
+
+def _write_pbr(directory: Path, phase: str = "done") -> None:
+    _settled(directory / ARTIFACT_NAME, json.dumps(_PBR_ARTIFACT))
+    _settled(directory / MARKER_NAME, json.dumps(dict(_PBR_MARKER, phase=phase)))
+
+
+@pytest.fixture
+def crawl_dir(tmp_path: Path, monkeypatch) -> Path:
+    d = tmp_path / "outputs"
+    _write_pbr(d)
+    monkeypatch.setenv(PBR_ENV, str(d))
+    return d
+
+
+def _enable_pbr(client) -> None:
+    assert client.put("/api/prefs", json={"prefs": {"pbr_sync_enabled": True}}).status_code == 200
+
+
+def test_legacy_pbr_folder_is_part_of_inbox(client, import_dir: Path, crawl_dir: Path, db_path: Path):
+    _enable_pbr(client)
+    d = client.get("/api/inbox/status").json()
+    assert d["configured"] and d["legacy_configured"]
+    assert d["folder_exchanges"] == [PBR_SOURCE]
+    row = next(f for f in d["files"] if f["path"] == PBR_LEGACY_KEY)
+    assert row["kind"] == "folder" and row["legacy"] and row["directory"] == str(crawl_dir)
+    assert row["status"] == "new" and row["detail"]["healthy"] is True
+
+    r = client.post("/api/inbox/sync", json={})
+    assert r.status_code == 200 and r.json()["imported"] == [PBR_LEGACY_KEY]
+    assert _balances(db_path, PBR_SOURCE) == {"BTC": pytest.approx(0.00003)}
+    row = next(f for f in client.get("/api/inbox/status").json()["files"] if f["path"] == PBR_LEGACY_KEY)
+    assert row["status"] == "imported" and row["tx_count"] == 3
+    assert row["state"]["last_sync"]["parsed"] == 3
+    # 従来の状態 API も「最新」と答える
+    assert client.get("/api/sync/pbr/status").json()["up_to_date"] is True
+    batches = client.get("/api/import/batches").json()["batches"]
+    assert batches[0]["source"] == PBR_SOURCE and batches[0]["origin"] == "sync"
+
+
+def test_pbr_not_attached_unless_user_uses_it(client, import_dir: Path, crawl_dir: Path):
+    d = client.get("/api/inbox/status").json()
+    assert d["legacy_configured"] is False
+    assert all(f["path"] != PBR_LEGACY_KEY for f in d["files"])
+    assert client.post("/api/inbox/sync", json={}).json()["imported"] == []
+
+
+def test_pbr_alias_records_inbox_row(client, import_dir: Path, crawl_dir: Path):
+    _enable_pbr(client)
+    r = client.post("/api/sync/pbr", json={})
+    assert r.status_code == 200, r.text
+    batch_id = r.json()["batch_id"]
+    row = next(f for f in client.get("/api/inbox/status").json()["files"] if f["path"] == PBR_LEGACY_KEY)
+    assert row["status"] == "imported" and row["batch_id"] == batch_id
+    # 続く走査では署名が同じなので何もしない
+    assert client.post("/api/inbox/sync", json={}).json()["unchanged"] == 1
+
+
+def test_pbr_only_without_import_dir(client, crawl_dir: Path, monkeypatch, db_path: Path):
+    monkeypatch.delenv(inbox.IMPORT_DIR_ENV, raising=False)
+    _enable_pbr(client)
+    d = client.get("/api/inbox/status").json()
+    assert d["configured"] is False and d["legacy_configured"] is True and d["root"] is None
+    assert [f["path"] for f in d["files"]] == [PBR_LEGACY_KEY]
+    r = client.post("/api/inbox/sync", json={})
+    assert r.status_code == 200 and r.json()["imported"] == [PBR_LEGACY_KEY]
+    assert _balances(db_path, PBR_SOURCE)
+
+
+def test_blocked_pbr_needs_force(client, import_dir: Path, crawl_dir: Path):
+    _write_pbr(crawl_dir, phase="running")
+    _enable_pbr(client)
+    r = client.post("/api/inbox/sync", json={})
+    assert r.json()["imported"] == [] and [b["path"] for b in r.json()["blocked"]] == [PBR_LEGACY_KEY]
+    row = next(f for f in client.get("/api/inbox/status").json()["files"] if f["path"] == PBR_LEGACY_KEY)
+    assert row["status"] == "blocked" and row["message"]
+    r = client.post("/api/inbox/files/retry", json={"path": PBR_LEGACY_KEY})
+    assert r.json()["ok"] is False and r.json()["blocked"] is True
+    r = client.post("/api/inbox/files/retry", json={"path": PBR_LEGACY_KEY, "force": True})
+    assert r.json()["ok"] and r.json()["imported"]
+
+
+def test_pbr_folder_inside_inbox_without_env(client, import_dir: Path, db_path: Path):
+    _write_pbr(import_dir / PBR_SOURCE)
+    r = client.post("/api/inbox/sync", json={})
+    assert r.json()["imported"] == [f"{PBR_SOURCE}/"]
+    assert _balances(db_path, PBR_SOURCE)
+    # 従来 API の互換経路も入口内の pbr_crawl/ を見る
+    r = client.post("/api/sync/pbr", json={"dry_run": True})
+    assert r.status_code == 200 and r.json()["parsed"] == 3
+
+
+def test_poller_covers_pbr_user_without_inbox_name(mu, crawl_dir: Path, monkeypatch):
+    """従来の PBR 連携だけを使う利用者（入口名なし・IMPORT_DIR なし）もポーラが面倒を見る。"""
+    monkeypatch.delenv(inbox.IMPORT_DIR_ENV, raising=False)
+    c = mu["as"](ALICE)
+    c.get("/api/import/batches")  # 台帳ファイルを作る（実運用では最初の画面表示で作られる）
+    _enable_pbr(c)
+    results = mu["app"].state.inbox_poller.run_once()
+    assert len(results) == 1
+    assert list(results.values())[0]["imported"] == [PBR_LEGACY_KEY]
+    assert _balances(mu["data_dir"] / "111.db", PBR_SOURCE)

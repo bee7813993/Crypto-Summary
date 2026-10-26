@@ -407,11 +407,20 @@ def inbox_group() -> None:
     """
 
 
-def _inbox_root(dir_opt: Path | None) -> Path:
+def _inbox_legacy() -> list:
+    """入口の外にあるフォルダ単位: 従来の PBR_CRAWL_DIR（設定されていれば）。"""
+    from .sources.jp.pbr_crawl import ENV_VAR, SOURCE_ID, resolve_crawl_dir
+
+    directory = resolve_crawl_dir()
+    return [(SOURCE_ID, directory, ENV_VAR)] if directory is not None else []
+
+
+def _inbox_root(dir_opt: Path | None) -> Path | None:
+    """入口。無くても従来の PBR_CRAWL_DIR があれば None を返して続行する。"""
     from .core import inbox as cs_inbox
 
     root = cs_inbox.resolve_import_dir(dir_opt)
-    if root is None:
+    if root is None and not _inbox_legacy():
         console.print(
             f"[red]エラー:[/red] 取り込みフォルダが未設定です。"
             f"--dir で指定するか、環境変数 {cs_inbox.IMPORT_DIR_ENV} を設定してください。"
@@ -427,14 +436,14 @@ _INBOX_STATUS_STYLE = {
 
 
 def _print_inbox_report(report: dict) -> None:
-    if not report.get("exists", True):
+    if not report.get("exists", True) and report.get("root"):
         console.print(f"[yellow]{report['root']} がありません。[/yellow]")
-        return
     kind = "予定" if report.get("dry_run") else "結果"
     console.print(
         f"[bold]{kind}[/bold]  新規 {len(report['imported'])} / 入れ直し {len(report['replaced'])} / "
         f"変更なし {report['unchanged']} / エラー {len(report['errors'])} / "
-        f"整定待ち {len(report['pending'])} / 消失 {len(report['missing'])}"
+        f"整定待ち {len(report['pending'])} / 見送り {len(report.get('blocked', []))} / "
+        f"消失 {len(report['missing'])}"
     )
     for p in report["imported"]:
         console.print(f"  [green]+[/green] {p}")
@@ -442,6 +451,8 @@ def _print_inbox_report(report: dict) -> None:
         console.print(f"  [green]↻[/green] {p}")
     for e in report["errors"]:
         console.print(f"  [red]✗[/red] {e['path']}: {e['message']}")
+    for b in report.get("blocked", []):
+        console.print(f"  [yellow]■[/yellow] {b['path']}: {b['message']}（--force で取り込めます）")
     for p in report["pending"]:
         console.print(f"  [cyan]…[/cyan] {p}（更新直後のため次回）")
     for p in report["missing"]:
@@ -452,11 +463,6 @@ def _print_inbox_report(report: dict) -> None:
         console.print(
             f"  [yellow]対応外のフォルダ名:[/yellow] {', '.join(report['unknown_folders'])}"
             "（crypto-summary inbox status で使える名前を確認）"
-        )
-    if report.get("reserved_folders"):
-        console.print(
-            f"  [yellow]{', '.join(report['reserved_folders'])}:[/yellow] "
-            "PBR クローラーは従来どおり sync-pbr（PBR_CRAWL_DIR）で取り込みます"
         )
     for p in report.get("root_files", []):
         console.print(f"  [dim]無視:[/dim] {p}（取引所のフォルダの中に置いてください）")
@@ -471,9 +477,13 @@ def inbox_status_cmd(ctx: click.Context, dir_opt: Path | None) -> None:
     from .core import inbox as cs_inbox
 
     root = _inbox_root(dir_opt)
-    st = cs_inbox.status(ctx.obj["db"], root)
-    console.print(f"取り込みフォルダ: [cyan]{root}[/cyan]" + ("" if st["exists"] else "  [yellow](まだありません)[/yellow]"))
+    st = cs_inbox.status(ctx.obj["db"], root, legacy_folders=_inbox_legacy())
+    if root is not None:
+        console.print(f"取り込みフォルダ: [cyan]{root}[/cyan]" + ("" if st["exists"] else "  [yellow](まだありません)[/yellow]"))
+    else:
+        console.print("取り込みフォルダ: [dim]未設定（IMPORT_DIR）。従来の PBR_CRAWL_DIR だけを見ています[/dim]")
     console.print(f"使えるフォルダ名（取引所）: {', '.join(st['exchanges'])}")
+    console.print(f"フォルダ単位の取引所: {', '.join(st['folder_exchanges'])}（<名前>/ ディレクトリ全体で 1 単位）")
     if not st["files"]:
         console.print("[dim]ファイルはありません。IMPORT_DIR/<取引所>/ に取引履歴を置いてください。[/dim]")
     else:
@@ -488,9 +498,10 @@ def inbox_status_cmd(ctx: click.Context, dir_opt: Path | None) -> None:
         for f in st["files"]:
             style = _INBOX_STATUS_STYLE.get(f["status"], "")
             state = f["status"] + ("（更新あり）" if f.get("changed") else "")
+            path = f["path"] + (f"  ← {f['directory']}" if f.get("legacy") and f.get("directory") else "")
             table.add_row(
                 f"[{style}]{state}[/{style}]" if style else state,
-                f["path"], f["exchange"], f["source"],
+                path, f["exchange"], f["source"],
                 "" if f.get("tx_count") is None else str(f["tx_count"]),
                 (f.get("imported_at") or "")[:16].replace("T", " "),
                 f.get("message") or "",
@@ -498,8 +509,6 @@ def inbox_status_cmd(ctx: click.Context, dir_opt: Path | None) -> None:
         console.print(table)
     if st["unknown_folders"]:
         console.print(f"[yellow]対応外のフォルダ名:[/yellow] {', '.join(st['unknown_folders'])}")
-    if st["reserved_folders"]:
-        console.print(f"[yellow]{', '.join(st['reserved_folders'])}[/yellow] は sync-pbr で取り込みます")
     for p in st["root_files"]:
         console.print(f"[dim]無視:[/dim] {p}（取引所のフォルダの中に置いてください）")
 
@@ -510,15 +519,20 @@ def inbox_status_cmd(ctx: click.Context, dir_opt: Path | None) -> None:
 @click.option("--dry-run", is_flag=True, default=False, help="取り込まず、予定だけ表示する")
 @click.option("--retry", "retry_paths", multiple=True, metavar="PATH",
               help="内容が同じでも入れ直すファイル（入口からの相対パス。複数可）")
+@click.option("--force", is_flag=True, default=False,
+              help="フォルダ単位の取引所（PBR クローラー）が見送り状態でも取り込む")
 @click.option("--watch", is_flag=True, default=False, help="常駐して繰り返し走査する")
 @click.option("--interval", default=None, type=int, metavar="SEC",
               help="--watch の間隔（省略時: 環境変数 INBOX_POLL_SECONDS、既定 30）")
 @click.pass_context
 def inbox_sync_cmd(
     ctx: click.Context, dir_opt: Path | None, dry_run: bool,
-    retry_paths: tuple[str, ...], watch: bool, interval: int | None,
+    retry_paths: tuple[str, ...], force: bool, watch: bool, interval: int | None,
 ) -> None:
-    """取り込みフォルダを走査し、必要なファイルだけ取り込む。"""
+    """取り込みフォルダを走査し、必要なファイルだけ取り込む。
+
+    PBR_CRAWL_DIR が設定されていれば、従来の PBR クローラー連携もここで取り込む。
+    """
     import time as _time
 
     from .core import inbox as cs_inbox
@@ -527,7 +541,8 @@ def inbox_sync_cmd(
     db = ctx.obj["db"]
     every = interval if interval is not None else (cs_inbox.poll_seconds() or cs_inbox.DEFAULT_POLL_SECONDS)
     while True:
-        report = cs_inbox.sync_inbox(db, root, dry_run=dry_run, retry=set(retry_paths))
+        report = cs_inbox.sync_inbox(db, root, dry_run=dry_run, retry=set(retry_paths),
+                                     force=force, legacy_folders=_inbox_legacy())
         _print_inbox_report(report)
         if not watch or dry_run:
             break
@@ -920,6 +935,9 @@ def sync_pbr_cmd(
 
     クローラーは同じ期間を何度でも取り直すため、追記ではなく期間ごと
     置き換える。何度実行しても結果は同じ。
+
+    取り込みフォルダ（crypto-summary inbox sync）でも同じ処理が走る。
+    このコマンドはその PBR 部分だけを、プレビュー付きで実行する互換経路。
     """
     db = ctx.obj["db"]
 
@@ -987,8 +1005,17 @@ def sync_pbr_cmd(
         console.print("[dim]キャンセルしました。[/dim]")
         return
 
+    # 取り込みフォルダのフォルダ単位経路（sync_unit）を通す。内容は従来と同じだが、
+    # 画面の「取り込みフォルダ」一覧の記録も更新される（inbox sync と同じ扱いになる）。
+    from .core import inbox as cs_inbox
+    from .sources.jp.pbr_crawl import resolve_crawl_dir as _resolve_crawl_dir
+
+    directory = _resolve_crawl_dir(crawl_dir)
+    key = f"{_PBR_SOURCE_ID}/@{_PBR_ENV_VAR}"
     try:
-        result = sync_pbr_crawl(db, crawl_dir, force=force)
+        result = cs_inbox.sync_unit(
+            db, None, key, force=force,
+            legacy_folders=[(_PBR_SOURCE_ID, directory, _PBR_ENV_VAR)])
     except PbrSyncError as e:
         console.print(f"[red]{e.message}[/red]")
         raise click.Abort()

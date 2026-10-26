@@ -289,9 +289,11 @@ Crypto-Summary を HTTPS で公開している場合、`http://` のビューア
 - CLI: `crypto-summary inbox status` / `inbox sync [--dry-run] [--watch]` / `inbox forget PATH`
 - 設計: [`docs/inbox-design.md`](./docs/inbox-design.md)
 
-> PBR Lending クローラーの出力は、当面は従来どおり `PBR_CRAWL_DIR` と「PBR Lending
-> クローラー同期」カードで取り込みます（複数ファイルをまとめて評価する必要があるため。
-> 設計書の第 2 段で取り込みフォルダに統合予定）。
+> PBR Lending クローラーの出力は **フォルダ単位** で取り込みます（4 ファイルをまとめて
+> 1 回で評価する必要があるため）。`IMPORT_DIR/pbr_crawl/` に置くか、従来の
+> `PBR_CRAWL_DIR` をそのまま使えます。従来の設定は「入口の外にあるフォルダ単位」として
+> 同じ仕組みで走査され、`sync-pbr` と「PBR Lending クローラー同期」パネル（取り込み
+> フォルダカードの中に移動）は互換経路として残ります。
 
 ### 取引所（API 直接取得）
 

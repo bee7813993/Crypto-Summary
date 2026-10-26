@@ -323,6 +323,10 @@ crypto-summary inbox status
 
 ## sync-pbr — PBR Lending クローラー同期
 
+> `crypto-summary inbox sync` でも同じ処理が走る（`PBR_CRAWL_DIR` が設定されていれば
+> 取り込みフォルダの「フォルダ単位の取引所」として扱う）。このコマンドは PBR 部分だけを
+> プレビュー付きで実行する互換経路で、結果は取り込みフォルダの一覧にも記録される。
+
 ```
 crypto-summary sync-pbr [--crawl-dir DIR] [--force] [--dry-run]
                         [--purge-year YYYY] [--yes]

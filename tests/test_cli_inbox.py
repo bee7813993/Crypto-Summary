@@ -83,3 +83,37 @@ def test_inbox_dir_option_overrides_env(tmp_path, monkeypatch):
     res = _run(tmp_path / "t.db", "inbox", "sync", "--dir", str(root))
     assert res.exit_code == 0, res.output
     assert "universal/a.csv" in res.output
+
+
+def test_inbox_sync_includes_legacy_pbr(tmp_path, monkeypatch):
+    import json
+    from crypto_summary.sources.jp.pbr_crawl import ARTIFACT_NAME, ENV_VAR, MARKER_NAME, SOURCE_ID
+
+    outputs = tmp_path / "outputs"
+    _settled(outputs / ARTIFACT_NAME, json.dumps({
+        "start_date": "2026-01-01", "end_date": "2026-03-05", "currencies": ["BTC"],
+        "daily_ranges": [{"date_from": "2026-03-03", "date_to": "2026-03-05",
+                          "currency": "BTC", "daily_expected_interest": "0.00001"}],
+        "wallet_events": [], "transfer_events": [], "balance_snapshots": [], "warnings": [],
+    }))
+    _settled(outputs / MARKER_NAME, json.dumps({
+        "runId": "r1", "phase": "done", "failedCurrencies": [],
+        "finishedAt": "2026-03-05T10:03:00.000Z"}))
+    monkeypatch.delenv(inbox.IMPORT_DIR_ENV, raising=False)
+    monkeypatch.setenv(ENV_VAR, str(outputs))
+    db = tmp_path / "t.db"
+
+    res = _run(db, "inbox", "status")
+    assert res.exit_code == 0, res.output
+    assert "PBR_CRAWL_DIR" in res.output and f"{SOURCE_ID}/@{ENV_VAR}" in res.output
+
+    res = _run(db, "inbox", "sync")
+    assert res.exit_code == 0, res.output
+    assert "新規 1" in res.output and Ledger(db).count(SOURCE_ID) == 3
+
+    # 互換コマンドも同じ記録を更新する（二重には入らない）
+    res = _run(db, "sync-pbr", "--yes")
+    assert res.exit_code == 0, res.output
+    assert Ledger(db).count(SOURCE_ID) == 3
+    res = _run(db, "inbox", "sync")
+    assert "変更なし 1" in res.output

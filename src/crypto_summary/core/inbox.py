@@ -10,6 +10,14 @@
         *.csv
   マルチユーザーでは IMPORT_DIR/<inbox-name>/ が利用者ごとの入口（InboxRegistry）。
 
+フォルダ単位の取引所:
+  PBR Lending クローラーのように複数ファイルをまとめて 1 回で評価する取引所は、
+  <exchange>/ ディレクトリ全体を 1 単位として扱う（_folder_adapters）。アダプタが
+  inspect()（取り込める材料・署名・ブロック判定）と sync()（期間の洗い替え等）を持ち、
+  汎用層は署名が変わったときだけ sync() を呼んで inbox_files に 1 行で記録する。
+  従来の環境変数（PBR_CRAWL_DIR）が指すディレクトリも「入口の外にあるフォルダ単位」
+  として同じ経路で扱う（legacy_folders）。
+
 意味論（1 ファイル = 1 インポートバッチ）:
   新しいパス            → 取り込み
   同じパス・同じ内容     → 何もしない（size/mtime が同じなら読まずに済ませる）
@@ -50,8 +58,6 @@ DEFAULT_POLL_SECONDS = 30
 SETTLE_SECONDS = 30
 #: これより大きいファイルは取り込まない（取引所 CSV の常識的な上限）。
 MAX_FILE_BYTES = 50 * 1024 * 1024
-#: 第 2 段で「フォルダ単位」として載せる取引所。今は従来の連携（PBR_CRAWL_DIR）を使う。
-RESERVED_EXCHANGES: frozenset[str] = frozenset({"pbr_crawl"})
 IGNORED_SUFFIXES: tuple[str, ...] = (".tmp", ".part", ".crdownload")
 #: 利用者ごとの入口名（フォルダ名）に許す形。
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
@@ -66,6 +72,7 @@ ST_TOO_LARGE = "too_large"
 ST_MISSING = "missing"      # ファイルが消えた（データは残っている）
 ST_DELETED = "deleted"      # データを削除済み（ファイルが変わるまで入れ直さない）
 ST_PENDING = "pending"      # 整定待ち（走査結果の上書き表示のみ。保存しない）
+ST_BLOCKED = "blocked"      # フォルダ単位: 取り込みを止める状態（クロール異常終了など）。force で上書き可
 
 
 def resolve_import_dir(value: str | Path | None = None) -> Path | None:
@@ -83,11 +90,29 @@ def poll_seconds() -> int:
         return DEFAULT_POLL_SECONDS
 
 
+def _folder_adapters() -> dict[str, Any]:
+    """フォルダ単位で扱う取引所 → アダプタ。sources は core を読むのでここで遅延 import。"""
+    from ..sources.jp.pbr_crawl import FOLDER_ADAPTER as pbr
+
+    return {pbr.exchange: pbr}
+
+
+def folder_exchange_keys() -> list[str]:
+    """フォルダ単位で取り込む取引所キー（<exchange>/ ディレクトリ全体で 1 単位）。"""
+    return list(_folder_adapters())
+
+
 def exchange_keys() -> list[str]:
-    """フォルダ名として使える取引所キー。"""
+    """ファイル単位で取り込める取引所キー（フォルダ名として使える名前）。"""
     from ..sources.csv_import import EXCHANGE_SOURCES
 
-    return [k for k in EXCHANGE_SOURCES if k not in RESERVED_EXCHANGES]
+    folder = set(_folder_adapters())
+    return [k for k in EXCHANGE_SOURCES if k not in folder]
+
+
+def _is_folder_key(rel: str) -> bool:
+    """inbox_files.path がフォルダ単位の行か（"pbr_crawl/" または "pbr_crawl/@PBR_CRAWL_DIR"）。"""
+    return rel.endswith("/") or "/@" in rel
 
 
 # ---------------------------------------------------------------------------
@@ -110,14 +135,28 @@ class Candidate:
 
 
 @dataclass
+class FolderUnit:
+    """フォルダ単位で取り込む取引所の 1 単位。"""
+    exchange: str
+    directory: Path
+    key: str            # inbox_files.path。入口内なら "pbr_crawl/"、外なら "pbr_crawl/@<ラベル>"
+    legacy: bool = False
+    label: str | None = None   # 入口の外にある場合の由来（環境変数名など）
+
+
+#: 入口の外にあるフォルダ単位の指定: (取引所, ディレクトリ, 由来のラベル)
+LegacyFolder = tuple[str, Path, str]
+
+
+@dataclass
 class ScanResult:
-    root: Path
+    root: Path | None
     exists: bool = True
     files: list[Candidate] = field(default_factory=list)       # 取り込み候補（整定済み）
     settling: list[Candidate] = field(default_factory=list)    # 更新直後
     too_large: list[Candidate] = field(default_factory=list)
+    folders: list[FolderUnit] = field(default_factory=list)    # フォルダ単位の取引所
     unknown_folders: list[str] = field(default_factory=list)   # 対応外の取引所名
-    reserved_folders: list[str] = field(default_factory=list)  # pbr_crawl など
     root_files: list[str] = field(default_factory=list)        # ルート直下（取引所が決められない）
     ignored: list[str] = field(default_factory=list)           # 深すぎる階層など
     errors: list[str] = field(default_factory=list)
@@ -141,15 +180,24 @@ def _iter_dir(path: Path, errors: list[str]) -> list[Path]:
         return []
 
 
-def scan(root: Path, *, now: float | None = None,
-         settle_seconds: int = SETTLE_SECONDS) -> ScanResult:
-    """入口の下を 2 階層まで見て、取り込み候補を集める（ファイルは読まない）。"""
+def scan(root: Path | None, *, now: float | None = None,
+         settle_seconds: int = SETTLE_SECONDS,
+         legacy_folders: list[LegacyFolder] | None = None) -> ScanResult:
+    """入口の下を 2 階層まで見て、取り込み候補を集める（ファイルは読まない）。
+
+    legacy_folders は入口の外にあるフォルダ単位（従来の PBR_CRAWL_DIR など）。
+    入口が無くてもそれらは評価する。
+    """
     res = ScanResult(root=root)
-    if not root.is_dir():
+    for exchange, directory, label in legacy_folders or []:
+        res.folders.append(FolderUnit(exchange, Path(directory), f"{exchange}/@{label}",
+                                      legacy=True, label=label))
+    if root is None or not root.is_dir():
         res.exists = False
         return res
     now = time.time() if now is None else now
     keys = set(exchange_keys())
+    folder_keys = set(_folder_adapters())
 
     def _consider(file: Path, exchange: str, source: str) -> None:
         if _is_ignored_name(file.name) or file.is_symlink():
@@ -179,8 +227,8 @@ def scan(root: Path, *, now: float | None = None,
         if not entry.is_dir():
             continue
         exchange = entry.name
-        if exchange in RESERVED_EXCHANGES:
-            res.reserved_folders.append(exchange)
+        if exchange in folder_keys:
+            res.folders.append(FolderUnit(exchange, entry, f"{exchange}/"))
             continue
         if exchange not in keys:
             res.unknown_folders.append(exchange)
@@ -222,45 +270,190 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _sig_stamp(adapter: Any, signature: str) -> str:
+    """フォルダ単位の署名。取り込み規則の版も含める（版が上がれば同じ入力でも取り直す）。"""
+    return f"v{adapter.format_version}:{signature}"
+
+
+def _folder_result_json(result: dict[str, Any]) -> str:
+    keep = {k: result.get(k) for k in (
+        "parsed", "parsed_viewer", "inserted", "deleted", "skipped", "skip_reasons",
+        "window", "crawl_window_start", "forced", "sync_warnings", "crawl_warnings",
+        "run_id", "batch_id",
+    ) if k in result}
+    return json.dumps(keep, ensure_ascii=False, default=str)
+
+
+def _run_folder_unit(
+    ledger: Ledger, db_path: str | Path, unit: FolderUnit, adapter: Any, row: dict | None,
+    *, forced: bool, force: bool, dry_run: bool, report: dict[str, Any],
+) -> None:
+    """フォルダ単位の 1 取引所を評価し、必要なら sync() する。"""
+    key = unit.key
+    try:
+        info = adapter.inspect(unit.directory)
+    except Exception as e:  # noqa: BLE001
+        report["errors"].append({"path": key, "message": f"状態を読めません: {e}"})
+        return
+    if not info.get("has_data"):
+        if row is not None and row["status"] != ST_MISSING:
+            report["missing"].append(key)
+            if not dry_run:
+                ledger.inbox_upsert_file({
+                    "path": key, "status": ST_MISSING,
+                    "message": "取り込めるデータがありません（取引は残っています）",
+                })
+        return
+    stamp = _sig_stamp(adapter, info.get("signature") or "")
+    settled = row is not None and row["status"] in (ST_IMPORTED, ST_ERROR, ST_DELETED)
+    if row is not None and not forced and settled and row.get("sha256") == stamp:
+        if row["status"] == ST_IMPORTED and row.get("batch_id") \
+                and not ledger.has_import_batch(row["batch_id"]):
+            if not dry_run:
+                ledger.inbox_upsert_file({
+                    "path": key, "status": ST_DELETED,
+                    "message": "取り込み履歴から削除済み。入れ直すには「再取り込み」",
+                })
+        report["unchanged"] += 1
+        return
+    if info.get("blocked") and not force:
+        # クロール異常終了 / 整定中。自動では取り込まない（画面・CLI から force できる）。
+        if info.get("settling"):
+            report["pending"].append(key)
+        else:
+            report["blocked"].append({"path": key, "message": "／".join(info.get("warnings") or ["取り込みを見送りました"])})
+        return
+    had_batch = bool(row is not None and row.get("batch_id")
+                     and ledger.has_import_batch(row["batch_id"]))
+    kind = "replaced" if had_batch else "imported"
+    if dry_run:
+        report[kind].append(key)
+        return
+    base = {"path": key, "exchange": unit.exchange, "source": adapter.source,
+            "sha256": stamp, "size": None, "mtime": None}
+    try:
+        result = adapter.sync(db_path, unit.directory, force=force)
+    except adapter.error_class as e:
+        msg = getattr(e, "message", str(e))
+        ledger.inbox_upsert_file({**base, "status": ST_ERROR, "message": msg,
+                                  "batch_id": row.get("batch_id") if row else None})
+        report["errors"].append({"path": key, "message": msg})
+        return
+    except Exception as e:  # noqa: BLE001
+        log.exception("inbox: %s の取り込みに失敗", key)
+        msg = f"取り込みに失敗しました: {e}"
+        ledger.inbox_upsert_file({**base, "status": ST_ERROR, "message": msg,
+                                  "batch_id": row.get("batch_id") if row else None})
+        report["errors"].append({"path": key, "message": msg})
+        return
+    ledger.inbox_upsert_file({
+        **base, "status": ST_IMPORTED, "message": None,
+        "batch_id": result.get("batch_id"),
+        "imported_at": _now_iso(),
+        "result_json": _folder_result_json(result),
+    })
+    report[kind].append(key)
+
+
+def sync_unit(
+    db_path: str | Path, root: Path | None, key: str, *,
+    force: bool = False, dry_run: bool = False,
+    legacy_folders: list[LegacyFolder] | None = None,
+) -> dict[str, Any]:
+    """フォルダ単位の 1 取引所を、状態に関係なく今すぐ sync() する（従来 API の互換経路）。
+
+    アダプタの結果をそのまま返し、アダプタのエラーもそのまま上げる。
+    成功・失敗は inbox_files にも記録して、画面の一覧と食い違わないようにする。
+    """
+    res = scan(root, legacy_folders=legacy_folders)
+    unit = next((u for u in res.folders if u.key == key), None)
+    if unit is None:
+        raise KeyError(key)
+    adapter = _folder_adapters()[unit.exchange]
+    with import_lock(db_path):
+        if dry_run:
+            return adapter.sync(db_path, unit.directory, force=force, dry_run=True)
+        ledger = Ledger(db_path)
+        try:
+            row = ledger.inbox_file(key)
+            base = {"path": key, "exchange": unit.exchange, "source": adapter.source,
+                    "size": None, "mtime": None}
+            try:
+                result = adapter.sync(db_path, unit.directory, force=force)
+            except adapter.error_class as e:
+                code = getattr(e, "code", "")
+                if code not in ("not_configured",):
+                    ledger.inbox_upsert_file({
+                        **base, "status": ST_ERROR, "message": getattr(e, "message", str(e)),
+                        "batch_id": row.get("batch_id") if row else None,
+                    })
+                raise
+            try:
+                info = adapter.inspect(unit.directory)
+                stamp = _sig_stamp(adapter, info.get("signature") or "")
+            except Exception:  # noqa: BLE001
+                stamp = None
+            ledger.inbox_upsert_file({
+                **base, "sha256": stamp, "status": ST_IMPORTED, "message": None,
+                "batch_id": result.get("batch_id"),
+                "imported_at": _now_iso(),
+                "result_json": _folder_result_json(result),
+            })
+        finally:
+            ledger.close()
+    return result
+
+
 def sync_inbox(
     db_path: str | Path,
-    root: Path,
+    root: Path | None,
     *,
     dry_run: bool = False,
     retry: set[str] | frozenset[str] | None = None,
+    force: bool = False,
+    legacy_folders: list[LegacyFolder] | None = None,
     now: float | None = None,
 ) -> dict[str, Any]:
     """入口を走査し、必要なファイルだけ取り込む。結果の要約を返す。
 
     retry: 内容が変わっていなくても取り込み直すパス（エラーの再試行、削除後の入れ直し）。
+    force: フォルダ単位の取引所で、ブロック状態（クロール異常終了など）でも取り込む。
+    legacy_folders: 入口の外にあるフォルダ単位（従来の PBR_CRAWL_DIR など）。
     """
     retry = set(retry or ())
-    res = scan(root, now=now)
+    res = scan(root, now=now, legacy_folders=legacy_folders)
     report: dict[str, Any] = {
-        "root": str(root),
+        "root": str(root) if root is not None else None,
         "exists": res.exists,
         "dry_run": dry_run,
         "imported": [],      # 新規に取り込んだ
         "replaced": [],      # 内容が変わって入れ直した
         "unchanged": 0,
         "errors": [],        # [{path, message}]
+        "blocked": [],       # [{path, message}] フォルダ単位で取り込みを見送った
         "pending": [c.rel for c in res.settling],
         "too_large": [c.rel for c in res.too_large],
         "missing": [],
         "unknown_folders": res.unknown_folders,
-        "reserved_folders": res.reserved_folders,
         "root_files": res.root_files,
         "scan_errors": res.errors,
         "scanned_at": _now_iso(),
     }
-    if not res.exists:
+    if not res.exists and not res.folders:
         return report
 
+    adapters = _folder_adapters()
     with import_lock(db_path):
         ledger = Ledger(db_path)
         try:
             rows = {r["path"]: r for r in ledger.inbox_files()}
             present = res.all_present()
+            for unit in res.folders:
+                present[unit.key] = unit  # type: ignore[assignment]
+                _run_folder_unit(
+                    ledger, db_path, unit, adapters[unit.exchange], rows.get(unit.key),
+                    forced=unit.key in retry, force=force, dry_run=dry_run, report=report,
+                )
 
             for cand in sorted(res.files, key=_order_key):
                 row = rows.get(cand.rel)
@@ -367,9 +560,67 @@ def sync_inbox(
     return report
 
 
-def status(db_path: str | Path, root: Path, *, now: float | None = None) -> dict[str, Any]:
+def _folder_entry(db_path: str | Path, unit: FolderUnit, adapter: Any,
+                  row: dict | None, batches: dict[str, dict]) -> dict[str, Any]:
+    """status() に載せるフォルダ単位の 1 行。"""
+    try:
+        info = adapter.inspect(unit.directory)
+    except Exception as e:  # noqa: BLE001
+        info = {"has_data": False, "signature": "", "blocked": False, "settling": False,
+                "healthy": False, "warnings": [f"状態を読めません: {e}"], "detail": {}}
+    entry: dict[str, Any] = {
+        "path": unit.key,
+        "kind": "folder",
+        "legacy": unit.legacy,
+        "legacy_label": unit.label,
+        "directory": str(unit.directory),
+        "exchange": unit.exchange,
+        "source": adapter.source,
+        "size": None, "mtime": None,
+        "status": row["status"] if row else "new",
+        "message": (row or {}).get("message"),
+        "batch_id": (row or {}).get("batch_id"),
+        "imported_at": (row or {}).get("imported_at"),
+        "result": None,
+        "tx_count": None,
+        "changed": False,
+        "blocked": bool(info.get("blocked")),
+        "warnings": list(info.get("warnings") or []),
+        "detail": info.get("detail") or {},
+        "state": adapter.last_state(db_path),
+    }
+    if row and row.get("result_json"):
+        try:
+            entry["result"] = json.loads(row["result_json"])
+        except ValueError:
+            pass
+    if row and row.get("batch_id"):
+        b = batches.get(row["batch_id"])
+        entry["tx_count"] = b["existing_count"] if b else 0
+        if b is None and row["status"] == ST_IMPORTED:
+            entry["status"] = ST_DELETED
+    stamp = _sig_stamp(adapter, info.get("signature") or "")
+    if not info.get("has_data"):
+        entry["status"] = ST_MISSING if row else ST_EMPTY
+        if not row:
+            entry["message"] = "取り込めるデータがありません"
+    elif info.get("settling"):
+        entry["status"] = ST_PENDING
+    elif row is None or row.get("sha256") != stamp:
+        if row is not None and row["status"] in (ST_IMPORTED, ST_ERROR, ST_DELETED, ST_MISSING):
+            entry["changed"] = True
+            if row["status"] == ST_MISSING:
+                entry["status"] = "new"
+        if info.get("blocked"):
+            entry["status"] = ST_BLOCKED
+            entry["message"] = "／".join(info.get("warnings") or [])
+    return entry
+
+
+def status(db_path: str | Path, root: Path | None, *, now: float | None = None,
+           legacy_folders: list[LegacyFolder] | None = None) -> dict[str, Any]:
     """画面・CLI 用: 保存済みの状態に、いまの走査結果を重ねて返す。"""
-    res = scan(root, now=now)
+    res = scan(root, now=now, legacy_folders=legacy_folders)
     ledger = Ledger(db_path)
     try:
         rows = {r["path"]: r for r in ledger.inbox_files()}
@@ -379,10 +630,26 @@ def status(db_path: str | Path, root: Path, *, now: float | None = None) -> dict
     present = res.all_present()
     settling = {c.rel for c in res.settling}
     too_large = {c.rel for c in res.too_large}
+    adapters = _folder_adapters()
+    units = {u.key: u for u in res.folders}
 
     entries: list[dict[str, Any]] = []
-    for rel in sorted(set(rows) | set(present)):
+    for rel in sorted(set(rows) | set(present) | set(units)):
         row = rows.get(rel)
+        if rel in units:
+            entries.append(_folder_entry(db_path, units[rel], adapters[units[rel].exchange], row, batches))
+            continue
+        if _is_folder_key(rel):
+            # 記録はあるが、いまはフォルダが無い / 従来の設定が外れた
+            entries.append({
+                "path": rel, "kind": "folder", "legacy": "/@" in rel,
+                "exchange": row["exchange"], "source": row["source"],
+                "size": None, "mtime": None,
+                "status": ST_MISSING, "message": row.get("message"),
+                "batch_id": row.get("batch_id"), "imported_at": row.get("imported_at"),
+                "result": None, "tx_count": None, "changed": False,
+            })
+            continue
         cand = present.get(rel)
         entry: dict[str, Any] = {
             "path": rel,
@@ -424,18 +691,19 @@ def status(db_path: str | Path, root: Path, *, now: float | None = None) -> dict
         entries.append(entry)
 
     return {
-        "root": str(root),
+        "root": str(root) if root is not None else None,
         "exists": res.exists,
         "files": entries,
         "unknown_folders": res.unknown_folders,
-        "reserved_folders": res.reserved_folders,
         "root_files": res.root_files,
         "ignored": res.ignored,
         "scan_errors": res.errors,
         "exchanges": exchange_keys(),
+        "folder_exchanges": folder_exchange_keys(),
         "counts": {
             "imported": sum(1 for e in entries if e["status"] == ST_IMPORTED),
             "pending": sum(1 for e in entries if e["status"] in (ST_PENDING, "new") or e["changed"]),
+            "blocked": sum(1 for e in entries if e["status"] == ST_BLOCKED),
             "error": sum(1 for e in entries if e["status"] == ST_ERROR),
             "missing": sum(1 for e in entries if e["status"] == ST_MISSING),
         },
@@ -457,7 +725,12 @@ def forget_file(db_path: str | Path, rel: str, root: Path | None = None) -> dict
             deleted = 0
             if row.get("batch_id") and ledger.has_import_batch(row["batch_id"]):
                 deleted = ledger.delete_import_batch(row["batch_id"])
-            still_there = bool(root and (root / rel).is_file())
+            if _is_folder_key(rel):
+                # フォルダ単位: 入口内ならディレクトリの有無、従来の設定なら設定が
+                # 残っている前提で「まだある」とみなし、次の走査で入れ直さない。
+                still_there = ("/@" in rel) or bool(root and (root / rel).is_dir())
+            else:
+                still_there = bool(root and (root / rel).is_file())
             if still_there:
                 ledger.inbox_upsert_file({
                     "path": rel, "status": ST_DELETED,
@@ -555,7 +828,8 @@ class InboxRegistry:
 # ポーラ
 # ---------------------------------------------------------------------------
 
-RootsProvider = Callable[[], list[tuple[str, Path]]]  # [(db_path, root), ...]
+#: [(db_path, root), ...] または [(db_path, root, legacy_folders), ...]。root は None でもよい。
+RootsProvider = Callable[[], list[tuple]]
 
 
 class InboxPoller:
@@ -626,12 +900,15 @@ class InboxPoller:
         except Exception:  # noqa: BLE001
             log.exception("inbox: 入口の一覧を取れません")
             roots = []
-        for db_path, root in roots:
+        for item in roots:
+            db_path, root = item[0], item[1]
+            legacy = list(item[2]) if len(item) > 2 and item[2] else None
+            label = str(root) if root is not None else f"{db_path}#legacy"
             try:
-                results[str(root)] = sync_inbox(db_path, root)
+                results[label] = sync_inbox(db_path, root, legacy_folders=legacy)
             except Exception as e:  # noqa: BLE001 - 1 入口の失敗で止めない
-                log.exception("inbox: %s の走査に失敗", root)
-                results[str(root)] = {"root": str(root), "error": str(e)}
+                log.exception("inbox: %s の走査に失敗", label)
+                results[label] = {"root": str(root), "error": str(e)}
         self.last_results = results
         self.last_run = _now_iso()
         self.runs += 1

@@ -2402,7 +2402,6 @@ async function loadImportPage() {
 // 冪等なため、二重に走っても壊れない。
 
 let _pbrStatus = null;           // 直近に取得した /api/sync/pbr/status
-let _pbrAutoSyncTried = null;    // 自動同期を試した runId（1ロード1回に抑える）
 let _pbrSyncing = false;
 let _pbrViewerLoaded = false;
 
@@ -2433,6 +2432,7 @@ function _renderPbrNav() {
 function _renderPbrSyncCard() {
   const section = document.getElementById("pbr-sync-section");
   if (!section) return;
+  _syncInboxSectionVisibility();
   if (!_pbrStatus || !_pbrStatus.configured) {
     section.classList.add("hidden");
     return;
@@ -2780,24 +2780,45 @@ async function loadInboxStatus({ autoSync = false } = {}) {
   }
   _renderInbox();
   loadSyncthing(_stInbox);
-  // ポーラが無い構成（INBOX_POLL_SECONDS=0）の保険: 画面を開いたとき 1 回だけ走査する。
+  // ポーラが無い構成（INBOX_POLL_SECONDS=0）の保険: 起動時に 1 回だけ走査する。
+  // 従来の PBR 連携だけの構成（IMPORT_DIR 無し）でも同じ。
   const st = _inboxStatus;
-  if (autoSync && !_inboxAutoSynced && st && st.configured && st.poller && !st.poller.active) {
+  if (autoSync && !_inboxAutoSynced && st && (st.configured || st.legacy_configured)
+      && st.poller && !st.poller.active) {
     _inboxAutoSynced = true;
     const c = st.counts || {};
-    if ((c.pending || 0) > 0) runInboxSync({ auto: true });
+    if ((c.pending || 0) > 0) {
+      const banner = _showBanner(t("status.inboxSyncing"));
+      const d = await runInboxSync({ auto: true });
+      const n = d ? d.imported.length + d.replaced.length : 0;
+      banner.textContent = d
+        ? t("status.inboxSyncDone", { imported: d.imported.length, replaced: d.replaced.length,
+                                      unchanged: d.unchanged, errors: d.errors.length })
+        : t("status.inboxSyncFail", { error: "" });
+      setTimeout(() => banner.remove(), d ? 6000 : 12000);
+      if (n) router();   // 表示中のページを取り込み後のデータで描き直す
+    }
   }
   return _inboxStatus;
 }
 
-function _renderInbox() {
+// 取り込みフォルダのカードは、入口（IMPORT_DIR）か従来の PBR 連携のどちらかが
+// 設定されていれば出す。入口固有の部分（パス・一覧・今すぐ確認）は入口があるときだけ。
+function _syncInboxSectionVisibility() {
   const section = document.getElementById("inbox-section");
+  const main = document.getElementById("inbox-main");
+  if (!section || !main) return false;
   const st = _inboxStatus;
-  if (!st || !st.configured) {
-    section.classList.add("hidden");
-    return;
-  }
-  section.classList.remove("hidden");
+  const inboxOn = !!(st && st.configured);
+  const pbrOn = !!(_pbrStatus && _pbrStatus.configured) || !!(st && st.legacy_configured);
+  section.classList.toggle("hidden", !(inboxOn || pbrOn));
+  main.classList.toggle("hidden", !inboxOn);
+  return inboxOn;
+}
+
+function _renderInbox() {
+  const st = _inboxStatus;
+  if (!_syncInboxSectionVisibility()) return;
 
   // 入口のパスと（マルチユーザーなら）入口名
   const rootLine = document.getElementById("inbox-root-line");
@@ -2811,12 +2832,15 @@ function _renderInbox() {
     if (document.activeElement !== input) input.value = st.inbox_name || "";
   }
 
-  // 使えるフォルダ名
+  // 使えるフォルダ名（ファイル単位）と、フォルダ単位の取引所
   const labels = st.exchange_labels || {};
+  const codes = (keys) => (keys || []).map((k) =>
+    `<code title="${escapeHtml(labels[k] || k)}">${escapeHtml(k)}</code>`).join(" ");
   document.getElementById("inbox-exchange-list").innerHTML =
-    `<strong>${escapeHtml(t("inbox.exchanges"))}</strong> ` +
-    (st.exchanges || []).map((k) =>
-      `<code title="${escapeHtml(labels[k] || k)}">${escapeHtml(k)}</code>`).join(" ");
+    `<strong>${escapeHtml(t("inbox.exchanges"))}</strong> ${codes(st.exchanges)}` +
+    ((st.folder_exchanges || []).length
+      ? `<br><strong>${escapeHtml(t("inbox.folderExchanges"))}</strong> ${codes(st.folder_exchanges)}`
+      : "");
 
   // ポーラと件数
   const lines = [];
@@ -2836,9 +2860,6 @@ function _renderInbox() {
   const warns = [];
   if ((st.unknown_folders || []).length) {
     warns.push(t("inbox.unknownFolders", { names: st.unknown_folders.join(", ") }));
-  }
-  if ((st.reserved_folders || []).length) {
-    warns.push(t("inbox.reservedFolders", { names: st.reserved_folders.join(", ") }));
   }
   if ((st.root_files || []).length) {
     warns.push(t("inbox.rootFiles", { names: st.root_files.join(", ") }));
@@ -2861,21 +2882,29 @@ function _renderInbox() {
     const cls = _INBOX_STATUS_CLASS[f.status] || "";
     const stLabel = t("inbox.st." + f.status) === "inbox.st." + f.status ? f.status : t("inbox.st." + f.status);
     const changed = f.changed ? ` <span class="muted">(${escapeHtml(t("inbox.changed"))})</span>` : "";
+    const isFolder = f.kind === "folder";
+    // フォルダ単位（PBR クローラー）は、入口の外の従来設定なら由来のディレクトリも見せる
+    const origin = isFolder && f.legacy
+      ? `<div class="muted" style="font-size:11px">${escapeHtml(t("inbox.legacyFrom", { label: f.legacy_label || "", dir: f.directory || "" }))}</div>`
+      : "";
     const msg = f.message ? `<div class="muted" style="font-size:11px">${escapeHtml(f.message)}</div>` : "";
-    const canRetry = ["error", "deleted", "new", "imported", "empty"].includes(f.status) && f.status !== "missing";
+    const canRetry = ["error", "deleted", "new", "imported", "empty"].includes(f.status);
+    const canForce = isFolder && f.status === "blocked";
     const canForget = !!f.batch_id && f.status !== "deleted";
     tr.innerHTML = `
       <td style="white-space:nowrap"><span class="${cls}">${escapeHtml(stLabel)}</span>${changed}</td>
-      <td><code style="font-family:monospace;font-size:12px" title="${escapeHtml(f.path)}">${escapeHtml(f.path)}</code>${msg}</td>
+      <td><code style="font-family:monospace;font-size:12px" title="${escapeHtml(f.path)}">${escapeHtml(f.path)}</code>${origin}${msg}</td>
       <td>${escapeHtml((st.exchange_labels || {})[f.exchange] || f.exchange)}</td>
       <td><code style="font-family:monospace">${escapeHtml(f.source)}</code></td>
       <td class="num">${f.tx_count == null ? "-" : f.tx_count}</td>
       <td style="white-space:nowrap;font-size:12px">${escapeHtml(_fmtDateTime(f.imported_at) || "-")}</td>
       <td style="white-space:nowrap;display:flex;gap:6px;align-items:center">
         ${canRetry ? `<button class="tx-link-btn btn-inbox-retry">${t("btn.inboxRetry")}</button>` : ""}
+        ${canForce ? `<button class="tx-link-btn btn-inbox-force" style="border-color:#5a4a2a">${t("btn.inboxForce")}</button>` : ""}
         ${canForget ? `<button class="tx-link-btn btn-inbox-forget" style="border-color:#5a2a2a">${t("btn.inboxForget")}</button>` : ""}
       </td>`;
     tr.querySelector(".btn-inbox-retry")?.addEventListener("click", () => retryInboxFile(f.path));
+    tr.querySelector(".btn-inbox-force")?.addEventListener("click", () => retryInboxFile(f.path, { force: true }));
     tr.querySelector(".btn-inbox-forget")?.addEventListener("click", () => {
       _clearDialogState();
       _inboxForgetPath = f.path;
@@ -2915,6 +2944,7 @@ async function runInboxSync({ auto = false } = {}) {
       loadImportAccountsTable();
       loadImportBatches();
       _txAccountsLoaded = false;
+      loadPbrSyncStatus();
     }
     await loadInboxStatus();
     return d;
@@ -2927,11 +2957,11 @@ async function runInboxSync({ auto = false } = {}) {
   }
 }
 
-async function retryInboxFile(path) {
+async function retryInboxFile(path, { force = false } = {}) {
   try {
     const resp = await fetch(apiUrl("/api/inbox/files/retry"), {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ path }),
+      body: JSON.stringify({ path, force }),
     });
     const d = await resp.json();
     if (!resp.ok) throw new Error(d.detail || `HTTP ${resp.status}`);
@@ -2940,6 +2970,7 @@ async function retryInboxFile(path) {
       loadImportAccountsTable();
       loadImportBatches();
       _txAccountsLoaded = false;
+      loadPbrSyncStatus();
     } else {
       _inboxResult("err", escapeHtml(t("status.inboxRetryFail", { path, error: d.error || "" })));
     }
@@ -3055,6 +3086,7 @@ async function runPbrSync({ force = false, auto = false } = {}) {
     loadImportBatches();
     _txAccountsLoaded = false;
     await loadPbrSyncStatus();
+    loadInboxStatus();
     return d;
   } catch (e) {
     if (result) {
@@ -3070,30 +3102,8 @@ async function runPbrSync({ force = false, auto = false } = {}) {
   }
 }
 
-// 起動時に一度だけ: 未取り込みのクロール結果があれば自動で取り込む。
-// 失敗しても再試行しない（手動ボタンに委ねる）。
-async function autoSyncPbrIfNeeded() {
-  const status = await loadPbrSyncStatus();
-  if (!status || !status.configured) return;
-  // 取り込める材料が無い / クロールが失敗している / 既に最新 なら何もしない。
-  if (!status.has_data || status.blocked || status.up_to_date) return;
-  const signature = (status.crawl || {}).signature;
-  if (_pbrAutoSyncTried === signature) return;
-  _pbrAutoSyncTried = signature;
-
-  const banner = _showPbrBanner(t("pbr.autoSyncRunning"));
-  const result = await runPbrSync({ auto: true });
-  if (banner) {
-    banner.textContent = result
-      ? t("pbr.autoSyncDone") + " " + t("pbr.syncDone", { parsed: result.parsed, deleted: result.deleted.total })
-      : t("pbr.autoSyncFail");
-    setTimeout(() => banner.remove(), result ? 6000 : 12000);
-  }
-  if (result) router();   // 表示中のページを取り込み後のデータで描き直す
-}
-
 // 画面上部に一時的な通知を出す（自動取り込みは非同期に走るため）。
-function _showPbrBanner(text) {
+function _showBanner(text) {
   const host = document.querySelector(".main-content") || document.body;
   const el = document.createElement("div");
   el.className = "settings-result ok";
@@ -4231,6 +4241,7 @@ async function loadMeta() {
   await _loadCoinIcons();
   // 初期描画は現在の URL ハッシュから（直リンク・リロードで状態復元）。
   router();
-  // クローラーの新しい取得結果があれば取り込む（描画を待たせない）。
-  autoSyncPbrIfNeeded();
+  // 取り込みフォルダ: ポーラの無い構成では、未取り込みがあればここで 1 回取り込む
+  // （描画を待たせない）。PBR クローラーの状態はナビのタブと PBR パネルに使う。
+  loadPbrSyncStatus().then(() => loadInboxStatus({ autoSync: true }));
 })();

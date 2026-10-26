@@ -85,7 +85,7 @@ def test_scan_conventions(root: Path):
         ("universal/sub1/b.csv", "universal", "sub1"),
     ]
     assert res.unknown_folders == ["dogecoin"]
-    assert res.reserved_folders == ["pbr_crawl"]
+    assert [(u.exchange, u.key, u.legacy) for u in res.folders] == [("pbr_crawl", "pbr_crawl/", False)]
     assert res.root_files == ["stray.csv"]
     assert res.ignored == ["universal/sub1/deeper/"]
 
@@ -319,6 +319,7 @@ def test_status_overlay(root: Path, db: str, monkeypatch):
     assert by["universal/new.csv"]["status"] == "new"
     assert st["unknown_folders"] == ["unknownex"]
     assert "universal" in st["exchanges"] and "pbr_crawl" not in st["exchanges"]
+    assert st["folder_exchanges"] == ["pbr_crawl"]
     assert st["counts"]["imported"] == 1 and st["counts"]["pending"] == 2
 
 
@@ -421,3 +422,159 @@ def test_env_helpers(monkeypatch, tmp_path: Path):
     assert inbox.poll_seconds() == 0
     monkeypatch.setenv(inbox.POLL_ENV, "abc")
     assert inbox.poll_seconds() == inbox.DEFAULT_POLL_SECONDS
+
+
+# ---- フォルダ単位（PBR クローラー） ----
+
+import json  # noqa: E402
+
+from crypto_summary.sources.jp.pbr_crawl import (  # noqa: E402
+    ARTIFACT_NAME,
+    MARKER_NAME,
+    SOURCE_ID as PBR_SOURCE,
+    load_sync_state,
+)
+
+_PBR_ARTIFACT = {
+    "start_date": "2026-01-01",
+    "end_date": "2026-03-05",
+    "currencies": ["BTC"],
+    "daily_ranges": [{
+        "date_from": "2026-03-03", "date_to": "2026-03-05",
+        "currency": "BTC", "daily_expected_interest": "0.00001",
+    }],
+    "wallet_events": [],
+    "transfer_events": [],
+    "balance_snapshots": [],
+    "warnings": [],
+}
+_PBR_MARKER = {
+    "runId": "2026-03-05T10:00:00.000Z", "phase": "done",
+    "failedCurrencies": [], "finishedAt": "2026-03-05T10:03:00.000Z",
+}
+
+
+def _write_pbr(directory: Path, run_id: str = "2026-03-05T10:00:00.000Z",
+               phase: str = "done", interest: str = "0.00001") -> None:
+    artifact = dict(_PBR_ARTIFACT)
+    artifact["daily_ranges"] = [dict(_PBR_ARTIFACT["daily_ranges"][0], daily_expected_interest=interest)]
+    marker = dict(_PBR_MARKER, runId=run_id, phase=phase)
+    _settled(directory / ARTIFACT_NAME, json.dumps(artifact))
+    _settled(directory / MARKER_NAME, json.dumps(marker))
+
+
+def test_folder_unit_in_inbox_is_synced_once(root: Path, db: str):
+    _write_pbr(root / "pbr_crawl")
+    report = sync_inbox(db, root)
+    assert report["imported"] == ["pbr_crawl/"]
+    assert _count(db, PBR_SOURCE) == 3  # 3 日分の日次利息
+    assert load_sync_state(db)["last_sync"]["parsed"] == 3
+    st = status(db, root)
+    entry = next(e for e in st["files"] if e["path"] == "pbr_crawl/")
+    assert entry["kind"] == "folder" and entry["status"] == "imported"
+    assert entry["tx_count"] == 3 and entry["detail"]["healthy"] is True
+    assert entry["state"]["last_sync"]["parsed"] == 3
+    # 2 回目は何もしない
+    again = sync_inbox(db, root)
+    assert again["unchanged"] == 1 and again["imported"] == [] and again["replaced"] == []
+
+
+def test_folder_unit_resyncs_when_crawl_changes(root: Path, db: str):
+    _write_pbr(root / "pbr_crawl")
+    sync_inbox(db, root)
+    _write_pbr(root / "pbr_crawl", run_id="2026-03-06T10:00:00.000Z", interest="0.00002")
+    assert status(db, root)["files"][0]["changed"] is True
+    report = sync_inbox(db, root)
+    assert report["replaced"] == ["pbr_crawl/"]
+    assert _count(db, PBR_SOURCE) == 3  # 洗い替えなので件数は増えない
+    assert float(_balance(db, PBR_SOURCE, "BTC")) == pytest.approx(0.00006)
+
+
+def test_folder_unit_blocked_when_unhealthy_unless_forced(root: Path, db: str):
+    _write_pbr(root / "pbr_crawl", phase="running")
+    report = sync_inbox(db, root)
+    assert report["imported"] == [] and [b["path"] for b in report["blocked"]] == ["pbr_crawl/"]
+    assert _count(db, PBR_SOURCE) == 0
+    st = status(db, root)
+    assert st["files"][0]["status"] == "blocked" and st["counts"]["blocked"] == 1
+    report = sync_inbox(db, root, force=True)
+    assert report["imported"] == ["pbr_crawl/"]
+    assert _count(db, PBR_SOURCE) == 3
+
+
+def test_folder_unit_empty_dir_is_reported_not_synced(root: Path, db: str):
+    (root / "pbr_crawl").mkdir()
+    report = sync_inbox(db, root)
+    assert report["imported"] == [] and report["errors"] == []
+    st = status(db, root)
+    assert st["files"][0]["status"] == "empty"
+
+
+def test_legacy_folder_outside_root(tmp_path: Path, db: str):
+    outputs = tmp_path / "outputs"
+    _write_pbr(outputs)
+    legacy = [("pbr_crawl", outputs, "PBR_CRAWL_DIR")]
+    # 入口が無くても従来のフォルダは取り込む
+    report = sync_inbox(db, tmp_path / "no-inbox", legacy_folders=legacy)
+    assert report["exists"] is False and report["imported"] == ["pbr_crawl/@PBR_CRAWL_DIR"]
+    assert _count(db, PBR_SOURCE) == 3
+    st = status(db, None, legacy_folders=legacy)
+    entry = st["files"][0]
+    assert entry["legacy"] is True and entry["legacy_label"] == "PBR_CRAWL_DIR"
+    assert entry["directory"] == str(outputs) and entry["status"] == "imported"
+    # 設定が外れたら「消失」として見える（データは残る）
+    st = status(db, None, legacy_folders=None)
+    assert st["files"][0]["status"] == "missing"
+    assert _count(db, PBR_SOURCE) == 3
+
+
+def test_sync_unit_runs_adapter_and_records_row(tmp_path: Path, db: str):
+    outputs = tmp_path / "outputs"
+    _write_pbr(outputs, phase="running")
+    legacy = [("pbr_crawl", outputs, "PBR_CRAWL_DIR")]
+    from crypto_summary.sources.jp.pbr_crawl import PbrSyncError
+    with pytest.raises(PbrSyncError) as ei:
+        inbox.sync_unit(db, None, "pbr_crawl/@PBR_CRAWL_DIR", legacy_folders=legacy)
+    assert ei.value.code == "unhealthy"
+    assert status(db, None, legacy_folders=legacy)["files"][0]["message"]
+    result = inbox.sync_unit(db, None, "pbr_crawl/@PBR_CRAWL_DIR", force=True, legacy_folders=legacy)
+    assert result["parsed"] == 3 and result["batch_id"]
+    entry = status(db, None, legacy_folders=legacy)["files"][0]
+    assert entry["status"] == "imported" and entry["batch_id"] == result["batch_id"]
+    # 続く走査では署名が同じなので入れ直さない
+    assert sync_inbox(db, None, legacy_folders=legacy)["unchanged"] == 1
+    with pytest.raises(KeyError):
+        inbox.sync_unit(db, None, "pbr_crawl/", legacy_folders=legacy)
+
+
+def test_folder_unit_forget_marks_deleted(root: Path, db: str):
+    _write_pbr(root / "pbr_crawl")
+    sync_inbox(db, root)
+    r = forget_file(db, "pbr_crawl/", root)
+    assert r["ok"] and r["deleted"] == 3 and r["kept_row"]
+    assert _count(db, PBR_SOURCE) == 0
+    assert sync_inbox(db, root)["imported"] == []
+    assert status(db, root)["files"][0]["status"] == "deleted"
+    assert sync_inbox(db, root, retry={"pbr_crawl/"})["imported"] == ["pbr_crawl/"]
+    assert _count(db, PBR_SOURCE) == 3
+
+
+def test_folder_unit_batch_deleted_elsewhere_is_respected(root: Path, db: str):
+    _write_pbr(root / "pbr_crawl")
+    sync_inbox(db, root)
+    ledger = Ledger(db)
+    try:
+        ledger.delete_import_batch(ledger.list_import_batches()[0]["id"])
+    finally:
+        ledger.close()
+    assert sync_inbox(db, root)["unchanged"] == 1
+    assert _count(db, PBR_SOURCE) == 0
+    assert status(db, root)["files"][0]["status"] == "deleted"
+
+
+def test_poller_accepts_legacy_tuples(tmp_path: Path, db: str):
+    outputs = tmp_path / "outputs"
+    _write_pbr(outputs)
+    p = InboxPoller(lambda: [(db, None, [("pbr_crawl", outputs, "PBR_CRAWL_DIR")])], interval=60)
+    results = p.run_once()
+    assert list(results.values())[0]["imported"] == ["pbr_crawl/@PBR_CRAWL_DIR"]
