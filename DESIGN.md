@@ -144,7 +144,15 @@ class CanonicalTx(BaseModel):
 - スワップは送出/受領 ERC20 transfer の差分から `TRADE` として解釈。
   非 EVM 系も「1トランザクション内の資産別 正味フロー」に畳んでから同じ規則で分類する。
 - ガス代は `FEE`(ネイティブ通貨建て) として付与。
-- 注意: アドレスを指定する読み取り専用。秘密鍵は一切扱わない。
+- Bitcoin は Esplora 互換 API（mempool.space / Blockstream / 自前 electrs）で取得する。
+  UTXO モデルなので「自分のアドレス集合に属する vin の合計 / vout の合計」に畳み、
+  入力なし → `DEPOSIT`（coinbase は `REWARD`）、全入力が自分 → 相手に渡った額を
+  `WITHDRAW` + 手数料を `FEE`、全出力も自分（統合）→ `FEE` のみ、入力が他人と混在
+  （CoinJoin）→ 正味の増減だけ、と分類する。
+  Self-custody ウォレットはおつりを新アドレスへ戻すため、拡張公開鍵（xpub / ypub / zpub）
+  から BIP32 で 0/i・1/i を gap limit 20 で導出し、使用済みアドレス全体を 1 口座として扱う
+  （`sources/bitcoin/keys.py` に secp256k1 と BIP32 公開導出を自前実装、外部依存なし）。
+- 注意: アドレスを指定する読み取り専用。秘密鍵は一切扱わない（xprv は登録時に拒否）。
 
 ---
 

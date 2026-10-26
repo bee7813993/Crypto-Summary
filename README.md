@@ -9,7 +9,7 @@
 ## 主な機能
 
 - 📊 **Web ダッシュボード** — 総資産評価額、資産構成（円グラフ）、資産推移グラフ（資産ごとに価格／評価額／保有数を切替）、口座別・資産別の内訳、取引履歴（古い順／新しい順・月ごとにまとめて表示）
-- 🔌 **多様なデータソース** — 取引所 API / CSV インポート / EVM・Solana・Aptos ウォレット取得に対応
+- 🔌 **多様なデータソース** — 取引所 API / CSV インポート / EVM・Solana・Aptos・Bitcoin ウォレット取得に対応
 - 💱 **マルチ通貨表示** — USD / JPY / EUR / GBP（日本円は「億万千円」表示にも対応）
 - 🧾 **確定申告用エクスポート** — 年・口座を指定して Cryptact / Koinly 形式の CSV を出力
 - 🔐 **マルチユーザー対応** — Google OAuth ログインでユーザーごとにデータを分離（Docker 運用時）
@@ -25,7 +25,7 @@
 ```
 [Source Adapters]          [Core]                [Sink Adapters]
  取引所API / CSV       →  正規化(Canonical)  →  Cryptact CSV
- EVM/Solana/Aptos      →  重複排除・台帳保存  →  Koinly CSV
+ EVM/Solana/Aptos/BTC  →  重複排除・台帳保存  →  Koinly CSV
                        →  SQLite 永続化       →  SUMM CSV
                                               ↓
                                        [Web UI / CLI]
@@ -269,14 +269,23 @@ Crypto-Summary を HTTPS で公開している場合、`http://` のビューア
 - **EVM 5チェーン**（Ethereum / Arbitrum / Polygon / Base / Optimism）— Etherscan V2 API
 - **Solana** — Helius API
 - **Aptos** — Aptos Indexer GraphQL（APT / Aptos ネイティブ USDC など Coin・Fungible Asset 両対応）
+- **Bitcoin** — Esplora 互換 API（既定 mempool.space、障害・レート制限時は blockstream.info へ自動切替、API キー不要。
+  自前ノードは `BITCOIN_ESPLORA_URL` で指定）。
+  単一アドレス（1… / 3… / bc1q… / bc1p…）のほか、Self-custody ウォレットの
+  **拡張公開鍵（xpub / ypub / zpub）** を登録すると受取・おつりの全アドレスを
+  gap limit 20 で追跡する。Sparrow / Bitcoin Core のディスクリプタ
+  （`wpkh([…]zpub…/<0;1>/*)` 等）もそのまま貼れる（単一鍵のみ。マルチシグは未対応）
 
 ```bash
 crypto-summary fetch-wallet --chain arbitrum --wallet 0xABC...123
 crypto-summary fetch-wallet --chain solana --wallet YOURWALLET...
 crypto-summary fetch-wallet --chain aptos --wallet 0xABC...（64桁）
+crypto-summary fetch-wallet --chain bitcoin --wallet zpub6r...   # or bc1q...
 ```
 
-> API 直接取得には各サービスの API キーが必要です（Aptos のみ任意）。取得・設定方法は [`docs/api-keys.md`](./docs/api-keys.md) を参照してください。
+> API 直接取得には各サービスの API キーが必要です（Aptos は任意、Bitcoin は不要）。取得・設定方法は [`docs/api-keys.md`](./docs/api-keys.md) を参照してください。
+>
+> **Bitcoin の Self-custody ウォレットは xpub で登録してください。** ハードウェアウォレット等は送金のおつりを新しいアドレスへ戻すため、1 つのアドレスだけ見ていると「送金したら全額なくなった」ように見えます。xpub は公開鍵であり送金はできませんが、全アドレスが分かるためプライバシー情報として扱ってください。**xprv（秘密鍵）は絶対に入力しないこと**（登録時に拒否します）。
 
 ---
 
