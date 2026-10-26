@@ -2165,9 +2165,11 @@ let _batchDeleteId = null;     // string               — CSVバッチ削除
 let _accountClearTarget = null; // string (表示名)      — 口座全消去
 let _apiDeleteSourceId = null; // string               — API口座登録削除
 let _walletDeleteSourceId = null; // string            — ウォレット登録削除
+let _inboxForgetPath = null;      // string            — 取り込みフォルダのファイル由来データ削除
 let _pbrPurgeYear = null;      // number               — PBRクローラー同期の年次パージ
 
 function _clearDialogState() {
+  _inboxForgetPath = null;
   _deleteCallback = null;
   _batchDeleteId = null;
   _accountClearTarget = null;
@@ -2216,6 +2218,12 @@ function _batchDeleteWarning(batch) {
 
 document.getElementById("delete-confirm").addEventListener("click", async () => {
   document.getElementById("delete-dialog").classList.add("hidden");
+
+  // 取り込みフォルダのファイル由来データの削除
+  if (_inboxForgetPath) {
+    await _confirmInboxForget();
+    return;
+  }
 
   // PBRクローラー同期データの年次パージ
   if (_pbrPurgeYear) {
@@ -2383,6 +2391,7 @@ async function loadImportPage() {
   loadWalletsTable();
   loadPrefs();
   loadPbrSyncStatus();
+  loadInboxStatus({ autoSync: true });
 }
 
 // ---- PBR Lending クローラー連携 -------------------------------------------
@@ -2516,65 +2525,77 @@ function _fmtBytes(n) {
 // Syncthing は双方が相手を登録しないと繋がらない。片側で相手の ID を入れると
 // もう片側に「承認待ち」として現れるので、そこを 1 クリックで済ませる。
 // フォルダのパス・種別・除外設定はサーバー側が知っているので自動で入る。
+//
+// 同じパネルを PBR クローラー連携（受信先 PBR_CRAWL_DIR）と取り込みフォルダ
+// （受信先 IMPORT_DIR）の 2 箇所で使うので、要素 ID の接頭辞と API を ctx で渡す。
 
-let _stStatus = null;
-let _stPollTimer = null;
+function _makeStCtx(prefix, api, peerName, visible) {
+  return { prefix, api, peerName, visible, status: null, pollTimer: null,
+           query: () => "" };
+}
+const _stPbr = _makeStCtx("pbr-st", "/api/sync/pbr/syncthing", "PBRLending-History-Check",
+  () => !!window._isAdmin && !!(_pbrStatus || {}).configured);
+const _stInbox = _makeStCtx("inbox-st", "/api/inbox/syncthing", "inbox-sender",
+  () => !!window._isAdmin && !!(_inboxStatus || {}).configured);
 
 // 承認待ちは相手が登録した瞬間に現れる。こちらは待つ側なので、欄を開いて
 // いる間だけ定期的に取り直す（閉じているときに叩き続けても無駄なため）。
 const _ST_POLL_MS = 5000;
 
-function _startSyncthingPolling() {
-  if (_stPollTimer) return;
-  _stPollTimer = setInterval(() => {
-    const box = document.getElementById("pbr-st-details");
+function _startSyncthingPolling(ctx) {
+  if (ctx.pollTimer) return;
+  ctx.pollTimer = setInterval(() => {
+    const box = document.getElementById(`${ctx.prefix}-details`);
     if (!box || !box.open || box.classList.contains("hidden")) {
-      _stopSyncthingPolling();
+      _stopSyncthingPolling(ctx);
       return;
     }
-    loadSyncthing();
+    loadSyncthing(ctx);
   }, _ST_POLL_MS);
 }
 
-function _stopSyncthingPolling() {
-  if (!_stPollTimer) return;
-  clearInterval(_stPollTimer);
-  _stPollTimer = null;
+function _stopSyncthingPolling(ctx) {
+  if (!ctx.pollTimer) return;
+  clearInterval(ctx.pollTimer);
+  ctx.pollTimer = null;
 }
 
-document.getElementById("pbr-st-details")?.addEventListener("toggle", (ev) => {
-  if (ev.currentTarget.open) {
-    loadSyncthing();
-    _startSyncthingPolling();
-  } else {
-    _stopSyncthingPolling();
-  }
+[_stPbr, _stInbox].forEach((ctx) => {
+  document.getElementById(`${ctx.prefix}-details`)?.addEventListener("toggle", (ev) => {
+    if (ev.currentTarget.open) {
+      loadSyncthing(ctx);
+      _startSyncthingPolling(ctx);
+    } else {
+      _stopSyncthingPolling(ctx);
+    }
+  });
 });
 
-async function loadSyncthing() {
-  const box = document.getElementById("pbr-st-details");
+async function loadSyncthing(ctx = _stPbr) {
+  const box = document.getElementById(`${ctx.prefix}-details`);
   if (!box) return;
-  // 管理者以外・PBR 連携が無効なときは出さない
-  if (!window._isAdmin || !(_pbrStatus || {}).configured) {
+  // 管理者以外・連携が無効なときは出さない
+  if (!ctx.visible()) {
     box.classList.add("hidden");
     return;
   }
   try {
-    _stStatus = await fetchJSON("/api/sync/pbr/syncthing");
+    ctx.status = await fetchJSON(ctx.api + ctx.query());
   } catch (e) {
-    _stStatus = null;
+    ctx.status = null;
   }
   box.classList.remove("hidden");
-  _renderSyncthing();
+  _renderSyncthing(ctx);
 }
 
-function _renderSyncthing() {
-  const body = document.getElementById("pbr-st-body");
+function _renderSyncthing(ctx) {
+  const body = document.getElementById(`${ctx.prefix}-body`);
   if (!body) return;
-  const st = _stStatus;
+  const st = ctx.status;
+  const P = ctx.prefix;
 
   if (!st || !st.configured) {
-    body.innerHTML = `<p class="settings-hint">${escapeHtml(t("st.notConfigured"))}</p>`;
+    body.innerHTML = `<p class="settings-hint">${escapeHtml((st && st.error) || t("st.notConfigured"))}</p>`;
     return;
   }
   if (!st.reachable) {
@@ -2591,8 +2612,8 @@ function _renderSyncthing() {
     <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px">
       <code style="font-size:11px;word-break:break-all;flex:1;min-width:220px">${
         escapeHtml(st.my_device_id)}</code>
-      <button class="action-btn" id="pbr-st-copy">${escapeHtml(t("st.copy"))}</button>
-      <button class="action-btn" id="pbr-st-refresh">${escapeHtml(t("st.refresh"))}</button>
+      <button class="action-btn" id="${P}-copy">${escapeHtml(t("st.copy"))}</button>
+      <button class="action-btn" id="${P}-refresh">${escapeHtml(t("st.refresh"))}</button>
     </div>`);
 
   // 承認待ちが無いときは、相手の操作を待っている状態だと分かるようにする
@@ -2609,9 +2630,9 @@ function _renderSyncthing() {
         <strong>${escapeHtml(t("st.pending", { name: label }))}</strong><br>
         <code style="font-size:11px;word-break:break-all">${escapeHtml(d.device_id)}</code>
         <div style="margin-top:8px;display:flex;gap:8px">
-          <button class="settings-save-btn pbr-st-accept" data-id="${escapeHtml(d.device_id)}"
+          <button class="settings-save-btn ${P}-accept" data-id="${escapeHtml(d.device_id)}"
             data-name="${escapeHtml(d.name || "")}">${escapeHtml(t("st.accept"))}</button>
-          <button class="action-btn pbr-st-dismiss" data-id="${escapeHtml(d.device_id)}">${
+          <button class="action-btn ${P}-dismiss" data-id="${escapeHtml(d.device_id)}">${
             escapeHtml(t("st.dismiss"))}</button>
         </div>
       </div>`);
@@ -2622,9 +2643,9 @@ function _renderSyncthing() {
     <div class="settings-row" style="margin-bottom:8px">
       <label class="settings-label">${escapeHtml(t("st.peerId"))}</label>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
-        <input id="pbr-st-peer" class="settings-input" type="text" spellcheck="false"
+        <input id="${P}-peer" class="settings-input" type="text" spellcheck="false"
           placeholder="XXXXXXX-XXXXXXX-..." style="flex:1;min-width:260px;font-family:monospace;font-size:11px" />
-        <button class="settings-save-btn" id="pbr-st-pair">${escapeHtml(t("st.pair"))}</button>
+        <button class="settings-save-btn" id="${P}-pair">${escapeHtml(t("st.pair"))}</button>
       </div>
       <p class="settings-hint">${escapeHtml(t("st.peerIdHint"))}</p>
     </div>`);
@@ -2670,44 +2691,45 @@ function _renderSyncthing() {
   }
 
   body.innerHTML = parts.join("");
-  _wireSyncthingButtons();
+  _wireSyncthingButtons(ctx);
 }
 
-function _wireSyncthingButtons() {
-  document.getElementById("pbr-st-copy")?.addEventListener("click", async () => {
+function _wireSyncthingButtons(ctx) {
+  const P = ctx.prefix;
+  document.getElementById(`${P}-copy`)?.addEventListener("click", async () => {
     try {
-      await navigator.clipboard.writeText(_stStatus.my_device_id);
-      _stResult("ok", t("st.copied"));
+      await navigator.clipboard.writeText(ctx.status.my_device_id);
+      _stResult(ctx, "ok", t("st.copied"));
     } catch (e) {
-      _stResult("err", t("st.copyFail"));
+      _stResult(ctx, "err", t("st.copyFail"));
     }
   });
-  document.getElementById("pbr-st-refresh")?.addEventListener("click", () => {
-    loadSyncthing();
+  document.getElementById(`${P}-refresh`)?.addEventListener("click", () => {
+    loadSyncthing(ctx);
   });
-  document.getElementById("pbr-st-pair")?.addEventListener("click", () => {
-    const id = document.getElementById("pbr-st-peer").value.trim();
-    if (!id) return _stResult("err", t("st.needId"));
-    _stPair(id, "PBRLending-History-Check");
+  document.getElementById(`${P}-pair`)?.addEventListener("click", () => {
+    const id = document.getElementById(`${P}-peer`).value.trim();
+    if (!id) return _stResult(ctx, "err", t("st.needId"));
+    _stPair(ctx, id, ctx.peerName);
   });
-  document.querySelectorAll(".pbr-st-accept").forEach((b) => {
-    b.addEventListener("click", () => _stPair(b.dataset.id, b.dataset.name, true));
+  document.querySelectorAll(`.${P}-accept`).forEach((b) => {
+    b.addEventListener("click", () => _stPair(ctx, b.dataset.id, b.dataset.name, true));
   });
-  document.querySelectorAll(".pbr-st-dismiss").forEach((b) => {
-    b.addEventListener("click", () => _stPost("/api/sync/pbr/syncthing/dismiss",
+  document.querySelectorAll(`.${P}-dismiss`).forEach((b) => {
+    b.addEventListener("click", () => _stPost(ctx, `${ctx.api}/dismiss`,
       { device_id: b.dataset.id }, t("st.dismissed")));
   });
 }
 
 // approved=true は承認待ちからの承認。同じ API だが、こちらは相手の登録が
 // 済んでいるので「相手を待つ」案内を出すと誤解させる。
-function _stPair(deviceId, name, approved = false) {
-  return _stPost("/api/sync/pbr/syncthing/pair",
+function _stPair(ctx, deviceId, name, approved = false) {
+  return _stPost(ctx, `${ctx.api}/pair`,
     { device_id: deviceId, name: name || undefined },
     t(approved ? "st.approved" : "st.paired"));
 }
 
-async function _stPost(url, body, okMessage) {
+async function _stPost(ctx, url, body, okMessage) {
   try {
     const resp = await fetch(apiUrl(url), {
       method: "POST",
@@ -2718,20 +2740,252 @@ async function _stPost(url, body, okMessage) {
       const err = await resp.json().catch(() => ({}));
       throw new Error(err.detail || `HTTP ${resp.status}`);
     }
-    _stResult("ok", okMessage);
-    await loadSyncthing();
+    _stResult(ctx, "ok", okMessage);
+    await loadSyncthing(ctx);
   } catch (e) {
-    _stResult("err", e.message);
+    _stResult(ctx, "err", e.message);
   }
 }
 
-function _stResult(kind, text) {
-  const el = document.getElementById("pbr-st-result");
+function _stResult(ctx, kind, text) {
+  const el = document.getElementById(`${ctx.prefix}-result`);
   if (!el) return;
   el.className = `settings-result ${kind}`;
   el.textContent = text;
   el.classList.remove("hidden");
 }
+
+// ---- 取り込みフォルダ（inbox） --------------------------------------------
+//
+// IMPORT_DIR/<取引所>/<ファイル> に置かれた取引履歴を、サーバーのポーラが
+// 定期的に取り込む。ここは状態の表示と、手動の「今すぐ確認」「再取り込み」
+// 「データを削除」。ポーラが止まっている構成では画面を開いたときに 1 回走査する。
+
+let _inboxStatus = null;
+let _inboxSyncing = false;
+let _inboxAutoSynced = false;
+
+const _INBOX_STATUS_CLASS = {
+  imported: "status-ok", empty: "muted", new: "", pending: "", error: "status-warn",
+  too_large: "status-warn", missing: "status-warn", deleted: "muted",
+};
+
+async function loadInboxStatus({ autoSync = false } = {}) {
+  const section = document.getElementById("inbox-section");
+  if (!section) return null;
+  try {
+    _inboxStatus = await fetchJSON("/api/inbox/status");
+  } catch (e) {
+    _inboxStatus = null;
+  }
+  _renderInbox();
+  loadSyncthing(_stInbox);
+  // ポーラが無い構成（INBOX_POLL_SECONDS=0）の保険: 画面を開いたとき 1 回だけ走査する。
+  const st = _inboxStatus;
+  if (autoSync && !_inboxAutoSynced && st && st.configured && st.poller && !st.poller.active) {
+    _inboxAutoSynced = true;
+    const c = st.counts || {};
+    if ((c.pending || 0) > 0) runInboxSync({ auto: true });
+  }
+  return _inboxStatus;
+}
+
+function _renderInbox() {
+  const section = document.getElementById("inbox-section");
+  const st = _inboxStatus;
+  if (!st || !st.configured) {
+    section.classList.add("hidden");
+    return;
+  }
+  section.classList.remove("hidden");
+
+  // 入口のパスと（マルチユーザーなら）入口名
+  const rootLine = document.getElementById("inbox-root-line");
+  rootLine.innerHTML = `<strong>${escapeHtml(t("inbox.root", { path: st.root }))}</strong>` +
+    (st.exists ? "" : ` <span class="muted">${escapeHtml(t("inbox.rootMissing"))}</span>`) +
+    (st.mkdir_error ? `<br><span class="status-warn">${escapeHtml(t("inbox.mkdirError", { error: st.mkdir_error }))}</span>` : "");
+  const nameRow = document.getElementById("inbox-name-row");
+  nameRow.classList.toggle("hidden", !st.multi_user);
+  if (st.multi_user) {
+    const input = document.getElementById("inbox-name-input");
+    if (document.activeElement !== input) input.value = st.inbox_name || "";
+  }
+
+  // 使えるフォルダ名
+  const labels = st.exchange_labels || {};
+  document.getElementById("inbox-exchange-list").innerHTML =
+    `<strong>${escapeHtml(t("inbox.exchanges"))}</strong> ` +
+    (st.exchanges || []).map((k) =>
+      `<code title="${escapeHtml(labels[k] || k)}">${escapeHtml(k)}</code>`).join(" ");
+
+  // ポーラと件数
+  const lines = [];
+  const p = st.poller;
+  if (p && p.active) {
+    lines.push(escapeHtml(t("inbox.pollerOn", { sec: p.interval, when: _fmtDateTime(p.last_run) || "-" })));
+  } else {
+    lines.push(`<span class="muted">${escapeHtml(t("inbox.pollerOff", {
+      reason: (p && p.reason) || t("inbox.pollerOffReason") }))}</span>`);
+  }
+  const c = st.counts || {};
+  lines.push(escapeHtml(t("inbox.counts", {
+    imported: c.imported || 0, pending: c.pending || 0, error: c.error || 0, missing: c.missing || 0 })));
+  document.getElementById("inbox-status-line").innerHTML = lines.join("<br>");
+
+  // 注意（対応外のフォルダ名など）
+  const warns = [];
+  if ((st.unknown_folders || []).length) {
+    warns.push(t("inbox.unknownFolders", { names: st.unknown_folders.join(", ") }));
+  }
+  if ((st.reserved_folders || []).length) {
+    warns.push(t("inbox.reservedFolders", { names: st.reserved_folders.join(", ") }));
+  }
+  if ((st.root_files || []).length) {
+    warns.push(t("inbox.rootFiles", { names: st.root_files.join(", ") }));
+  }
+  if ((st.scan_errors || []).length) {
+    warns.push(t("inbox.scanErrors", { names: st.scan_errors.join("; ") }));
+  }
+  document.getElementById("inbox-warnings").innerHTML =
+    warns.map((w) => `<span class="status-warn">⚠ ${escapeHtml(w)}</span>`).join("<br>");
+
+  // ファイル一覧
+  const tbody = document.querySelector("#inbox-files-table tbody");
+  tbody.innerHTML = "";
+  if (!(st.files || []).length) {
+    tbody.innerHTML = `<tr><td colspan="7" class="muted">${escapeHtml(t("inbox.noFiles"))}</td></tr>`;
+    return;
+  }
+  st.files.forEach((f) => {
+    const tr = document.createElement("tr");
+    const cls = _INBOX_STATUS_CLASS[f.status] || "";
+    const stLabel = t("inbox.st." + f.status) === "inbox.st." + f.status ? f.status : t("inbox.st." + f.status);
+    const changed = f.changed ? ` <span class="muted">(${escapeHtml(t("inbox.changed"))})</span>` : "";
+    const msg = f.message ? `<div class="muted" style="font-size:11px">${escapeHtml(f.message)}</div>` : "";
+    const canRetry = ["error", "deleted", "new", "imported", "empty"].includes(f.status) && f.status !== "missing";
+    const canForget = !!f.batch_id && f.status !== "deleted";
+    tr.innerHTML = `
+      <td style="white-space:nowrap"><span class="${cls}">${escapeHtml(stLabel)}</span>${changed}</td>
+      <td><code style="font-family:monospace;font-size:12px" title="${escapeHtml(f.path)}">${escapeHtml(f.path)}</code>${msg}</td>
+      <td>${escapeHtml((st.exchange_labels || {})[f.exchange] || f.exchange)}</td>
+      <td><code style="font-family:monospace">${escapeHtml(f.source)}</code></td>
+      <td class="num">${f.tx_count == null ? "-" : f.tx_count}</td>
+      <td style="white-space:nowrap;font-size:12px">${escapeHtml(_fmtDateTime(f.imported_at) || "-")}</td>
+      <td style="white-space:nowrap;display:flex;gap:6px;align-items:center">
+        ${canRetry ? `<button class="tx-link-btn btn-inbox-retry">${t("btn.inboxRetry")}</button>` : ""}
+        ${canForget ? `<button class="tx-link-btn btn-inbox-forget" style="border-color:#5a2a2a">${t("btn.inboxForget")}</button>` : ""}
+      </td>`;
+    tr.querySelector(".btn-inbox-retry")?.addEventListener("click", () => retryInboxFile(f.path));
+    tr.querySelector(".btn-inbox-forget")?.addEventListener("click", () => {
+      _clearDialogState();
+      _inboxForgetPath = f.path;
+      _openDeleteDialog(t("status.inboxForgetTitle"), t("status.inboxForgetMsg", { path: f.path }));
+    });
+    tbody.appendChild(tr);
+  });
+}
+
+function _inboxResult(kind, html) {
+  const el = document.getElementById("inbox-sync-result");
+  if (!el) return;
+  el.className = `settings-result ${kind}`;
+  el.innerHTML = html;
+  el.classList.remove("hidden");
+}
+
+async function runInboxSync({ auto = false } = {}) {
+  if (_inboxSyncing) return null;
+  _inboxSyncing = true;
+  const btn = document.getElementById("inbox-sync-btn");
+  if (btn) btn.disabled = true;
+  if (!auto) _inboxResult("ok", escapeHtml(t("status.inboxSyncing")));
+  try {
+    const resp = await fetch(apiUrl("/api/inbox/sync"), {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
+    });
+    const d = await resp.json();
+    if (!resp.ok) throw new Error(d.detail || `HTTP ${resp.status}`);
+    let text = t("status.inboxSyncDone", {
+      imported: d.imported.length, replaced: d.replaced.length,
+      unchanged: d.unchanged, errors: d.errors.length });
+    if (d.pending.length) text += " " + t("status.inboxSyncPending", { pending: d.pending.length });
+    const errs = d.errors.map((e) => `<div class="sync-detail warn">⚠ ${escapeHtml(e.path)}: ${escapeHtml(e.message)}</div>`).join("");
+    _inboxResult(d.errors.length ? "err" : "ok", escapeHtml(text) + errs);
+    if (d.imported.length || d.replaced.length) {
+      loadImportAccountsTable();
+      loadImportBatches();
+      _txAccountsLoaded = false;
+    }
+    await loadInboxStatus();
+    return d;
+  } catch (e) {
+    _inboxResult("err", escapeHtml(t("status.inboxSyncFail", { error: e.message })));
+    return null;
+  } finally {
+    _inboxSyncing = false;
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function retryInboxFile(path) {
+  try {
+    const resp = await fetch(apiUrl("/api/inbox/files/retry"), {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path }),
+    });
+    const d = await resp.json();
+    if (!resp.ok) throw new Error(d.detail || `HTTP ${resp.status}`);
+    if (d.ok) {
+      _inboxResult("ok", escapeHtml(t("status.inboxRetryDone", { path })));
+      loadImportAccountsTable();
+      loadImportBatches();
+      _txAccountsLoaded = false;
+    } else {
+      _inboxResult("err", escapeHtml(t("status.inboxRetryFail", { path, error: d.error || "" })));
+    }
+  } catch (e) {
+    _inboxResult("err", escapeHtml(t("status.inboxRetryFail", { path, error: e.message })));
+  }
+  loadInboxStatus();
+}
+
+async function _confirmInboxForget() {
+  const path = _inboxForgetPath;
+  _inboxForgetPath = null;
+  try {
+    const resp = await fetch(apiUrl("/api/inbox/files/forget"), {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path }),
+    });
+    const d = await resp.json();
+    if (!resp.ok) throw new Error(d.detail || `HTTP ${resp.status}`);
+    _inboxResult("ok", escapeHtml(t("status.inboxForgetDone", { path, count: d.deleted })));
+    loadImportAccountsTable();
+    loadImportBatches();
+    _txAccountsLoaded = false;
+  } catch (e) {
+    _inboxResult("err", escapeHtml(e.message));
+  }
+  loadInboxStatus();
+}
+
+document.getElementById("inbox-sync-btn")?.addEventListener("click", () => runInboxSync());
+
+document.getElementById("inbox-name-save")?.addEventListener("click", async () => {
+  const name = document.getElementById("inbox-name-input").value.trim();
+  try {
+    const resp = await fetch(apiUrl("/api/inbox/name"), {
+      method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    });
+    const d = await resp.json();
+    if (!resp.ok) throw new Error(d.detail || `HTTP ${resp.status}`);
+    _inboxResult("ok", escapeHtml(t("inbox.nameSaved", { name: d.inbox_name, path: d.root })));
+  } catch (e) {
+    _inboxResult("err", escapeHtml(t("inbox.nameFail", { error: e.message })));
+  }
+  loadInboxStatus();
+});
 
 function _fmtDateTime(iso) {
   if (!iso) return null;

@@ -259,6 +259,40 @@ PBR_VIEWER_URL=http://127.0.0.1:4173   # 省略可。書くとクローラー画
 Crypto-Summary を HTTPS で公開している場合、`http://` のビューアは mixed content で
 ブロックされて iframe に表示されない（「新しいタブで開く」は使える）。
 
+### 取り込みフォルダ（置くだけで取り込む）
+
+`IMPORT_DIR`（Docker では `/data/inbox`）の下に **取引所名のフォルダ** を作り、
+そこへ取引所からダウンロードした CSV / JSON を置くと、サーバーが 30 秒ごとに
+走査して台帳へ取り込みます。置く手段は問いません（Syncthing / rsync / Dropbox /
+手コピー / 自作スクリプトの書き出し先）。
+
+```
+/data/inbox/
+  bybit/        2025-01.csv …       ← source_id = bybit
+  gmo/          取引履歴.csv
+  nexo_auto/    main/  *.csv        ← 1 段下は別口座。source_id = main
+```
+
+- フォルダ名は Web のアップロード画面で選ぶ取引所キーと同じ（`bybit` `gmo` `pbr`
+  `nexo_auto` `bitflyer` `summ` `universal` …）。使える名前は画面の「置き方」か
+  `crypto-summary inbox status` で確認できる
+- **1 ファイル = 1 インポートバッチ。** 同じファイルを置き直しても二重にならず、
+  内容が変わっていれば旧バッチを消して入れ直す（取引所の訂正版をそのまま反映）。
+  フォルダから消したファイルのデータは残る（消すのは画面の「データを削除」か
+  `crypto-summary inbox forget`）
+- 置いてから 30 秒ほどは読まない（同期ツールが書き終わるのを待つ）
+- マルチユーザー（`DATA_DIR` 運用）では `IMPORT_DIR/<入口名>/<取引所>/` が利用者ごとの
+  入口。入口名はインポート画面に表示され、変更できる
+- 取り込みの状態（ファイルごとの取り込み済み / エラー / 消失）はインポート画面の
+  「取り込みフォルダ」カードに出る。管理者は同じカードから Syncthing の受信フォルダを
+  設定できる（送る側はフォルダ構成のまま送る）
+- CLI: `crypto-summary inbox status` / `inbox sync [--dry-run] [--watch]` / `inbox forget PATH`
+- 設計: [`docs/inbox-design.md`](./docs/inbox-design.md)
+
+> PBR Lending クローラーの出力は、当面は従来どおり `PBR_CRAWL_DIR` と「PBR Lending
+> クローラー同期」カードで取り込みます（複数ファイルをまとめて評価する必要があるため。
+> 設計書の第 2 段で取り込みフォルダに統合予定）。
+
 ### 取引所（API 直接取得）
 
 - **bitFlyer** / **Bybit** — `crypto-summary fetch` で取得（読み取り専用キー）。

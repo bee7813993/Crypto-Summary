@@ -394,6 +394,177 @@ def fetch_wallet_cmd(
 
 
 # ---------------------------------------------------------------------------
+# inbox (取り込みフォルダ)
+# ---------------------------------------------------------------------------
+
+@cli.group("inbox")
+def inbox_group() -> None:
+    """取り込みフォルダ（IMPORT_DIR/<取引所>/<ファイル>）を走査して台帳へ反映する。
+
+    置かれたファイルは 1 ファイル = 1 バッチとして取り込む。同じ内容なら何もせず、
+    内容が変わっていれば旧バッチを消して入れ直す。消えたファイルのデータは残す。
+    設計: docs/inbox-design.md
+    """
+
+
+def _inbox_root(dir_opt: Path | None) -> Path:
+    from .core import inbox as cs_inbox
+
+    root = cs_inbox.resolve_import_dir(dir_opt)
+    if root is None:
+        console.print(
+            f"[red]エラー:[/red] 取り込みフォルダが未設定です。"
+            f"--dir で指定するか、環境変数 {cs_inbox.IMPORT_DIR_ENV} を設定してください。"
+        )
+        raise click.Abort()
+    return root
+
+
+_INBOX_STATUS_STYLE = {
+    "imported": "green", "empty": "dim", "new": "cyan", "pending": "cyan",
+    "error": "red", "too_large": "red", "missing": "yellow", "deleted": "yellow",
+}
+
+
+def _print_inbox_report(report: dict) -> None:
+    if not report.get("exists", True):
+        console.print(f"[yellow]{report['root']} がありません。[/yellow]")
+        return
+    kind = "予定" if report.get("dry_run") else "結果"
+    console.print(
+        f"[bold]{kind}[/bold]  新規 {len(report['imported'])} / 入れ直し {len(report['replaced'])} / "
+        f"変更なし {report['unchanged']} / エラー {len(report['errors'])} / "
+        f"整定待ち {len(report['pending'])} / 消失 {len(report['missing'])}"
+    )
+    for p in report["imported"]:
+        console.print(f"  [green]+[/green] {p}")
+    for p in report["replaced"]:
+        console.print(f"  [green]↻[/green] {p}")
+    for e in report["errors"]:
+        console.print(f"  [red]✗[/red] {e['path']}: {e['message']}")
+    for p in report["pending"]:
+        console.print(f"  [cyan]…[/cyan] {p}（更新直後のため次回）")
+    for p in report["missing"]:
+        console.print(f"  [yellow]?[/yellow] {p}（ファイルが無くなりました。取引は残っています）")
+    for p in report.get("too_large", []):
+        console.print(f"  [red]![/red] {p}（大きすぎます）")
+    if report.get("unknown_folders"):
+        console.print(
+            f"  [yellow]対応外のフォルダ名:[/yellow] {', '.join(report['unknown_folders'])}"
+            "（crypto-summary inbox status で使える名前を確認）"
+        )
+    if report.get("reserved_folders"):
+        console.print(
+            f"  [yellow]{', '.join(report['reserved_folders'])}:[/yellow] "
+            "PBR クローラーは従来どおり sync-pbr（PBR_CRAWL_DIR）で取り込みます"
+        )
+    for p in report.get("root_files", []):
+        console.print(f"  [dim]無視:[/dim] {p}（取引所のフォルダの中に置いてください）")
+
+
+@inbox_group.command("status")
+@click.option("--dir", "dir_opt", default=None, type=click.Path(file_okay=False, path_type=Path),
+              help="取り込みフォルダ（省略時: 環境変数 IMPORT_DIR）")
+@click.pass_context
+def inbox_status_cmd(ctx: click.Context, dir_opt: Path | None) -> None:
+    """取り込みフォルダの状態（ファイルごとの取り込み状況）を表示する。"""
+    from .core import inbox as cs_inbox
+
+    root = _inbox_root(dir_opt)
+    st = cs_inbox.status(ctx.obj["db"], root)
+    console.print(f"取り込みフォルダ: [cyan]{root}[/cyan]" + ("" if st["exists"] else "  [yellow](まだありません)[/yellow]"))
+    console.print(f"使えるフォルダ名（取引所）: {', '.join(st['exchanges'])}")
+    if not st["files"]:
+        console.print("[dim]ファイルはありません。IMPORT_DIR/<取引所>/ に取引履歴を置いてください。[/dim]")
+    else:
+        table = Table(show_header=True, header_style="bold")
+        table.add_column("状態")
+        table.add_column("ファイル", overflow="fold")
+        table.add_column("取引所")
+        table.add_column("ソースID")
+        table.add_column("取引数", justify="right")
+        table.add_column("取り込み日時")
+        table.add_column("備考")
+        for f in st["files"]:
+            style = _INBOX_STATUS_STYLE.get(f["status"], "")
+            state = f["status"] + ("（更新あり）" if f.get("changed") else "")
+            table.add_row(
+                f"[{style}]{state}[/{style}]" if style else state,
+                f["path"], f["exchange"], f["source"],
+                "" if f.get("tx_count") is None else str(f["tx_count"]),
+                (f.get("imported_at") or "")[:16].replace("T", " "),
+                f.get("message") or "",
+            )
+        console.print(table)
+    if st["unknown_folders"]:
+        console.print(f"[yellow]対応外のフォルダ名:[/yellow] {', '.join(st['unknown_folders'])}")
+    if st["reserved_folders"]:
+        console.print(f"[yellow]{', '.join(st['reserved_folders'])}[/yellow] は sync-pbr で取り込みます")
+    for p in st["root_files"]:
+        console.print(f"[dim]無視:[/dim] {p}（取引所のフォルダの中に置いてください）")
+
+
+@inbox_group.command("sync")
+@click.option("--dir", "dir_opt", default=None, type=click.Path(file_okay=False, path_type=Path),
+              help="取り込みフォルダ（省略時: 環境変数 IMPORT_DIR）")
+@click.option("--dry-run", is_flag=True, default=False, help="取り込まず、予定だけ表示する")
+@click.option("--retry", "retry_paths", multiple=True, metavar="PATH",
+              help="内容が同じでも入れ直すファイル（入口からの相対パス。複数可）")
+@click.option("--watch", is_flag=True, default=False, help="常駐して繰り返し走査する")
+@click.option("--interval", default=None, type=int, metavar="SEC",
+              help="--watch の間隔（省略時: 環境変数 INBOX_POLL_SECONDS、既定 30）")
+@click.pass_context
+def inbox_sync_cmd(
+    ctx: click.Context, dir_opt: Path | None, dry_run: bool,
+    retry_paths: tuple[str, ...], watch: bool, interval: int | None,
+) -> None:
+    """取り込みフォルダを走査し、必要なファイルだけ取り込む。"""
+    import time as _time
+
+    from .core import inbox as cs_inbox
+
+    root = _inbox_root(dir_opt)
+    db = ctx.obj["db"]
+    every = interval if interval is not None else (cs_inbox.poll_seconds() or cs_inbox.DEFAULT_POLL_SECONDS)
+    while True:
+        report = cs_inbox.sync_inbox(db, root, dry_run=dry_run, retry=set(retry_paths))
+        _print_inbox_report(report)
+        if not watch or dry_run:
+            break
+        retry_paths = ()
+        try:
+            _time.sleep(max(1, every))
+        except KeyboardInterrupt:
+            break
+
+
+@inbox_group.command("forget")
+@click.argument("path")
+@click.option("--dir", "dir_opt", default=None, type=click.Path(file_okay=False, path_type=Path),
+              help="取り込みフォルダ（省略時: 環境変数 IMPORT_DIR）")
+@click.option("--yes", "-y", is_flag=True, default=False, help="確認プロンプトをスキップ")
+@click.pass_context
+def inbox_forget_cmd(ctx: click.Context, path: str, dir_opt: Path | None, yes: bool) -> None:
+    """そのファイル由来の取引を台帳から削除する（ファイル自体は触らない）。
+
+    ファイルがまだフォルダにあれば「削除済み」として記録し、次の走査で入れ直さない。
+    """
+    from .core import inbox as cs_inbox
+
+    root = _inbox_root(dir_opt)
+    if not yes and not click.confirm(f"{path} 由来の取引を削除します。よろしいですか？"):
+        console.print("[dim]キャンセルしました。[/dim]")
+        return
+    result = cs_inbox.forget_file(ctx.obj["db"], path, root)
+    if not result["ok"]:
+        console.print(f"[red]{result.get('message')}[/red]")
+        raise click.Abort()
+    console.print(f"[green]✓[/green] {result['deleted']} 件を削除しました。")
+    if result.get("kept_row"):
+        console.print("[dim]ファイルはフォルダに残っています。入れ直すには crypto-summary inbox sync --retry PATH[/dim]")
+
+
+# ---------------------------------------------------------------------------
 # add (手動でトランザクションを1件追加)
 # ---------------------------------------------------------------------------
 

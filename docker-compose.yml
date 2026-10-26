@@ -68,6 +68,10 @@ services:
       # PBR Lending クローラー連携（上の volume を有効にした場合）
       - PBR_CRAWL_DIR=${PBR_CRAWL_DIR:-}
       - PBR_VIEWER_URL=${PBR_VIEWER_URL:-}
+      # 取り込みフォルダ。./data/inbox/<取引所>/ にファイルを置くと取り込まれる。
+      # マルチユーザーでは ./data/inbox/<入口名>/<取引所>/。
+      - IMPORT_DIR=${IMPORT_DIR:-/data/inbox}
+      - INBOX_POLL_SECONDS=${INBOX_POLL_SECONDS:-30}
       # ファイル同期の相手登録（Syncthing）。設定するとインポート画面から
       # 同期相手を登録できる（管理者のみ）。
       #
