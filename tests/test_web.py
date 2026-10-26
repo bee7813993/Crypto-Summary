@@ -495,7 +495,7 @@ def test_wallet_register_explicit_chain_overrides_autodetect(client):
 
 def test_wallet_register_rejects_unknown_chain(client):
     r = client.post("/api/wallets",
-                    json={"address": "0x" + "d" * 40, "chain": "bitcoin"})
+                    json={"address": "0x" + "d" * 40, "chain": "dogecoin"})
     assert r.status_code == 422
 
 
@@ -506,8 +506,10 @@ def test_wallet_register_rejects_unknown_chain(client):
     ("0x" + "a" * 41, "EVM アドレスに 1 文字余分"),
     ("0x" + "a" * 65, "16進として長すぎる"),
     ("0xZZZZ", "16進でない"),
-    ("bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4", "対応外チェーンのアドレス"),
-    ("1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa", "base58 だが 25 バイト（Bitcoin）"),
+    ("tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx", "Bitcoin testnet のアドレス"),
+    ("1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNb", "Bitcoin アドレスのチェックサム不一致（1 文字違い）"),
+    ("bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t5", "bech32 のチェックサム不一致"),
+    ("DH5yaieqoZN36fDVciNyRueRGvGLR3mr7L", "Dogecoin（base58check だがバージョン違い）"),
 ])
 def test_wallet_register_rejects_undetectable_address(client, address, why):
     """判定できないアドレスは Solana に落とさず 422 で弾く。
@@ -814,6 +816,107 @@ def test_wallet_sync_aptos_uses_env_key(client, monkeypatch):
 
     assert client.post("/api/wallets/apt2/sync").status_code == 200
     assert used_keys == ["APTKEY"]
+
+
+# ---- Bitcoin ----
+
+BTC_ADDR = "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4"
+BTC_ZPUB = ("zpub6rFR7y4Q2AijBEqTUquhVz398htDFrtymD9xYYfG1m4wAcvPhXNfE3EfH1r1ADqtfSdVCToUG868"
+            "RvUUkgDKf31mGDtKsAYz2oz2AGutZYs")
+BTC_XPRV = ("xprv9s21ZrQH143K3QTDL4LXw2F7HEK3wJUD2nW2nRk4stbPy6cq3jPPqjiChkVvvNKmPGJxWUtg6LnF5kej"
+            "MRNNU3TGtRBeJgk33yuGBxrMPHi")
+
+
+@pytest.mark.parametrize("address", [
+    "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa",
+    "3J98t1WpEZ73CNmQviecrnyiWrnqRhWNLy",
+    BTC_ADDR,
+    "bc1p5cyxnuxmeuwuvkwfem96lqzszd02n6xdcjrs20cac6yqjjwudpxqkedrcr",
+])
+def test_wallet_register_bitcoin_address_autodetect(client, address):
+    r = client.post("/api/wallets", json={"address": address})
+    assert r.status_code == 200, r.text
+    d = r.json()
+    assert d["chain"] == "bitcoin"
+    assert d["chain_label"] == "Bitcoin"
+    assert d["source_id"].startswith("bitcoin_")
+
+
+def test_wallet_register_bitcoin_xpub_autodetect(client):
+    """Self-custody ウォレットの拡張公開鍵は Bitcoin と判定され、種別がラベルに出る。"""
+    r = client.post("/api/wallets", json={"address": BTC_ZPUB})
+    assert r.status_code == 200, r.text
+    d = r.json()
+    assert d["chain"] == "bitcoin"
+    assert d["chain_label"] == "Bitcoin（zpub）"
+    assert d["source_id"] == "bitcoin_zpub6rfr"
+    listed = client.get("/api/wallets").json()["wallets"]
+    assert listed[0]["chain_label"] == "Bitcoin（zpub）"
+
+
+def test_wallet_register_bitcoin_descriptor_names_after_key(client):
+    desc = f"wpkh([d34db33f/84h/0h/0h]{BTC_ZPUB}/<0;1>/*)"
+    r = client.post("/api/wallets", json={"address": desc})
+    assert r.status_code == 200, r.text
+    assert r.json()["source_id"] == "bitcoin_zpub6rfr"
+
+
+def test_wallet_register_rejects_xprv_loudly(client):
+    """秘密鍵は「形式が違う」ではなく、秘密鍵だと明言して拒否する。"""
+    r = client.post("/api/wallets", json={"address": BTC_XPRV})
+    assert r.status_code == 422
+    assert "秘密" in r.json()["detail"]
+    r = client.post("/api/wallets", json={"address": BTC_XPRV, "chain": "bitcoin"})
+    assert r.status_code == 422
+    assert "秘密" in r.json()["detail"]
+
+
+def test_wallet_register_explicit_bitcoin_validates_format(client):
+    r = client.post("/api/wallets", json={"address": SOLANA_ADDR, "chain": "bitcoin"})
+    assert r.status_code == 422
+    assert "Bitcoin" in r.json()["detail"]
+
+
+def test_wallet_sync_bitcoin_uses_esplora_and_returns_warnings(client, monkeypatch):
+    client.post("/api/wallets", json={"address": BTC_ADDR, "source_id": "btc1"})
+
+    created = []
+
+    class FakeEsplora:
+        def __init__(self, source_id, wallet, base_url=None):
+            created.append((source_id, wallet))
+            self.warnings = []
+
+        def fetch_all(self, record_gas=True):
+            self.warnings.append("単一アドレスの登録です")
+            return [_deposit("btc1", "BTC", "0.5", 1)]
+
+    import crypto_summary.sources.bitcoin.esplora as esp
+    monkeypatch.setattr(esp, "EsploraSource", FakeEsplora)
+
+    r = client.post("/api/wallets/btc1/sync")
+    assert r.status_code == 200, r.text
+    d = r.json()
+    assert created == [("btc1", BTC_ADDR)]
+    assert d["fetched"] == 1 and d["imported"] == 1
+    assert d["warnings"] == ["単一アドレスの登録です"]
+
+
+def test_wallet_sync_bitcoin_api_error_is_502(client, monkeypatch):
+    client.post("/api/wallets", json={"address": BTC_ZPUB, "source_id": "btc2"})
+
+    class FakeEsplora:
+        def __init__(self, source_id, wallet, base_url=None):
+            self.warnings = []
+
+        def fetch_all(self, record_gas=True):
+            raise RuntimeError("boom")
+
+    import crypto_summary.sources.bitcoin.esplora as esp
+    monkeypatch.setattr(esp, "EsploraSource", FakeEsplora)
+    r = client.post("/api/wallets/btc2/sync")
+    assert r.status_code == 502
+    assert "Esplora" in r.json()["detail"]
 
 
 def test_sync_all_empty(client):

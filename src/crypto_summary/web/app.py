@@ -37,6 +37,7 @@ from ..sinks.summ_csv import _SUMM_HEADERS as _SUMM_CSV_HEADERS
 from ..sinks.summ_csv import link_nexo_transfers, to_summ_csv_string
 from ..sinks.summ_csv import to_summ_rows as _to_summ_rows_inner
 from ..sources.api.bybit import BybitApiSource
+from ..sources.bitcoin.keys import is_bitcoin_wallet, parse_wallet_spec
 from ..sources.csv_import import EXCHANGE_SOURCES
 from ..sources.jp.pbr_crawl import (
     ENV_VAR as _PBR_CRAWL_ENV,
@@ -1346,6 +1347,7 @@ _WALLET_CHAIN_LABELS: dict[str, str] = {
     "evm": "EVM（Ethereum / Arbitrum / Polygon / Base / Optimism）",
     "solana": "Solana",
     "aptos": "Aptos",
+    "bitcoin": "Bitcoin",
 }
 
 # 登録時に明示指定できるチェーン（未指定ならアドレスから自動判定）
@@ -1490,11 +1492,17 @@ def _is_solana_address(address: str) -> bool:
     return leading_zeros + body_len == 32
 
 
+# Bitcoin: 単一アドレス（1… / 3… / bc1…）か、Self-custody ウォレットの拡張公開鍵
+# （xpub / ypub / zpub、またはそれを包んだディスクリプタ）。チェックサムまで検証する。
+# xprv（秘密鍵）は形式が似ているが登録させない（_register_wallet で明示的に弾く）。
+_is_bitcoin_wallet = is_bitcoin_wallet
+
 # チェーン名 → そのチェーンのアドレスとして妥当かを判定する関数
 _WALLET_CHAIN_VALIDATORS = {
     "evm": _is_evm_address,
     "aptos": _is_aptos_address,
     "solana": _is_solana_address,
+    "bitcoin": _is_bitcoin_wallet,
 }
 
 # エラーメッセージ用の短いチェーン名（_WALLET_CHAIN_LABELS は EVM が長すぎて読みにくい）
@@ -1502,14 +1510,44 @@ _WALLET_CHAIN_SHORT_NAMES: dict[str, str] = {
     "evm": "EVM",
     "aptos": "Aptos",
     "solana": "Solana",
+    "bitcoin": "Bitcoin",
 }
 
 # 登録を弾いたときに返す形式の説明（コピペ時の欠落・打ち間違いに気づけるように）
 _WALLET_ADDRESS_FORMAT_HINT = (
     "対応形式は EVM が 0x + 16進40桁、Aptos が 0x + 16進64桁、"
-    "Solana が base58 32〜44文字です。"
+    "Solana が base58 32〜44文字、"
+    "Bitcoin が 1… / 3… / bc1… のアドレスまたは xpub / ypub / zpub です。"
     "コピー漏れや余分な文字が混じっていないか確認してください。"
 )
+
+_XPRV_PREFIXES = ("xprv", "yprv", "zprv")
+
+
+def _wallet_short_name(chain: str, address: str) -> str:
+    """source_id 未指定時の自動生成名。
+
+    Bitcoin のディスクリプタ（wpkh([fp/84h/0h/0h]zpub…)）は記号から始まるので、
+    中の拡張公開鍵の先頭を使う。
+    """
+    if chain == "bitcoin":
+        m = re.search(r"[xyz]pub[1-9A-HJ-NP-Za-km-z]{4,}", address)
+        if m:
+            return f"{chain}_{m.group(0)[:8].lower()}"
+    return f"{chain}_{address[:8].lower()}"
+
+
+def _wallet_chain_label(chain: str, address: str) -> str:
+    """一覧・登録結果に出すチェーン名。Bitcoin は xpub 登録かどうかも添える。"""
+    label = _WALLET_CHAIN_LABELS.get(chain, chain)
+    if chain == "bitcoin":
+        try:
+            spec = parse_wallet_spec(address)
+        except ValueError:
+            spec = None
+        if spec is not None and spec.kind == "xpub" and spec.key is not None:
+            return f"{label}（{spec.key.prefix}）"
+    return label
 
 
 def _detect_wallet_chain(address: str) -> str | None:
@@ -1517,6 +1555,7 @@ def _detect_wallet_chain(address: str) -> str | None:
 
       - 0x + 16進40桁 → EVM（20バイト）
       - 0x + 16進56〜64桁 → Aptos（32バイト、上位ゼロ省略込み）
+      - Bitcoin のアドレス / 拡張公開鍵としてチェックサムが合う → Bitcoin
       - base58 で 32 バイトにデコードできる → Solana
 
     どれにも当てはまらない文字列（桁落ち・打ち間違い・別チェーンのアドレス）は
@@ -1533,6 +1572,10 @@ def _detect_wallet_chain(address: str) -> str | None:
     body = _hex_body(address)
     if body is not None:
         return "aptos" if _APTOS_HEX_MIN_AUTO <= len(body) <= _APTOS_HEX_LEN else None
+    # Bitcoin はチェックサム付きなので Solana（チェックサム無し）より先に見る。
+    # base58 の Bitcoin アドレスは 25 バイト、xpub は 82 バイトで Solana の 32 バイトとは重ならない。
+    if _is_bitcoin_wallet(address):
+        return "bitcoin"
     if _is_solana_address(address):
         return "solana"
     return None
@@ -1547,7 +1590,7 @@ def _list_wallets(db_path: str) -> dict:
     finally:
         ledger.close()
     for w in wallets:
-        w["chain_label"] = _WALLET_CHAIN_LABELS.get(w["chain"], w["chain"])
+        w["chain_label"] = _wallet_chain_label(w["chain"], w["address"])
         rng = ranges.get(w["source_id"])
         w["last_tx_ts"] = rng[1] if rng else None
     return {"wallets": wallets}
@@ -1563,6 +1606,16 @@ def _register_wallet(db_path: str, body: dict[str, Any]) -> dict:
 
     if not address:
         raise HTTPException(status_code=422, detail="ウォレットアドレスを入力してください")
+    if address[:4].lower() in _XPRV_PREFIXES:
+        # 形式検証に落とすと「形式が違う」としか言えない。秘密鍵が貼られたことを
+        # はっきり伝え、公開鍵（xpub）を書き出し直すよう促す。
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "拡張【秘密】鍵（xprv / yprv / zprv）が入力されました。絶対に登録しないでください。"
+                "ウォレットの「拡張公開鍵（xpub / ypub / zpub）」を書き出して登録してください。"
+            ),
+        )
 
     # chain 明示指定は自動判定より優先する（0x 系で判別を外した場合の救済）。
     # ただし指定チェーンのアドレス形式として妥当かは確認する。
@@ -1594,7 +1647,7 @@ def _register_wallet(db_path: str, body: dict[str, Any]) -> dict:
             )
     if not source_id:
         # 表示名未指定ならアドレス先頭から自動生成
-        source_id = f"{chain}_{address[:8].lower()}"
+        source_id = _wallet_short_name(chain, address)
 
     store = SecretStore(db_path)
     try:
@@ -1606,7 +1659,7 @@ def _register_wallet(db_path: str, body: dict[str, Any]) -> dict:
         raise HTTPException(status_code=500, detail=str(e))
 
     return {"ok": True, "source_id": source_id, "chain": chain,
-            "chain_label": _WALLET_CHAIN_LABELS.get(chain, chain)}
+            "chain_label": _wallet_chain_label(chain, address)}
 
 
 def _delete_wallet(db_path: str, source_id: str) -> dict:
@@ -1665,6 +1718,21 @@ def _sync_wallet(db_path: str, source_id: str, system_db: str | None = None) -> 
             txs = HeliusApiSource(source_id, address, key).fetch_all(record_gas=True)
         except Exception as e:  # noqa: BLE001
             raise HTTPException(status_code=502, detail=f"Helius API エラー: {e}")
+    elif chain == "bitcoin":
+        from ..sources.bitcoin.esplora import EsploraSource
+
+        # Esplora 互換 API（既定 mempool.space）。API キー不要・匿名の読み取りのみ。
+        # 自前ノードに向けたいときは環境変数 BITCOIN_ESPLORA_URL で差し替える。
+        try:
+            adapter = EsploraSource(source_id, address)
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e))
+        try:
+            txs = adapter.fetch_all(record_gas=True)
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(status_code=502, detail=f"Esplora API エラー: {e}")
+        # 単一アドレス登録でおつりが外へ出た疑い / xpub に取引が無い、などの注意書き
+        warnings.extend(adapter.warnings)
     elif chain == "aptos":
         from ..sources.aptos.indexer import AptosIndexerSource
 

@@ -247,12 +247,13 @@ def import_wallet_cmd(
 @click.option(
     "--chain", required=True,
     type=click.Choice([
-        "ethereum", "arbitrum", "polygon", "base", "optimism", "solana", "aptos",
+        "ethereum", "arbitrum", "polygon", "base", "optimism", "solana", "aptos", "bitcoin",
     ]),
-    help="取得するチェーン（EVM 5種 + solana / aptos）",
+    help="取得するチェーン（EVM 5種 + solana / aptos / bitcoin）",
 )
 @click.option("--wallet", "wallet_address", required=True,
-              help="ウォレットアドレス（EVM: 0x...40桁 / Solana: base58 / Aptos: 0x...64桁）")
+              help=("ウォレットアドレス（EVM: 0x...40桁 / Solana: base58 / Aptos: 0x...64桁 / "
+                    "Bitcoin: 1… 3… bc1… のアドレスまたは xpub / ypub / zpub）"))
 @click.option("--source-id", default=None, help="ソース識別子（デフォルト: chain名）")
 @click.option(
     "--api-key", default=None, envvar="ETHERSCAN_API_KEY",
@@ -282,9 +283,11 @@ def fetch_wallet_cmd(
     """取引履歴を API で取得して ledger に保存する。
 
     EVM チェーン（Etherscan V2 API）/ Solana（Helius API）/
-    Aptos（Aptos Indexer GraphQL）に対応。
+    Aptos（Aptos Indexer GraphQL）/ Bitcoin（Esplora 互換 API）に対応。
     APIキーはいずれも読み取り専用で出金権限は不要。
     Aptos のみキーは任意（未設定だと匿名レート制限がかかる）。
+    Bitcoin はキー不要（既定 mempool.space。BITCOIN_ESPLORA_URL で差し替え可）。
+    Self-custody ウォレットは xpub / ypub / zpub を渡すと全アドレスを追跡する。
 
     \b
     EVM 例:
@@ -296,10 +299,21 @@ def fetch_wallet_cmd(
     Aptos 例:
       crypto-summary fetch-wallet --chain aptos \\
           --wallet 0xABC...（64桁） --source-id my_aptos
+    Bitcoin 例:
+      crypto-summary fetch-wallet --chain bitcoin \\
+          --wallet zpub6r... --source-id my_coldcard
     """
     sid = source_id or chain
 
-    if chain == "solana":
+    if chain == "bitcoin":
+        from .sources.bitcoin.esplora import EsploraSource
+
+        try:
+            adapter = EsploraSource(sid, wallet_address)
+        except ValueError as e:
+            console.print(f"[red]エラー:[/red] {e}")
+            raise click.Abort()
+    elif chain == "solana":
         from .sources.solana.helius import HeliusApiSource
 
         key = helius_api_key
@@ -350,6 +364,9 @@ def fetch_wallet_cmd(
     except Exception as e:
         console.print(f"[red]API エラー:[/red] {e}")
         raise click.Abort()
+
+    for warning in getattr(adapter, "warnings", []):
+        console.print(f"[yellow]注意:[/yellow] {warning}")
 
     if not txs:
         console.print("[yellow]取引が見つかりませんでした。[/yellow]")

@@ -21,15 +21,24 @@ API キーの登録方法は2通りあります。
   1. 取引所・ソースID（口座の表示名）・API キー・シークレットを入力
   2. 「登録して暗号化保存」を押す
   3. 登録済み一覧の「同期」ボタンでいつでも取得できる
-- **「ウォレットアドレス」タブ** — EVM / Solana / Aptos ウォレットを登録
-  1. （管理者のみ）「システム設定」で Etherscan / Helius / Aptos のスキャン用キーを登録
+- **「ウォレットアドレス」タブ** — EVM / Solana / Aptos / Bitcoin ウォレットを登録
+  1. （管理者のみ）「システム設定」で Etherscan / Helius / Aptos のスキャン用キーを登録（Bitcoin は不要）
   2. ウォレットアドレスを入力（秘密鍵は不要・絶対に入力しないこと）して「登録」
   3. 一覧の「同期」ボタンで取得
 
   > チェーンはアドレスの形式（EVM は 0x + 16進40桁、Aptos は 0x + 16進64桁、
-  > Solana は base58 32〜44文字）から自動判定します。どれにも当てはまらない
+  > Solana は base58 32〜44文字、Bitcoin は 1… / 3… / bc1… のアドレスまたは
+  > xpub / ypub / zpub）から自動判定します。どれにも当てはまらない
   > アドレスは登録時に弾くので、コピー漏れはその場で気づけます。
   > 形式が特殊で判定できないアドレスは「チェーン」欄で明示指定してください。
+
+  > **Bitcoin の Self-custody ウォレット**（Ledger / Trezor / Coldcard / Sparrow / BlueWallet 等）は、
+  > 単一アドレスではなく **拡張公開鍵（xpub / ypub / zpub）** を登録してください。
+  > おつりが新しいアドレスへ戻るため、1 アドレスだけでは残高が合いません。
+  > 書き出し方はウォレットごとに「アカウントの xpub をエクスポート」「Export extended public key」
+  > などのメニューにあります。xpub の種類（zpub = Native SegWit、ypub = Nested SegWit、
+  > xpub = Legacy または Taproot）は自動判定し、xpub は 4 種類すべてのアドレスを走査します。
+  > **xprv / yprv / zprv（秘密鍵）は絶対に入力しないでください**（登録時に拒否します）。
 
 ### スキャン用キー（Etherscan / Helius / Aptos）はシステム共通設定
 
@@ -96,6 +105,7 @@ cp .env.example .env
 | EVM ウォレット取得 | `ETHERSCAN_API_KEY` | EVM ウォレットを使うなら（Web 登録なら不要） | Etherscan |
 | Solana ウォレット取得 | `HELIUS_API_KEY` | Solana ウォレットを使うなら（Web 登録なら不要） | Helius |
 | Aptos ウォレット取得 | `APTOS_API_KEY` | 任意（未設定でも同期できるがレート制限が厳しい） | Aptos Build |
+| Bitcoin ウォレット取得 | `BITCOIN_ESPLORA_URL` | 不要（既定 mempool.space。自前ノードに向けるときだけ） | — |
 | bitFlyer API 取得 | `BITFLYER_API_KEY` / `BITFLYER_API_SECRET` | bitFlyer を使うなら（Web 登録なら不要） | bitFlyer |
 | Bybit API 取得 | `BYBIT_API_KEY` / `BYBIT_API_SECRET` | Bybit を使うなら（Web 登録なら不要） | Bybit |
 | 価格取得の高速化 | `COINGECKO_API_KEY` | 任意（推奨） | CoinGecko |
