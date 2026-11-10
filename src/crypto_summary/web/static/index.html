@@ -919,6 +919,52 @@
           <p class="settings-hint hidden" id="prefs-empty" data-i18n="prefs.none">切り替えられる設定はありません。</p>
           <div id="prefs-result" class="settings-result hidden"></div>
         </section>
+
+        <!-- AI エージェント連携（MCP） -->
+        <section class="card import-section hidden" id="mcp-section">
+          <h2 data-i18n="mcp.title">AI エージェント連携（MCP）</h2>
+          <p class="card-hint" data-i18n="mcp.hint">Claude・Codex・Gemini・Cursor など MCP に対応した AI エージェントから、この台帳を読み取り専用で参照できます。エージェントごとに接続トークンを発行し、設定に書いてください。</p>
+          <div class="settings-row">
+            <label class="settings-label" data-i18n="mcp.endpoint">接続先 URL</label>
+            <div class="mcp-copy-row">
+              <code id="mcp-endpoint" class="mcp-code"></code>
+              <button type="button" class="tx-link-btn" id="mcp-endpoint-copy" data-i18n="mcp.copy">コピー</button>
+            </div>
+            <p class="settings-hint" data-i18n="mcp.endpointHint">エージェントを動かす PC から見た URL です。同じ PC なら http://127.0.0.1:ポート/mcp でもつながります。</p>
+          </div>
+          <div class="settings-row">
+            <label class="settings-label" for="mcp-label" data-i18n="mcp.label">名前（どのエージェント用か）</label>
+            <div class="mcp-copy-row">
+              <input id="mcp-label" class="settings-input" type="text" maxlength="60" style="flex:1 1 240px;max-width:320px"
+                data-i18n-placeholder="mcp.labelPlaceholder" placeholder="例: Codex CLI（ノート PC）" autocomplete="off" />
+              <button type="button" id="mcp-issue-btn" class="settings-save-btn" data-i18n="mcp.issue">トークンを発行</button>
+            </div>
+          </div>
+          <div id="mcp-new-token" class="mcp-new-token hidden">
+            <p class="settings-hint" data-i18n="mcp.newTokenHint">このトークンは今だけ表示されます。閉じる前にエージェントの設定へ貼り付けてください。</p>
+            <div class="mcp-copy-row">
+              <code id="mcp-new-token-value" class="mcp-code"></code>
+              <button type="button" class="tx-link-btn" id="mcp-new-token-copy" data-i18n="mcp.copy">コピー</button>
+            </div>
+            <p class="settings-hint" data-i18n="mcp.exampleHint">設定の例（Claude Code）。他のエージェントの書き方は docs/mcp.md にあります。</p>
+            <pre class="mcp-example" id="mcp-example"></pre>
+          </div>
+          <div id="mcp-result" class="settings-result hidden"></div>
+          <div class="table-wrap">
+            <table id="mcp-tokens-table">
+              <thead>
+                <tr>
+                  <th data-i18n="mcp.thLabel">名前</th>
+                  <th data-i18n="mcp.thHint">末尾</th>
+                  <th data-i18n="mcp.thCreated">発行日時</th>
+                  <th data-i18n="mcp.thLastUsed">最終利用</th>
+                  <th data-i18n="th.action">操作</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </section>
       </div>
 
       <!-- 管理者設定ページ -->

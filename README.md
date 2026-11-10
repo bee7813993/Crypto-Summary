@@ -13,6 +13,7 @@
 - 💱 **マルチ通貨表示** — USD / JPY / EUR / GBP（日本円は「億万千円」表示にも対応）
 - 🧾 **確定申告用エクスポート** — 年・口座を指定して Cryptact / Koinly 形式の CSV を出力
 - 🔐 **マルチユーザー対応** — Google OAuth ログインでユーザーごとにデータを分離（Docker 運用時）
+- 🤖 **AI エージェント連携（MCP）** — Claude・Codex・Gemini・Cursor など MCP 対応のエージェントから台帳を読み取り専用で参照（[`docs/mcp.md`](./docs/mcp.md)）
 - 🌐 **日英 i18n / ダークモード / 金額マスクモード**
 - 🪙 **暗号資産アイコン表示**（CoinGecko 画像）
 
@@ -426,6 +427,7 @@ Railway / 小さな VM）を選び、インスタンスは 1 台に固定しま�
   - 例：bitFlyer は「資産残高を見る」「取引履歴を見る」のみ
 - シークレットは `.env` / 環境変数 に保存し、**リポジトリには絶対に含めないこと**（`.env` は `.gitignore` 済み）。
 - API キーを暗号化保存する場合は `crypto-summary account gen-key` でマスター鍵を生成して `.env` の `CS_SECRET_KEY` に設定します。
+- AI エージェント用の MCP 接続トークンは、エージェントごとに発行し、使わなくなったら Web 画面で失効させてください。MCP から行えるのは読み取りだけです。
 
 ---
 
@@ -441,6 +443,7 @@ pytest --cov=crypto_summary
 
 - プロジェクト設計: [`DESIGN.md`](./DESIGN.md)
 - 読み取り専用 API（Asset Summary 連携）: [`docs/api.md`](./docs/api.md)
+- AI エージェント連携（MCP）: [`docs/mcp.md`](./docs/mcp.md)
 - コマンドリファレンス: [`docs/commands.md`](./docs/commands.md)
 - API キーのセットアップ: [`docs/api-keys.md`](./docs/api-keys.md)
 - PBR Lending 連携のセットアップ: [`docs/pbr-setup.md`](./docs/pbr-setup.md)

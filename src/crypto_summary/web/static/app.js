@@ -2388,6 +2388,9 @@ async function loadImportPage() {
   loadApiAccountsTable();
   loadWalletsTable();
   loadPrefs();
+  // 発行直後のトークンは、ページを離れて戻ったら出し続けない（画面に残さない）
+  document.getElementById("mcp-new-token")?.classList.add("hidden");
+  loadMcpTokens();
   loadPbrSyncStatus();
   loadInboxStatus({ autoSync: true });
 }
@@ -3209,6 +3212,163 @@ document.getElementById("prefs-pbr-sync")?.addEventListener("change", (ev) => {
   const box = ev.currentTarget;
   // 連携カードとナビの表示が変わるので状態を取り直す
   _savePref("pbr_sync_enabled", box.checked, box, () => loadPbrSyncStatus());
+});
+
+// ---- AI エージェント連携（MCP） -------------------------------------------
+//
+// エージェントごとに接続トークンを発行し、/mcp へ Authorization: Bearer で
+// 送ってもらう。平文のトークンは発行した直後の応答にしか無い（サーバーは
+// ハッシュだけを持つ）ので、その場で見せてコピーしてもらう。
+
+function _mcpEndpoint() {
+  return apiUrl("/mcp");
+}
+
+function _mcpResult(ok, text) {
+  const result = document.getElementById("mcp-result");
+  if (!result) return;
+  result.className = "settings-result " + (ok ? "ok" : "err");
+  result.textContent = text;
+  result.classList.remove("hidden");
+}
+
+// クリップボードへ書く。navigator.clipboard は https か localhost でしか使えない
+// ため、http の公開 URL で開いたときは選択してコピーする古い方法に倒す。
+async function _copyText(text) {
+  if (navigator.clipboard && window.isSecureContext) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch (e) {
+      // 下の方法を試す
+    }
+  }
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.setAttribute("readonly", "");
+  ta.style.position = "fixed";
+  ta.style.opacity = "0";
+  document.body.appendChild(ta);
+  ta.select();
+  let ok = false;
+  try {
+    ok = document.execCommand("copy");
+  } catch (e) {
+    ok = false;
+  }
+  ta.remove();
+  return ok;
+}
+
+async function _copyFrom(button, text) {
+  const ok = await _copyText(text);
+  const original = button.textContent;
+  button.textContent = ok ? t("mcp.copied") : original;
+  if (!ok) _mcpResult(false, t("mcp.copyFail"));
+  setTimeout(() => { button.textContent = original; }, 1500);
+}
+
+async function loadMcpTokens() {
+  const section = document.getElementById("mcp-section");
+  const tbody = document.querySelector("#mcp-tokens-table tbody");
+  if (!section || !tbody) return;
+  let data;
+  try {
+    data = await fetchJSON("/api/mcp/tokens");
+  } catch (e) {
+    section.classList.add("hidden");
+    return;
+  }
+  // mcp パッケージの無い古い環境では受け口が無いので、カードごと出さない
+  section.classList.toggle("hidden", !data.available);
+  if (!data.available) return;
+  document.getElementById("mcp-endpoint").textContent = _mcpEndpoint();
+
+  const tokens = data.tokens || [];
+  if (tokens.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="5" class="muted">${t("mcp.none")}</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = "";
+  tokens.forEach((tok) => {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td>${escapeHtml(tok.label)}</td>
+      <td style="white-space:nowrap"><code class="mcp-code" style="overflow-wrap:normal">…${escapeHtml(tok.hint || "")}</code></td>
+      <td style="white-space:nowrap">${escapeHtml(tok.created_at ? fmtDate(tok.created_at) : "-")}</td>
+      <td style="white-space:nowrap">${escapeHtml(tok.last_used_at ? fmtDate(tok.last_used_at) : t("mcp.neverUsed"))}</td>
+      <td><button type="button" class="tx-link-btn" style="border-color:#5a2a2a">${t("mcp.revoke")}</button></td>
+    `;
+    tr.querySelector("button").addEventListener("click", () => _revokeMcpToken(tok));
+    tbody.appendChild(tr);
+  });
+}
+
+function _showNewMcpToken(token) {
+  const box = document.getElementById("mcp-new-token");
+  document.getElementById("mcp-new-token-value").textContent = token;
+  document.getElementById("mcp-example").textContent =
+    `claude mcp add --transport http cryptosummary ${_mcpEndpoint()} ` +
+    `--header "Authorization: Bearer ${token}" --scope user`;
+  box.classList.remove("hidden");
+}
+
+async function _issueMcpToken() {
+  const input = document.getElementById("mcp-label");
+  const btn = document.getElementById("mcp-issue-btn");
+  const label = input.value.trim();
+  if (!label) {
+    _mcpResult(false, t("mcp.labelRequired"));
+    input.focus();
+    return;
+  }
+  btn.disabled = true;
+  try {
+    const resp = await fetch(apiUrl("/api/mcp/tokens"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ label }),
+    });
+    const d = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error(d.detail || `HTTP ${resp.status}`);
+    input.value = "";
+    _showNewMcpToken(d.token);
+    _mcpResult(true, t("mcp.issued", { label: d.record.label }));
+    await loadMcpTokens();
+  } catch (e) {
+    _mcpResult(false, t("mcp.issueFail", { error: e.message }));
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function _revokeMcpToken(tok) {
+  if (!confirm(t("mcp.revokeConfirm", { label: tok.label }))) return;
+  try {
+    const resp = await fetch(apiUrl(`/api/mcp/tokens/${encodeURIComponent(tok.id)}`), {
+      method: "DELETE",
+    });
+    const d = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error(d.detail || `HTTP ${resp.status}`);
+    _mcpResult(true, t("mcp.revoked", { label: tok.label }));
+    await loadMcpTokens();
+  } catch (e) {
+    _mcpResult(false, t("mcp.revokeFail", { error: e.message }));
+  }
+}
+
+document.getElementById("mcp-issue-btn")?.addEventListener("click", _issueMcpToken);
+document.getElementById("mcp-label")?.addEventListener("keydown", (ev) => {
+  if (ev.key === "Enter") {
+    ev.preventDefault();
+    _issueMcpToken();
+  }
+});
+document.getElementById("mcp-endpoint-copy")?.addEventListener("click", (ev) => {
+  _copyFrom(ev.currentTarget, _mcpEndpoint());
+});
+document.getElementById("mcp-new-token-copy")?.addEventListener("click", (ev) => {
+  _copyFrom(ev.currentTarget, document.getElementById("mcp-new-token-value").textContent);
 });
 
 // 管理者設定ページ: スキャン用キーのステータスを管理者設定ページに反映する。
