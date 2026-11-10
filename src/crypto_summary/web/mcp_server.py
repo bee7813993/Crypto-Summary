@@ -113,7 +113,7 @@ class _BearerGate:
                         "error": "invalid_token",
                         "error_description": (
                             "Crypto-Summary の MCP 接続トークンが必要です。"
-                            "インポート画面の「AI エージェント連携（MCP）」で発行し、"
+                            "画面の「管理者設定」（管理者以外は「設定」）にある「AI エージェント連携（MCP）」で発行し、"
                             "Authorization: Bearer <トークン> で送ってください。"
                         ),
                     },

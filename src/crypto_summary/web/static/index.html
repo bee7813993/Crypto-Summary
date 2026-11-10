@@ -101,7 +101,7 @@
           <span class="nav-icon">↑</span><span data-i18n="nav.import">インポート</span>
         </a>
         <a class="nav-link hidden" id="nav-admin" data-page="admin" href="#admin">
-          <span class="nav-icon">⚙</span><span data-i18n="nav.admin">管理者設定</span>
+          <span class="nav-icon">⚙</span><span id="nav-admin-label" data-i18n="nav.admin">管理者設定</span>
         </a>
       </nav>
 
@@ -851,6 +851,7 @@
             </div>
             <p class="settings-hint" data-i18n="pbr.purgeHint">年が明けて公式の年間履歴CSVが公開されたら、その年のクロール由来データを削除してから公式CSVを取り込んでください。公式CSV由来のデータには触れません。</p>
           </div>
+        </div>
         </section>
 
         <!-- 既存口座の操作 -->
@@ -872,7 +873,6 @@
               <tbody></tbody>
             </table>
           </div>
-        </div>
         </section>
 
         <!-- インポート履歴（CSV単位の削除） -->
@@ -897,7 +897,13 @@
             </table>
           </div>
         </section>
+      </div>
 
+      <!-- 管理者設定ページ -->
+      <div id="page-admin" class="page hidden">
+        <h1 class="page-title" id="admin-page-title" data-i18n="nav.admin">管理者設定</h1>
+
+        <!-- 利用者ごとの設定（管理者以外にも表示する。管理者以外にはページ名を「設定」にする）-->
         <!-- 集計の表示設定 -->
         <section class="card import-section" id="prefs-section">
           <h2 data-i18n="prefs.title">集計の設定</h2>
@@ -914,7 +920,7 @@
               <input id="prefs-pbr-sync" type="checkbox" />
               <span data-i18n="prefs.pbrSync">PBR Lending クローラー連携を使う</span>
             </label>
-            <p class="settings-hint" data-i18n="prefs.pbrSyncHint">オンにすると、インポート画面に同期カードが、サイドバーに「PBR クローラー」タブが出ます。オフにしても取り込み済みのデータは残ります。</p>
+            <p class="settings-hint" data-i18n="prefs.pbrSyncHint">オンにすると、サーバー共通の PBR_CRAWL_DIR のクロール結果を自分の台帳に取り込み、取り込みフォルダのカードに PBR パネルが出ます。オフにしても取り込み済みのデータは残ります。</p>
           </div>
           <p class="settings-hint hidden" id="prefs-empty" data-i18n="prefs.none">切り替えられる設定はありません。</p>
           <div id="prefs-result" class="settings-result hidden"></div>
@@ -965,11 +971,9 @@
             </table>
           </div>
         </section>
-      </div>
 
-      <!-- 管理者設定ページ -->
-      <div id="page-admin" class="page hidden">
-        <h1 class="page-title" data-i18n="nav.admin">管理者設定</h1>
+        <!-- ここから下は全ユーザー共通の設定（管理者だけに表示する）-->
+        <div id="admin-only-sections">
 
         <!-- Google OAuth（マルチユーザーのみ表示）-->
         <section class="card import-section" id="admin-oauth-section">
@@ -1083,6 +1087,7 @@
           </div>
           <div id="admin-coingecko-result" class="settings-result hidden"></div>
         </section>
+        </div>
       </div>
 
     </main>
