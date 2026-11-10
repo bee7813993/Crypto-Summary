@@ -10,6 +10,7 @@ var TRANSLATIONS = {
     "nav.transactions": "取引履歴",
     "nav.import": "インポート",
     "nav.admin": "管理者設定",
+    "nav.settings": "設定",
 
     // Dashboard
     "dash.totalValue": "総資産評価額",
@@ -524,6 +525,7 @@ var TRANSLATIONS = {
     "nav.transactions": "Transactions",
     "nav.import": "Import",
     "nav.admin": "Admin Settings",
+    "nav.settings": "Settings",
 
     // Dashboard
     "dash.totalValue": "Total Portfolio Value",

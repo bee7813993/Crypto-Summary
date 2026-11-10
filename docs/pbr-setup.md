@@ -113,7 +113,7 @@ docker compose up -d --build
 
 ## 5. 連携を有効にする
 
-Crypto-Summary のインポート画面 →「集計の設定」→
+Crypto-Summary の「管理者設定」ページ（管理者以外の利用者には「設定」と表示）→「集計の設定」→
 **「PBR Lending クローラー連携を使う」をオン**。
 
 既に PBR のクロールデータがある利用者は自動で有効になる。全員が PBR の口座を
@@ -212,7 +212,7 @@ docker compose -f docker-compose.cloud.yml up -d --build
 
 ### 4. 連携を有効にする
 
-インポート画面 →「集計の設定」→「PBR Lending クローラー連携を使う」をオン。
+「管理者設定」ページ（管理者以外は「設定」）→「集計の設定」→「PBR Lending クローラー連携を使う」をオン。
 
 ## B-2. 手元側（送信）
 

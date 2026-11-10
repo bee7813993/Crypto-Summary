@@ -2387,10 +2387,6 @@ async function loadImportPage() {
   loadImportBatches();
   loadApiAccountsTable();
   loadWalletsTable();
-  loadPrefs();
-  // 発行直後のトークンは、ページを離れて戻ったら出し続けない（画面に残さない）
-  document.getElementById("mcp-new-token")?.classList.add("hidden");
-  loadMcpTokens();
   loadPbrSyncStatus();
   loadInboxStatus({ autoSync: true });
 }
@@ -3400,8 +3396,18 @@ async function loadSystemKeys() {
 }
 
 
-// 管理者設定ページ全体を初期化・データ取得する。
+// 設定ページ（#admin）全体を初期化・データ取得する。前半の集計の設定と MCP は
+// 利用者ごとの設定なので全員に、後半の共通設定は管理者にだけ出す（loadMeta）。
 async function loadAdminPage() {
+  loadPrefs();
+  // 集計の設定の PBR 行は、PBR の状態（データの有無・連携の可否）で出し分ける
+  loadPbrSyncStatus();
+  // 発行直後のトークンは、ページを離れて戻ったら出し続けない（画面に残さない）
+  document.getElementById("mcp-new-token")?.classList.add("hidden");
+  loadMcpTokens();
+
+  // 管理者以外が #admin を直接開いても、共通設定の API は 403 になるだけなので呼ばない
+  if (!window._isAdmin) return;
   await loadSystemKeys();
   try {
     const cfg = await fetchJSON("/api/admin-config");
@@ -4363,12 +4369,28 @@ async function loadMeta() {
   try {
     const meta = await fetchJSON("/api/meta");
     window._isAdmin = !!meta.is_admin;
-    // 管理者のみ管理者設定ナビを表示する。
-    const adminNav = document.getElementById("nav-admin");
-    if (adminNav && window._isAdmin) adminNav.classList.remove("hidden");
   } catch (e) {
     window._isAdmin = false;
   }
+  _applySettingsPageRole();
+}
+
+// 設定ページは全員に出す。管理者（シングルユーザーでは常に管理者）には全ユーザー
+// 共通の設定も含めて「管理者設定」として、それ以外の利用者には自分の設定
+// （集計の設定・MCP）だけを「設定」として見せる。文言は data-i18n を差し替えて
+// おき、言語の切り替えでもそのまま追従させる。
+function _applySettingsPageRole() {
+  const admin = !!window._isAdmin;
+  const key = admin ? "nav.admin" : "nav.settings";
+  for (const id of ["nav-admin-label", "admin-page-title"]) {
+    const el = document.getElementById(id);
+    if (el) {
+      el.setAttribute("data-i18n", key);
+      el.textContent = t(key);
+    }
+  }
+  document.getElementById("admin-only-sections")?.classList.toggle("hidden", !admin);
+  document.getElementById("nav-admin")?.classList.remove("hidden");
 }
 
 (async () => {
