@@ -56,8 +56,13 @@ from ..sources.jp.pbr_crawl import (
     sync_pbr_crawl,
 )
 from . import auth as cs_auth
+from .mcp_tokens import McpTokenError, McpTokenStore
 
 _STATIC_DIR = Path(__file__).parent / "static"
+
+#: シングルユーザーモードでの利用者 ID（MCP 接続トークンの持ち主）。
+_SINGLE_USER_SUB = "local"
+
 _DUST = Decimal("0.00000001")
 # スパムエアドロップ判定：価格不明 ＋ 正の整数単位 ＋ 少量（≤10）
 _SPAM_MAX_UNITS = Decimal("10")
@@ -2505,7 +2510,7 @@ def create_app(
     # 取り込みフォルダのポーラ。IMPORT_DIR が設定され、間隔が 0 でないときだけ
     # サーバーの起動時に走り出す（テストの TestClient は with で使わない限り
     # 起動イベントが走らないので、スレッドも立たない）。
-    _inbox_state: dict[str, Any] = {"poller": None}
+    _inbox_state: dict[str, Any] = {"poller": None, "mcp": None}
 
     @asynccontextmanager
     async def _lifespan(_app: FastAPI):
@@ -2517,8 +2522,16 @@ def create_app(
             if not poller.start():
                 logging.getLogger("crypto_summary.inbox").info(
                     "inbox poller not started: %s", poller.reason)
+        # MCP の受け口（/mcp）は SDK のセッションマネージャーが動いていないと
+        # 要求を処理できない。/mcp はマウントではなくルートとして置くので、
+        # SDK 側の lifespan は走らない — ここで回す。
+        mcp_server = _inbox_state.get("mcp")
         try:
-            yield
+            if mcp_server is not None:
+                async with mcp_server.session_manager.run():
+                    yield
+            else:
+                yield
         finally:
             if poller is not None:
                 poller.stop()
@@ -2569,6 +2582,22 @@ def create_app(
             p = _data_dir_path / f"{user['sub']}.db"
             if user.get("service") and not p.exists():
                 raise HTTPException(status_code=404, detail="この利用者の台帳がありません")
+            return str(p)
+
+        # MCP 接続トークン: 全利用者ぶんを 1 ファイルに持ち、トークンから sub を引く。
+        _mcp_tokens = McpTokenStore(_data_dir_path / "_mcp_tokens.json")
+
+        def mcp_token_owner(user: dict = Depends(require_user)) -> str:
+            """トークンを発行・失効できるのはログインした本人だけ（サービストークン不可）。"""
+            return user["sub"]
+
+        def mcp_db_for(sub: str) -> str:
+            """MCP から読む台帳。サービストークンと同じく、無い台帳を暗黙作成しない。"""
+            if not cs_auth._SUB_RE.fullmatch(sub):
+                raise LookupError("この利用者の台帳がありません")
+            p = _data_dir_path / f"{sub}.db"
+            if not p.exists():
+                raise LookupError("この利用者の台帳がありません")
             return str(p)
 
         # システム共通シークレットは data_dir 内の専用ストアに保存する。
@@ -2639,6 +2668,19 @@ def create_app(
 
         # シングルユーザーでは元々認証なし — トークン・ヘッダーは無視して同じ DB。
         get_db_path_read = get_db_path
+
+        # MCP 接続トークン: 画面にログインが無くても、/mcp はトークン必須にする
+        # （エージェントの設定を両モードで同じにし、--lan で開いた LAN の誰かが
+        # 勝手にエージェントからつなぐのを防ぐ）。トークンは台帳の隣に置く。
+        _mcp_tokens = McpTokenStore(
+            Path(db_path).with_name(Path(db_path).stem + ".mcp_tokens.json")
+        )
+
+        def mcp_token_owner() -> str:  # type: ignore[misc]
+            return _SINGLE_USER_SUB
+
+        def mcp_db_for(sub: str) -> str:  # type: ignore[misc]
+            return _fixed_db
 
         # シングルユーザーではシステムキーもユーザーDBに保存し、所有者が管理者。
         def system_store_path() -> str:
@@ -3060,6 +3102,47 @@ def create_app(
                 status_code=422, detail=f"unknown pref keys: {', '.join(sorted(unknown))}"
             )
         return {"ok": True, "prefs": _save_prefs(db, prefs)}
+
+    # ------------------------------------------------------------------
+    # AI エージェント連携（MCP）: 受け口 /mcp と接続トークンの管理
+    # ------------------------------------------------------------------
+
+    try:
+        from .mcp_server import build_mcp
+    except ImportError as e:  # mcp パッケージが入っていない古い環境
+        logging.getLogger("crypto_summary.mcp").warning(
+            "MCP は無効です（mcp パッケージがありません: %s）。"
+            'pip install -e ".[web]" で入れ直すと有効になります。', e)
+        build_mcp = None
+
+    if build_mcp is not None:
+        _mcp_server, _mcp_endpoint = build_mcp(store=_mcp_tokens, resolve_db=mcp_db_for)
+        _inbox_state["mcp"] = _mcp_server
+        # マウントではなくルートとして置く（/mcp → /mcp/ のリダイレクトを出さない）。
+        app.router.add_route(
+            "/mcp", _mcp_endpoint, methods=["GET", "POST", "DELETE"], include_in_schema=False
+        )
+
+    @app.get("/api/mcp/tokens")
+    def mcp_tokens_list(sub: str = Depends(mcp_token_owner)) -> dict:
+        return {"available": build_mcp is not None, "tokens": _mcp_tokens.list(sub)}
+
+    @app.post("/api/mcp/tokens")
+    def mcp_tokens_issue(body: dict[str, Any], sub: str = Depends(mcp_token_owner)) -> dict:
+        """トークンを発行する。平文のトークンはこの応答でしか返さない。"""
+        if build_mcp is None:
+            raise HTTPException(status_code=503, detail="このサーバーでは MCP が無効です")
+        try:
+            token, record = _mcp_tokens.issue(sub, str(body.get("label") or ""))
+        except McpTokenError as e:
+            raise HTTPException(status_code=422, detail=str(e))
+        return {"token": token, "record": record}
+
+    @app.delete("/api/mcp/tokens/{token_id}")
+    def mcp_tokens_revoke(token_id: str, sub: str = Depends(mcp_token_owner)) -> dict:
+        if not _mcp_tokens.revoke(sub, token_id):
+            raise HTTPException(status_code=404, detail="そのトークンはありません")
+        return {"ok": True}
 
     @app.get("/api/portfolio-history")
     def portfolio_history(
